@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Tuple
 
 import numpy as np
 import open3d as o3d
 
-Vec3 = tuple[float, float, float]
+Vec3 = Tuple[float, float, float]
 
 
 @dataclass
