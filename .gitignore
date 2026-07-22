@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+
+# Nubes de puntos y resultados generados (binarios/pesados, no versionar)
+data/*.ply
+!data/.gitkeep
+output/*
+!output/.gitkeep
+
+# SDK del sensor Aurora, clonado aparte segun el README
+aurora_sdk_src/
