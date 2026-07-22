@@ -7,7 +7,7 @@
 Integra captura LiDAR y coloreado RGB.
 - Interfaz Gráfica (GUI) en PyQt6.
 - Eje de coordenadas rotado (X al frente).
-- Límite de puntos eliminado.
+- Nuevo Parámetro: Ángulo de Cono de Apertura (FOV) para filtrar los puntos capturados en el eje visual.
 - Visualización de la Nube Base (Ex-ante) manteniendo los colores originales para preservar la claridad.
 """
 
@@ -25,7 +25,8 @@ gui_state = {
     'max_dist': 5.0,        
     'point_size': 2,        
     'min_thick': 0.05,      
-    'max_thick': 0.15,      
+    'max_thick': 0.15,
+    'cone_angle': 90,       # NUEVO: Ángulo de apertura en grados
     'save_ply': False,      
     'capture_baseline': False,
     'clear_baseline': False,
@@ -133,9 +134,19 @@ def parse_point_cloud_data(frame, camera_image=None):
     valid_mask &= ~np.all(points_xyz == 0, axis=1)
     valid_mask &= np.all(np.isfinite(points_xyz), axis=1)
     
-    # Filtro de Distancia
-    valid_mask &= (np.linalg.norm(points_xyz, axis=1) < gui_state['max_dist'])
-    valid_mask &= (np.linalg.norm(points_xyz, axis=1) > 0.1)
+    # Optimizacion de cálculos de distancia
+    r = np.linalg.norm(points_xyz, axis=1)
+    
+    # 1. Filtro de Distancia
+    valid_mask &= (r < gui_state['max_dist'])
+    valid_mask &= (r > 0.1)
+    
+    # 2. NUEVO: Filtro de Cono de Apertura (Eje Profundidad)
+    # Se filtra usando el eje Z crudo (que es la profundidad hacia adelante, 
+    # visualmente referenciado como eje X tras la rotación)
+    r_safe = np.where(r == 0, 1e-8, r)
+    angle_rad = np.arccos(np.clip(points_xyz[:, 2] / r_safe, -1.0, 1.0))
+    valid_mask &= (np.degrees(angle_rad) <= (gui_state['cone_angle'] / 2.0))
     
     original_indices = np.arange(len(points_xyz))
     valid_original_indices = original_indices[valid_mask]
@@ -157,9 +168,9 @@ def parse_point_cloud_data(frame, camera_image=None):
                         colors_rgb[i] = img_rgb[original_idx // width, original_idx % width]
                 elif is_organized:
                     for i, original_idx in enumerate(valid_original_indices):
-                        r, c = original_idx // width, original_idx % width
-                        img_c = max(0, min(int(c * img_width / width), img_width - 1))
-                        img_r = max(0, min(int(r * img_height / height), img_height - 1))
+                        row, col = original_idx // width, original_idx % width
+                        img_c = max(0, min(int(col * img_width / width), img_width - 1))
+                        img_r = max(0, min(int(row * img_height / height), img_height - 1))
                         colors_rgb[i] = img_rgb[img_r, img_c]
                 color_mapped = True
         except Exception: pass
@@ -231,7 +242,7 @@ class MainWindow(QMainWindow):
         self.update_baseline_vis = False
         
         self.setWindowTitle("Controles MVP Minero - Shotcrete")
-        self.resize(380, 520)
+        self.resize(380, 580)
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -247,6 +258,16 @@ class MainWindow(QMainWindow):
         self.sld_dist.setValue(int(gui_state['max_dist'] * 10))
         self.sld_dist.valueChanged.connect(self.update_dist)
         layout.addWidget(self.sld_dist)
+        
+        # NUEVO SLIDER CONO
+        self.lbl_cone = QLabel(f"Cono de Apertura (°): {gui_state['cone_angle']}°")
+        self.lbl_cone.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self.lbl_cone)
+        self.sld_cone = QSlider(Qt.Orientation.Horizontal)
+        self.sld_cone.setRange(10, 180)
+        self.sld_cone.setValue(gui_state['cone_angle'])
+        self.sld_cone.valueChanged.connect(self.update_cone)
+        layout.addWidget(self.sld_cone)
         
         self.lbl_pt = QLabel(f"Tamaño de Punto (3D): {gui_state['point_size']}")
         self.lbl_pt.setStyleSheet("font-weight: bold;")
@@ -305,6 +326,10 @@ class MainWindow(QMainWindow):
         gui_state['max_dist'] = v
         self.lbl_dist.setText(f"Distancia Máxima: {v:.1f} m")
         
+    def update_cone(self, val):
+        gui_state['cone_angle'] = val
+        self.lbl_cone.setText(f"Cono de Apertura (°): {val}°")
+        
     def update_pt(self, val):
         gui_state['point_size'] = val
         self.lbl_pt.setText(f"Tamaño de Punto (3D): {val}")
@@ -355,7 +380,6 @@ class MainWindow(QMainWindow):
                     print(f"[OK] Línea base guardada con {len(current_points)} puntos.")
                     
                     self.baseline_vis_pcd.points = o3d.utility.Vector3dVector(current_points)
-                    # AQUÍ ESTÁ EL CAMBIO: Se usa current_colors en lugar del gris plano.
                     self.baseline_vis_pcd.colors = o3d.utility.Vector3dVector(current_colors)
                     self.update_baseline_vis = True
                     
@@ -366,7 +390,7 @@ class MainWindow(QMainWindow):
                     )
                     self.pcd.colors = o3d.utility.Vector3dVector(heat_colors)
                     
-                    # Imprimir el promedio cada 1 segundo para no saturar la terminal
+                    # Imprimir el promedio cada 1 segundo
                     curr_time = time.time()
                     if curr_time - self.last_print_time >= 1.0:
                         print(f"[ESPESOR] Distancia promedio del material nuevo: {avg_dist*100:.2f} cm")
