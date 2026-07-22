@@ -5,27 +5,57 @@ dentro de esta carpeta `Aurora`.
 
 ## Inicio rapido
 
-Cloná el repo, entrá a la carpeta `Aurora` en PowerShell, y corré:
+Cloná el repo, entrá a la carpeta `Aurora`, y corré el script de setup segun tu
+sistema. Crea el entorno virtual e instala todas las dependencias
+automaticamente (puede tardar unos minutos por Open3D).
+
+**Windows (PowerShell):**
 
 ```powershell
 .\setup.ps1
 ```
 
-Esto crea el entorno virtual e instala todas las dependencias automaticamente
-(puede tardar unos minutos por Open3D). Al terminar, abrí la interfaz grafica:
+Si PowerShell bloquea la ejecucion por politica de scripts, ver la nota en la
+seccion 1 mas abajo — es un permiso que se habilita una sola vez.
 
-```powershell
-.\venv\Scripts\python.exe scripts\gui.py
+**Windows (CMD / simbolo del sistema):**
+
+```bat
+setup.bat
 ```
 
-Si PowerShell bloquea la ejecucion de `setup.ps1` por politica de scripts, ver
-la nota en la seccion 1 mas abajo — es un permiso que se habilita una sola vez.
+(`setup.ps1` es un script de PowerShell; `setup.bat` es un wrapper para poder
+correrlo igual desde CMD o con doble clic).
+
+**Linux (Ubuntu 20.04):**
+
+```bash
+./setup.sh
+```
+
+Instala tambien los paquetes de sistema necesarios (`python3-venv`,
+`python3-tk`, `libgl1-mesa-glx`, `libgomp1`) via `apt`, pidiendo `sudo` la
+primera vez. Este script no se pudo probar contra una maquina Ubuntu real
+durante el desarrollo (el entorno de desarrollo fue Windows) — los nombres de
+paquete y comandos son los estandar de Ubuntu 20.04, pero si algo falla al
+instalar, avisa en que paso para ajustarlo.
+
+Al terminar cualquiera de los 3, abrí la interfaz grafica:
+
+```powershell
+# Windows
+.\venv\Scripts\python.exe scripts\gui.py
+```
+```bash
+# Linux
+./venv/bin/python3 scripts/gui.py
+```
 
 ## Estructura
 
 ```
 Aurora/
-├── venv/                          <- entorno virtual (lo crea setup.ps1)
+├── venv/                          <- entorno virtual (lo crea setup.ps1 / setup.sh)
 ├── data/
 │   ├── base.ply                   <- nube del tunel original (coloca aqui tu archivo)
 │   └── updated.ply                <- nube del tunel con shotcrete (coloca aqui tu archivo)
@@ -39,12 +69,14 @@ Aurora/
 │   ├── live_viewer.py             <- visor 3D independiente (estatico o en vivo)
 │   ├── compare_point_clouds.py    <- linea de comandos
 │   └── gui.py                     <- interfaz grafica (recomendada)
-├── setup.ps1                      <- crea el venv e instala dependencias (un solo comando)
+├── setup.ps1                      <- setup automatico (Windows, PowerShell)
+├── setup.bat                      <- wrapper de setup.ps1 para Windows CMD / doble clic
+├── setup.sh                       <- setup automatico (Linux / Ubuntu 20.04)
 ├── requirements.txt
 └── README.md
 ```
 
-## 1. Crear y activar el entorno virtual (manual, alternativa a `setup.ps1`)
+## 1. Crear y activar el entorno virtual (manual, alternativa a los scripts de setup)
 
 Todos los comandos se ejecutan **desde dentro de la carpeta `Aurora`** en PowerShell.
 
@@ -106,6 +138,9 @@ python tools/build_package.py --platforms win64
 pip install wheels\slamtec_aurora_python_sdk_win64-2.1.1-py3-none-any.whl
 cd ..
 ```
+
+En Linux, el mismo procedimiento pero con `--platforms linux_x86_64` y
+`pip install` sobre el wheel `..._linux_x86_64-...whl` generado.
 
 Conecta la PC a la red WiFi del sensor (`SLAMWARE-Aurora-XXXX`) o a la misma
 red que el sensor. La IP por defecto del dispositivo suele ser `192.168.11.1`
