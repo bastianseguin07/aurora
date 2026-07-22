@@ -3,11 +3,29 @@
 Proyecto autocontenido: todo (entorno virtual, scripts y archivos `.ply`) vive
 dentro de esta carpeta `Aurora`.
 
+## Inicio rapido
+
+Cloná el repo, entrá a la carpeta `Aurora` en PowerShell, y corré:
+
+```powershell
+.\setup.ps1
+```
+
+Esto crea el entorno virtual e instala todas las dependencias automaticamente
+(puede tardar unos minutos por Open3D). Al terminar, abrí la interfaz grafica:
+
+```powershell
+.\venv\Scripts\python.exe scripts\gui.py
+```
+
+Si PowerShell bloquea la ejecucion de `setup.ps1` por politica de scripts, ver
+la nota en la seccion 1 mas abajo — es un permiso que se habilita una sola vez.
+
 ## Estructura
 
 ```
 Aurora/
-├── venv/                          <- entorno virtual (se crea en el paso 1)
+├── venv/                          <- entorno virtual (lo crea setup.ps1)
 ├── data/
 │   ├── base.ply                   <- nube del tunel original (coloca aqui tu archivo)
 │   └── updated.ply                <- nube del tunel con shotcrete (coloca aqui tu archivo)
@@ -21,11 +39,12 @@ Aurora/
 │   ├── live_viewer.py             <- visor 3D independiente (estatico o en vivo)
 │   ├── compare_point_clouds.py    <- linea de comandos
 │   └── gui.py                     <- interfaz grafica (recomendada)
+├── setup.ps1                      <- crea el venv e instala dependencias (un solo comando)
 ├── requirements.txt
 └── README.md
 ```
 
-## 1. Crear y activar el entorno virtual
+## 1. Crear y activar el entorno virtual (manual, alternativa a `setup.ps1`)
 
 Todos los comandos se ejecutan **desde dentro de la carpeta `Aurora`** en PowerShell.
 
