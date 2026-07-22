@@ -334,7 +334,7 @@ class AuroraGUI:
                 connection = aurora_sensor.connect(address)
                 self.root.after(0, lambda: self._on_sensor_connected(connection))
             except Exception as exc:
-                self.root.after(0, lambda: self._on_sensor_connect_failed(exc))
+                self.root.after(0, lambda exc=exc: self._on_sensor_connect_failed(exc))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -380,7 +380,7 @@ class AuroraGUI:
                 cloud = aurora_sensor.capture_snapshot(self.sensor_connection)
                 self.root.after(0, lambda: self._on_capture_done(target, cloud))
             except Exception as exc:
-                self.root.after(0, lambda: self._on_capture_failed(exc))
+                self.root.after(0, lambda exc=exc: self._on_capture_failed(exc))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -496,7 +496,7 @@ class AuroraGUI:
             self.root.after(0, self._push_static_result_to_viewer)
         except Exception as exc:
             self._log(f"\nERROR: {exc}")
-            self.root.after(0, lambda: messagebox.showerror("Error durante el procesamiento", str(exc)))
+            self.root.after(0, lambda exc=exc: messagebox.showerror("Error durante el procesamiento", str(exc)))
         finally:
             self.root.after(0, lambda: self.run_button.configure(state="normal"))
 
