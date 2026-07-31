@@ -3,10 +3,12 @@ __pycache__/
 *.pyc
 
 # Nubes de puntos y resultados generados (binarios/pesados, no versionar)
-data/*.ply
+data/**/*.ply
 !data/.gitkeep
 output/*
 !output/.gitkeep
 
-# SDK del sensor Aurora, clonado aparte segun el README
+# SDK del sensor Aurora, clonado aparte segun el README (nombre sugerido o el
+# que trae el clone por defecto)
 aurora_sdk_src/
+py_aurora_remote/

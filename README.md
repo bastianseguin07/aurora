@@ -1,54 +1,98 @@
-# Aurora — Comparacion de nubes de puntos LiDAR (espesor de shotcrete)
+# Aurora — Medicion de espesor de shotcrete a partir de nubes de puntos
 
 Proyecto autocontenido: todo (entorno virtual, scripts y archivos `.ply`) vive
-dentro de esta carpeta `Aurora`.
+dentro de esta carpeta `Aurora`. Esta branch (`gui_GTK`) agrega la interfaz
+grafica GTK3, pensada para mostrar la app a clientes con un aspecto nativo de
+escritorio Linux/Mac.
+
+## Compatibilidad real por sistema operativo
+
+Antes de instalar nada, es importante saber que **no los 3 sistemas operativos
+quedan igual de bien soportados** con la interfaz GTK — esto no es una
+limitacion arbitraria, es una limitacion real de como se distribuyen los
+bindings de GTK3 para Python en cada sistema:
+
+| Sistema | GUI recomendada | Estado |
+|---|---|---|
+| **Linux (Ubuntu 20.04+)** | `scripts/gui_gtk.py` | Camino soportado y esperado a funcionar: GTK3 se instala como paquete de sistema (`apt`) y Open3D se instala normal via `pip`, ambos conviven en el mismo entorno virtual. **No se pudo probar contra una maquina Ubuntu real durante el desarrollo** (el entorno de desarrollo fue Windows), pero cada pieza por separado esta verificada. |
+| **macOS** | `scripts/gui_gtk.py` | Debería funcionar via Homebrew (`brew install gtk+3 pygobject3`), siguiendo el mismo patron que Linux. Instrucciones basadas en la practica estandar documentada de PyGObject/Homebrew — **no se pudo probar en una Mac real** (no hay una disponible en el entorno de desarrollo). |
+| **Windows** | `scripts/gui.py` (CustomTkinter) | GTK3 **no tiene un camino simple** en Windows: no existe un wheel de pip que lo instale, la unica forma es MSYS2 (un Python separado del de Windows) o compilar GTK desde cero con `gvsbuild` (un proceso de horas, no apto para un setup de "un comando"). Se probo exhaustivamente en este desarrollo: **MSYS2 permite correr GTK3, pero ese mismo Python no puede instalar Open3D** (no hay wheel compatible). Por eso, en Windows se recomienda usar `gui.py`, una interfaz equivalente hecha con CustomTkinter que instala con un simple `pip install` y funciona con Open3D sin problemas. |
+
+Todo lo demas (CLI, `pointcloud_core.py`, captura por sensor, alineacion,
+crop, etc.) funciona igual sin importar que GUI uses — la unica diferencia es
+la interfaz grafica en si.
 
 ## Inicio rapido
 
-Cloná el repo, entrá a la carpeta `Aurora`, y corré el script de setup segun tu
-sistema. Crea el entorno virtual e instala todas las dependencias
+Clona el repo, entra a la carpeta `Aurora`, y corre el script de setup segun
+tu sistema. Crea el entorno virtual e instala las dependencias
 automaticamente (puede tardar unos minutos por Open3D).
 
-**Windows (PowerShell):**
-
-```powershell
-.\setup.ps1
-```
-
-Si PowerShell bloquea la ejecucion por politica de scripts, ver la nota en la
-seccion 1 mas abajo — es un permiso que se habilita una sola vez.
-
-**Windows (CMD / simbolo del sistema):**
-
-```bat
-setup.bat
-```
-
-(`setup.ps1` es un script de PowerShell; `setup.bat` es un wrapper para poder
-correrlo igual desde CMD o con doble clic).
-
-**Linux (Ubuntu 20.04):**
+### Linux (Ubuntu 20.04+)
 
 ```bash
 ./setup.sh
 ```
 
-Instala tambien los paquetes de sistema necesarios (`python3-venv`,
-`python3-tk`, `libgl1-mesa-glx`, `libgomp1`) via `apt`, pidiendo `sudo` la
-primera vez. Este script no se pudo probar contra una maquina Ubuntu real
-durante el desarrollo (el entorno de desarrollo fue Windows) — los nombres de
-paquete y comandos son los estandar de Ubuntu 20.04, pero si algo falla al
-instalar, avisa en que paso para ajustarlo.
+Instala los paquetes de sistema necesarios (`python3-venv`, `python3-tk`,
+`libgl1-mesa-glx`, `libgomp1`, `python3-gi`, `gir1.2-gtk-3.0`) via `apt`
+(pide `sudo` la primera vez), y crea el entorno virtual con
+`--system-site-packages` para que herede los bindings de GTK3 instalados a
+nivel de sistema. Despues instala el resto de las dependencias (Open3D,
+numpy, etc.) dentro del venv con `pip`, normalmente.
 
-Al terminar cualquiera de los 3, abrí la interfaz grafica:
-
-```powershell
-# Windows
-.\venv\Scripts\python.exe scripts\gui.py
-```
 ```bash
-# Linux
-./venv/bin/python3 scripts/gui.py
+./venv/bin/python3 scripts/gui_gtk.py
+```
+
+### macOS
+
+Requiere [Homebrew](https://brew.sh) instalado primero. Despues:
+
+```bash
+./setup.sh
+```
+
+El script detecta que estas en macOS y corre `brew install python gtk+3
+pygobject3`, y crea el entorno virtual usando el Python de Homebrew (no el
+Python del sistema/Xcode) con `--system-site-packages`, por la misma razon
+que en Linux: GTK3 vive a nivel de sistema (Homebrew), no via pip.
+
+```bash
+./venv/bin/python3 scripts/gui_gtk.py
+```
+
+> Si el `pip install open3d` del setup falla, es probablemente porque tu Mac
+> tiene una version de Python muy nueva o muy vieja para el wheel de Open3D
+> disponible en ese momento — instala una version de Python 3.9-3.12 via
+> `brew install python@3.11` (por ejemplo) y volve a crear el venv apuntando
+> a ese binario especifico.
+
+### Windows
+
+GTK3 no tiene un camino simple en Windows (ver tabla de arriba), asi que en
+Windows se usa `gui.py` (CustomTkinter) en vez de `gui_gtk.py`:
+
+**PowerShell:**
+```powershell
+.\setup.ps1
+```
+Si PowerShell bloquea la ejecucion por politica de scripts, correr una vez
+(no requiere admin):
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+**CMD / doble clic:**
+```bat
+setup.bat
+```
+(wrapper que invoca `setup.ps1` via PowerShell, para quienes no usan
+PowerShell directamente)
+
+Al terminar:
+```powershell
+.\venv\Scripts\python.exe scripts\gui.py
 ```
 
 ## Estructura
@@ -64,73 +108,85 @@ Aurora/
 │   ├── thickness_histogram.png
 │   └── thickness_heatmap.ply
 ├── scripts/
-│   ├── pointcloud_core.py         <- logica central de comparacion (usada por CLI y GUI)
+│   ├── pointcloud_core.py         <- logica central (comparacion, crop, alineacion Procrustes)
 │   ├── aurora_sensor.py           <- integracion con el sensor Slamtec Aurora
-│   ├── live_viewer.py             <- visor 3D independiente (estatico o en vivo)
+│   ├── live_viewer.py             <- visor 3D independiente (estatico o en vivo), ventana aparte
+│   ├── embedded_viewer.py         <- visor 3D embebido en la ventana (seccion experimental)
 │   ├── compare_point_clouds.py    <- linea de comandos
-│   └── gui.py                     <- interfaz grafica (recomendada)
-├── setup.ps1                      <- setup automatico (Windows, PowerShell)
+│   ├── gui_gtk.py                 <- interfaz grafica GTK3 (recomendada en Linux/Mac, demos)
+│   └── gui.py                     <- interfaz grafica CustomTkinter (recomendada en Windows)
+├── setup.ps1                      <- setup automatico (Windows, PowerShell) -> gui.py
 ├── setup.bat                      <- wrapper de setup.ps1 para Windows CMD / doble clic
-├── setup.sh                       <- setup automatico (Linux / Ubuntu 20.04)
+├── setup.sh                       <- setup automatico (Linux y macOS) -> gui_gtk.py
 ├── requirements.txt
 └── README.md
 ```
 
-## 1. Crear y activar el entorno virtual (manual, alternativa a los scripts de setup)
+## 1. Crear y activar el entorno virtual manualmente (alternativa a los scripts de setup)
 
-Todos los comandos se ejecutan **desde dentro de la carpeta `Aurora`** en PowerShell.
+Si preferis no usar `setup.ps1`/`setup.sh`, o necesitas ajustar algo (version
+de Python especifica, etc.), podes hacerlo a mano.
 
+**Windows (PowerShell):**
 ```powershell
-cd C:\Users\basti\OneDrive\Escritorio\Aurora
-
-# Crear el entorno virtual
+cd C:\ruta\a\Aurora
 python -m venv venv
-
-# Activar el entorno virtual
 .\venv\Scripts\Activate.ps1
 ```
 
-> Si PowerShell bloquea la activacion por la politica de ejecucion de scripts,
-> corre una vez (en una consola con permisos de usuario, no hace falta admin):
-> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+**Linux:**
+```bash
+cd /ruta/a/Aurora
+python3 -m venv --system-site-packages venv   # --system-site-packages solo si vas a usar gui_gtk.py
+source venv/bin/activate
+```
+
+**macOS:**
+```bash
+cd /ruta/a/Aurora
+$(brew --prefix)/bin/python3 -m venv --system-site-packages venv   # idem, Python de Homebrew
+source venv/bin/activate
+```
 
 > **Nota sobre la version de Python:** Open3D publica wheels para versiones
-> especificas de Python. Si `pip install open3d` falla en tu version actual,
-> instala Python 3.10 o 3.11 (https://www.python.org/downloads/) y crea el
-> entorno virtual con esa version, por ejemplo:
-> `py -3.11 -m venv venv`
+> especificas de Python (tipicamente 3.9-3.12 segun la version de Open3D). Si
+> `pip install open3d` falla en tu version actual, instala una version
+> compatible (por ejemplo Python 3.11) y crea el entorno virtual con esa
+> version especifica.
 
-## 2. Instalar dependencias
+## 2. Instalar dependencias (si no usaste el script de setup)
 
 Con el entorno virtual activado (deberias ver `(venv)` al inicio del prompt):
 
-```powershell
+```bash
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
 Esto instala `open3d`, `numpy`, `scipy`, `matplotlib` y `customtkinter` (para
-la interfaz grafica) con versiones compatibles entre si (evita el conflicto
-conocido de Open3D con NumPy 2.x).
+`gui.py`) con versiones compatibles entre si. Los bindings de GTK3
+(`gi`/PyGObject, para `gui_gtk.py`) **no** estan en `requirements.txt` porque
+no se instalan con pip — vienen del sistema (`apt`/`brew`), y el venv los
+hereda solo si se creo con `--system-site-packages` (ver seccion 1).
 
 ## 3. Colocar tus nubes de puntos
 
-Copia tus dos archivos `.ply` dentro de `Aurora\data\`:
+Copia tus dos archivos `.ply` dentro de `Aurora/data/`:
 
-- `data\base.ply` — tunel original, antes del shotcrete.
-- `data\updated.ply` — mismo tunel, despues de aplicar el shotcrete.
+- `data/base.ply` — tunel original, antes del shotcrete.
+- `data/updated.ply` — mismo tunel, despues de aplicar el shotcrete.
 
-Alternativa: capturar las nubes directamente desde el sensor con la GUI (ver
-seccion "Sensor Aurora" mas abajo), sin necesidad de tener los `.ply` de antemano.
+Alternativa: capturar las nubes directamente desde el sensor con la GUI
+(pestaña "Captura"), sin necesidad de tener los `.ply` de antemano.
 
 ## 3.1 Instalar el SDK del sensor Slamtec Aurora (opcional, solo si vas a capturar en vivo)
 
 El dispositivo con SSID `SLAMWARE-Aurora-XXXX` es un **Slamtec Aurora**. Su SDK
-de Python no esta en PyPI: hay que clonarlo y compilar un wheel una vez.
-Con el entorno virtual de Aurora activado:
+de Python no esta en PyPI: hay que clonarlo y compilar un wheel una vez, con
+el entorno virtual del proyecto activado.
 
+**Windows:**
 ```powershell
-cd C:\Users\basti\OneDrive\Escritorio\Aurora
 git clone --recursive https://github.com/Slamtec/py_aurora_remote.git aurora_sdk_src
 cd aurora_sdk_src
 pip install -r requirements-dev.txt
@@ -139,104 +195,125 @@ pip install wheels\slamtec_aurora_python_sdk_win64-2.1.1-py3-none-any.whl
 cd ..
 ```
 
-En Linux, el mismo procedimiento pero con `--platforms linux_x86_64` y
-`pip install` sobre el wheel `..._linux_x86_64-...whl` generado.
+**Linux:** igual, pero `--platforms linux_x86_64` y el wheel `..._linux_x86_64-...whl`.
+
+**macOS:** igual, pero `--platforms macos_arm64` (Apple Silicon) o
+`macos_x86_64` (Intel), y el wheel correspondiente.
 
 Conecta la PC a la red WiFi del sensor (`SLAMWARE-Aurora-XXXX`) o a la misma
 red que el sensor. La IP por defecto del dispositivo suele ser `192.168.11.1`
 (configurable en el campo "Direccion del sensor" de la GUI).
 
 > Si no instalas este SDK, el resto de la aplicacion (comparar `.ply` ya
-> existentes, GUI, CLI, crop, heatmap) funciona igual — la GUI simplemente
-> mostrara un error claro al intentar conectar el sensor, indicando que falta
-> el paquete `slamtec_aurora_sdk`.
+> existentes, GUI, CLI, crop, alineacion, heatmap) funciona igual — la GUI
+> simplemente mostrara un error claro al intentar conectar el sensor.
 
 > **Nota:** esta integracion se escribio siguiendo exactamente el patron del
 > ejemplo oficial del SDK (`examples/dense_point_cloud.py`), pero no pudo
-> probarse contra el sensor fisico real durante el desarrollo (no hay hardware
-> conectado en este entorno). Probala primero con el sensor a mano; si algo
-> falla, el mensaje de error indicara en que paso ocurrio (conexion, camara de
-> profundidad no soportada, suscripcion, o captura de frames).
+> probarse contra el sensor fisico real durante el desarrollo. Probala primero
+> con el sensor a mano; si algo falla, el mensaje de error indicara en que
+> paso ocurrio (conexion, camara de profundidad no soportada, suscripcion, o
+> captura de frames).
 
-## 4. Usar la GUI (recomendado, sin consola)
+## 4. Usar la GUI
 
-En vez de escribir comandos, se puede usar la interfaz grafica:
-
+```bash
+# Linux / macOS
+./venv/bin/python3 scripts/gui_gtk.py
+```
 ```powershell
-python scripts\gui.py
+# Windows
+.\venv\Scripts\python.exe scripts\gui.py
 ```
 
-(o, sin activar el entorno: `.\venv\Scripts\python.exe scripts\gui.py`)
+La ventana esta organizada en pestañas con una barra lateral, con el boton
+principal **"Calcular espesor"** siempre visible arriba y el panel de
+resultado siempre visible abajo. Los controles poco frecuentes/tecnicos estan
+escondidos detras de un desplegable **"Opciones avanzadas"**, y los campos
+que necesitan explicacion tienen un icono ⓘ al lado (`gui_gtk.py`).
 
-La ventana esta organizada en 3 pestañas ("Datos y sensor", "Procesamiento",
-"Visualizacion") para no saturar la pantalla, con el boton principal
-"Ejecutar comparacion" y el registro de resultados siempre visibles debajo.
-Ahi podes:
+**Flujo tipico (un solo click):** elegis los dos archivos `.ply` en la
+pestaña "Comparacion" (o los capturas primero en "Captura"), presionas
+**"Calcular espesor"**, y la app corre el analisis, muestra los resultados
+como tarjetas con los numeros principales, cambia sola a la pestaña
+"Visualizacion 3D" y abre la vista 3D coloreada por espesor.
 
-- Elegir los archivos `.ply` base y actualizado con botones "Examinar...".
-- Marcar casillas para quitar outliers o alinear con ICP, y escribir el
-  tamano de voxel o el umbral de ICP si hace falta.
-- **Recortar (crop) a una region de interes** antes de comparar — util para
-  aislar, por ejemplo, solo la zona de una caja de prueba o un tramo puntual
-  del tunel, en vez de que la estadistica se diluya con el resto de la
-  escena que no cambio. Hay dos formas de definir el recorte:
-  - Escribiendo manualmente las coordenadas minimas y maximas (x y z, en metros).
-  - Con el boton **"Seleccionar recorte en visor 3D..."**: se abre la nube
-    base en una ventana 3D, se hace **Shift + click izquierdo** sobre 2
-    puntos que marquen esquinas opuestas de la zona de interes, y se cierra
-    la ventana (tecla `Q` o el boton de cerrar). Los limites se completan
-    solos en los campos Min/Max.
-- Presionar **"Ejecutar comparacion"** — corre en segundo plano sin trabar la
-  ventana, y el resultado (estadisticas, rutas de los archivos generados) se
-  muestra en el cuadro de texto inferior.
+### Pestaña "Captura"
 
-### Sensor Aurora (capturar nubes en vivo)
+Todo lo relacionado al sensor Aurora, separado de la comparacion: IP del
+sensor, boton Conectar/Desconectar con indicador de estado (●
+verde/rojo/amarillo), y botones **"Capturar tunel original"** / **"Capturar
+tunel con shotcrete"** (toman una foto fija acumulando ~15 frames del sensor
+para reducir ruido). Al guardar, la app cambia sola a "Comparacion" mostrando
+el archivo ya cargado.
 
-En la seccion **"Sensor Aurora"**:
+### Pestaña "Comparacion"
 
-- Escribi la IP del sensor (por defecto `192.168.11.1`) y presiona **"Conectar"**.
-- Con el sensor conectado, **"Capturar nube BASE"** / **"Capturar nube ACTUALIZADA"**
-  toman una foto fija (acumulan ~15 frames del sensor para reducir ruido) y piden
-  donde guardarla como `.ply` — el campo de archivo correspondiente se actualiza solo.
-- Esto requiere el SDK del sensor instalado (ver seccion 3.1); si no esta instalado,
-  la GUI muestra un mensaje de error explicando que falta y donde instalarlo.
+**"Tunel original"** / **"Tunel con shotcrete"** — cada seccion muestra el
+nombre del archivo elegido (no la ruta completa, que aparece como tooltip)
+con un boton **"Elegir archivo..."**.
 
-### Color de espesor
+### Pestaña "Alineacion" (Procrustes con puntos de referencia)
 
-En la seccion **"Color de espesor"** se elige entre:
+Si las dos capturas no comparten exactamente la misma posicion (el sensor se
+reubico entre una y otra), esta pestaña permite alinearlas eligiendo
+manualmente 3 o mas **puntos de referencia fijos** — por ejemplo cabezas de
+pernos de anclaje, marcas o esquinas rigidas — en vez de usar ICP sobre toda
+la superficie (que puede confundir el espesor real con error de alineacion).
 
-- **Continuo (heatmap azul->rojo)** — gradiente proporcional al espesor (como antes).
-- **3 niveles (verde/amarillo/rojo)** — clasifica cada punto en 3 bandas segun
-  dos umbrales configurables en milimetros: verde si el espesor es menor al
-  "umbral bajo", rojo si es mayor o igual al "umbral alto", amarillo en el medio.
-  Util para ver de un vistazo donde el shotcrete quedo dentro de especificacion,
-  insuficiente o excesivo.
+1. **"1. Elegir puntos en el tunel original..."** — abre un visor 3D con la
+   nube base. Shift+Click sobre cada punto de referencia, en un orden que vos
+   elijas, despues cerrar la ventana (tecla `Q`).
+2. **"2. Elegir los MISMOS puntos en el tunel con shotcrete..."** — mismo
+   proceso sobre la otra nube, marcando los **mismos puntos fisicos en el
+   mismo orden** (la correspondencia entre nubes es solo por orden de
+   seleccion, no automatica).
+3. **"Calcular alineacion y aplicar"** — calcula la rotacion y traslacion
+   optimas (algoritmo de Kabsch / analisis de Procrustes) usando esos puntos,
+   muestra el **error residual en mm** (que tan bien calzaron los puntos
+   elegidos — un valor alto indica que se marcaron mal o en distinto orden),
+   aplica la transformacion a toda la nube con shotcrete, la guarda como
+   `<nombre>_alineado.ply`, y actualiza la pestaña "Comparacion" para usar ese
+   archivo.
 
-### Vista 3D (estatica o en vivo)
+### Pestaña "Ajustes de analisis"
 
-La seccion **"Vista 3D"** abre una ventana de Open3D separada (no bloquea la GUI)
-que muestra siempre la **nube base en gris** (el tunel original, sin shotcrete) y,
-opcionalmente, la **nube actualizada coloreada por espesor**:
+**"Analizar solo una zona"** (opcional) — checkbox + boton **"Seleccionar
+zona en el visor 3D..."**: Shift+Click sobre 2 o mas puntos que marquen la
+zona de interes (por ejemplo, un tramo del tunel), util para que la
+estadistica no se diluya con el resto de una escena que no cambio.
+**"Opciones avanzadas"** (colapsado) — voxel, filtro de ruido, ICP, coordenadas
+manuales de zona, y carpeta de resultados.
 
-- **"Mostrar nube actualizada"** — tilda/destilda para mostrar u ocultar esa capa
-  sin cerrar la ventana.
-- **Estatica (archivo/captura)** — usa la nube actualizada cargada desde archivo
-  o la ultima capturada/comparada.
-- **En tiempo real (sensor)** — con el sensor conectado, la nube actualizada se
-  redibuja continuamente con los frames en vivo del sensor, recalculando el
-  espesor contra la nube base en cada frame.
-- **"Abrir vista 3D"** / **"Cerrar vista 3D"** controlan la ventana. Cambiar el
-  modo de color, los umbrales, o la fuente (estatica/vivo) mientras la vista esta
-  abierta se aplica al instante.
+### Pestaña "Visualizacion 3D"
 
-## 5. Ejecutar la comparacion por linea de comandos (alternativa)
+**Color del espesor** — escala continua (degrade azul→rojo) o 3 niveles de
+color (verde/amarillo/rojo segun umbrales en mm). **Vista 3D en pantalla** —
+mostrar/ocultar el resultado, y elegir si la vista es estatica (ultima
+captura/archivo) o en vivo (sensor conectado, redibuja continuamente). Botones
+**"Abrir vista 3D"** / **"Cerrar vista 3D"** (ventana de Open3D aparte).
 
-```powershell
-python scripts\compare_point_clouds.py --base data\base.ply --updated data\updated.ply --visualize
+### Pestaña "Comparacion (prueba)" — seccion experimental
+
+Visor 3D **embebido directamente en la ventana** (a diferencia de
+"Visualizacion 3D", que abre una ventana de Open3D aparte). Muestra ambas
+nubes superpuestas con un resaltado sutil (gris → ambar tenue) donde
+difieren, en vez de un heatmap tipo arcoiris. Se controla con el mouse
+(arrastrar = orbitar, rueda = zoom). Todavia no esta decidido si esto queda
+en la version final — usa la API "clasica" de Open3D (`Visualizer` con
+`visible=False`) en vez del renderizador nuevo (`OffscreenRenderer`), porque
+este ultimo no soporta modo headless en Windows; en Linux/Mac deberia
+funcionar igual con cualquiera de los dos, pero se eligio la clasica por
+compatibilidad.
+
+## 5. Ejecutar la comparacion por linea de comandos (alternativa sin GUI)
+
+```bash
+python scripts/compare_point_clouds.py --base data/base.ply --updated data/updated.ply --visualize
 ```
 
 Esto imprime en consola las estadisticas de espesor (media, mediana, desvio,
-min/max, percentil 95) y genera en `output\`:
+min/max, percentil 95) y genera en `output/`:
 
 - `thickness_per_point.csv` — distancia (espesor) por cada punto, en metros y mm.
 - `thickness_histogram.png` — histograma de la distribucion de espesores.
@@ -244,8 +321,7 @@ min/max, percentil 95) y genera en `output\`:
   (azul = poco espesor, rojo = mucho espesor) para abrir en Open3D, CloudCompare, etc.
 
 Con `--visualize` se abre ademas una ventana interactiva de Open3D mostrando
-el heatmap. Agregando `--overlay` se superpone tambien la nube base en gris
-para comparar visualmente ambas superficies.
+el heatmap. Agregando `--overlay` se superpone tambien la nube base en gris.
 
 ### Opciones utiles
 
@@ -253,27 +329,27 @@ para comparar visualmente ambas superficies.
 |---|---|
 | `--voxel-size 0.01` | Downsample previo (en metros) para nubes muy densas; acelera el calculo. |
 | `--remove-outliers` | Filtra puntos ruidosos/aislados antes de comparar. |
-| `--icp` | Realinea la nube actualizada contra la base con ICP antes de medir. Usar solo si sospechas de un error de registro entre escaneos, no para corregir el espesor real. |
-| `--crop-min X Y Z --crop-max X Y Z` | Recorta ambas nubes a una caja delimitadora (en metros) antes de comparar. Ideal para aislar una region de interes y evitar que el resto de la escena diluya la estadistica. |
-| `--max-distance 0.08` | Satura la escala de color del heatmap a un espesor maximo esperado (en metros), util si hay outliers que "aplastan" la escala de colores. |
-| `--output-dir otra_carpeta` | Cambia donde se guardan los resultados (por defecto `Aurora\output`). |
+| `--icp` | Realinea la nube actualizada contra la base con ICP antes de medir. Usar solo si sospechas de un error de registro entre escaneos, no para corregir el espesor real (para eso, mejor usar la alineacion por puntos de referencia desde la GUI). |
+| `--crop-min X Y Z --crop-max X Y Z` | Recorta ambas nubes a una caja delimitadora (en metros) antes de comparar. |
+| `--max-distance 0.08` | Satura la escala de color del heatmap a un espesor maximo esperado (en metros). |
+| `--output-dir otra_carpeta` | Cambia donde se guardan los resultados (por defecto `Aurora/output`). |
 
 Ejemplo mas completo:
 
-```powershell
-python scripts\compare_point_clouds.py `
-    --base data\base.ply `
-    --updated data\updated.ply `
-    --voxel-size 0.01 `
-    --remove-outliers `
-    --crop-min -0.3 -0.3 0.5 --crop-max 0.3 0.3 1.5 `
-    --max-distance 0.10 `
+```bash
+python scripts/compare_point_clouds.py \
+    --base data/base.ply \
+    --updated data/updated.ply \
+    --voxel-size 0.01 \
+    --remove-outliers \
+    --crop-min -0.3 -0.3 0.5 --crop-max 0.3 0.3 1.5 \
+    --max-distance 0.10 \
     --visualize --overlay
 ```
 
 ## 6. Desactivar el entorno virtual
 
-```powershell
+```bash
 deactivate
 ```
 
@@ -282,13 +358,17 @@ deactivate
 - El script calcula la **distancia Cloud-to-Cloud (C2C)**: para cada punto de
   la nube actualizada busca su vecino mas cercano en la nube base (via KD-Tree,
   `Open3D.compute_point_cloud_distance`). Esa distancia euclidiana es la
-  estimacion del espesor de shotcrete en ese punto.
-- Es una distancia **no dirigida/no firmada** (siempre positiva). Para la
-  mayoria de los casos de shotcrete sobre pared de tunel esto es una buena
-  aproximacion del espesor real, siempre que ambas nubes esten en el mismo
-  sistema de referencia (mismo origen de escaneo/geo-referenciacion).
-- Si las dos nubes no comparten exactamente el mismo sistema de coordenadas
-  (por ejemplo, escaneos independientes sin geo-referenciar), usa `--icp` para
-  alinear antes de medir. Ojo: si el propio shotcrete desplaza mucho la
-  superficie, un ICP demasiado agresivo puede "corregir" parte del espesor
-  real como si fuera error de alineacion — usarlo con criterio.
+  estimacion del espesor de shotcrete en ese punto. Es una distancia **no
+  dirigida/no firmada** (siempre positiva).
+- Para que esa distancia sea una buena estimacion del espesor real, ambas
+  nubes deben estar en el mismo sistema de referencia. Si no lo estan, hay dos
+  formas de corregirlo:
+  - **Alineacion por puntos de referencia (Procrustes/Kabsch, GUI, pestaña
+    "Alineacion")**: usa solo puntos fijos elegidos a mano (que no cambiaron
+    entre capturas). Recomendado cuando hay puntos de referencia identificables
+    (pernos, marcas).
+  - **ICP (`--icp` / checkbox "Corregir alineacion")**: ajusta usando toda la
+    superficie. Mas rapido/automatico, pero si el shotcrete cambia TODA la
+    pared, puede confundir el espesor real con error de alineacion — usar con
+    criterio, e idealmente solo cuando el fondo estatico domina en cantidad de
+    puntos (por ejemplo, una escena con un objeto pequeno que se movio).

@@ -131,6 +131,79 @@ def align_clouds(
     return source.transform(result.transformation)
 
 
+def compute_rigid_transform(base_points: np.ndarray, moving_points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Calcula la rotacion (3x3) y traslacion (3,) optimas que llevan
+    'moving_points' sobre 'base_points', dado un conjunto de puntos
+    correspondientes en el mismo orden (algoritmo de Kabsch / analisis de
+    Procrustes). Pensado para alinear usando puntos de referencia fijos
+    (p. ej. cabezas de pernos de anclaje) en vez de ICP sobre toda la nube,
+    para no confundir el espesor real de shotcrete con error de alineacion.
+
+    Requiere al menos 3 puntos no colineales para que la rotacion quede
+    bien determinada.
+    """
+    base_points = np.asarray(base_points, dtype=np.float64)
+    moving_points = np.asarray(moving_points, dtype=np.float64)
+    if base_points.shape != moving_points.shape or base_points.shape[0] < 3:
+        raise ValueError("Se necesitan al menos 3 puntos correspondientes, en igual cantidad en ambas nubes.")
+
+    base_centroid = base_points.mean(axis=0)
+    moving_centroid = moving_points.mean(axis=0)
+    base_centered = base_points - base_centroid
+    moving_centered = moving_points - moving_centroid
+
+    h = moving_centered.T @ base_centered
+    u, _, vt = np.linalg.svd(h)
+    d = np.sign(np.linalg.det(vt.T @ u.T))
+    correction = np.diag([1.0, 1.0, d])
+    rotation = vt.T @ correction @ u.T
+    translation = base_centroid - rotation @ moving_centroid
+    return rotation, translation
+
+
+def rigid_transform_rms_error(
+    base_points: np.ndarray, moving_points: np.ndarray, rotation: np.ndarray, translation: np.ndarray
+) -> float:
+    """Error residual (RMS, en metros) tras aplicar la transformacion a los puntos de referencia."""
+    transformed = (rotation @ np.asarray(moving_points).T).T + translation
+    return float(np.sqrt(np.mean(np.sum((transformed - np.asarray(base_points)) ** 2, axis=1))))
+
+
+def apply_rigid_transform(
+    cloud: o3d.geometry.PointCloud, rotation: np.ndarray, translation: np.ndarray
+) -> o3d.geometry.PointCloud:
+    """Aplica la rotacion+traslacion (de compute_rigid_transform) a una copia de la nube."""
+    matrix = np.eye(4)
+    matrix[:3, :3] = rotation
+    matrix[:3, 3] = translation
+    result = o3d.geometry.PointCloud(cloud)
+    result.transform(matrix)
+    return result
+
+
+def pick_landmark_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np.ndarray | None:
+    """
+    Abre un visor 3D interactivo para elegir puntos de referencia (landmarks)
+    en orden: Shift + click izquierdo sobre cada punto, en el mismo orden en
+    que se van a elegir en la otra nube, despues cerrar la ventana (Q).
+    Devuelve las coordenadas en el orden elegido, o None si se eligieron
+    menos de 3 puntos.
+    """
+    vis = o3d.visualization.VisualizerWithEditing()
+    vis.create_window(window_name=window_name)
+    vis.add_geometry(cloud)
+    vis.run()
+    vis.destroy_window()
+
+    picked_indices = vis.get_picked_points()
+    if len(picked_indices) < 3:
+        return None
+
+    points = np.asarray(cloud.points)
+    return points[picked_indices]
+
+
 def compute_c2c_distance(
     updated: o3d.geometry.PointCloud, base: o3d.geometry.PointCloud
 ) -> np.ndarray:
@@ -166,6 +239,31 @@ def build_heatmap_cloud(
     heatmap_cloud = o3d.geometry.PointCloud(updated)
     heatmap_cloud.colors = o3d.utility.Vector3dVector(colors)
     return heatmap_cloud
+
+
+def build_subtle_overlay_cloud(
+    updated: o3d.geometry.PointCloud,
+    distances: np.ndarray,
+    max_distance: float | None = None,
+    base_gray: float = 0.72,
+    highlight_color: tuple[float, float, float] = (0.85, 0.55, 0.20),
+) -> o3d.geometry.PointCloud:
+    """
+    Colorea la nube 'actualizada' con un resaltado sutil (gris -> ambar tenue)
+    proporcional a la diferencia con la base, pensado para superponerla sobre
+    la nube base y ver la diferencia sin un heatmap llamativo tipo arcoiris.
+    """
+    clip_max = max_distance if max_distance else float(np.percentile(distances, 95))
+    clip_max = max(clip_max, 1e-9)
+    t = np.clip(distances / clip_max, 0.0, 1.0)[:, None]
+
+    base_color = np.array([base_gray, base_gray, base_gray])
+    highlight = np.array(highlight_color)
+    colors = base_color * (1 - t) + highlight * t
+
+    overlay_cloud = o3d.geometry.PointCloud(updated)
+    overlay_cloud.colors = o3d.utility.Vector3dVector(colors)
+    return overlay_cloud
 
 
 # Verde = espesor bajo (dentro de spec / insuficiente), amarillo = medio, rojo = alto.
