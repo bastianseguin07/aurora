@@ -22,7 +22,17 @@ import numpy as np
 
 import aurora_sensor
 from live_viewer import LiveViewer
-from pointcloud_core import PipelineParams, pick_crop_bounds, run_pipeline, visualize, load_point_cloud
+from pointcloud_core import (
+    PipelineParams,
+    apply_rigid_transform,
+    compute_rigid_transform,
+    load_point_cloud,
+    pick_crop_bounds,
+    pick_landmark_points,
+    rigid_transform_rms_error,
+    run_pipeline,
+    visualize,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -76,6 +86,8 @@ class AuroraGUI:
         self.sensor_connection = None
 
         self.result = None
+        self.landmarks_base: np.ndarray | None = None
+        self.landmarks_updated: np.ndarray | None = None
         self.viewer: LiveViewer | None = None
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.worker_thread: threading.Thread | None = None
@@ -196,6 +208,43 @@ class AuroraGUI:
             state="disabled",
         )
         self.save_live_clouds_button.pack(side="left", padx=8)
+
+        align_frame = self._section(parent, "Alineacion por pernos (MVP)", fill="x")
+        ctk.CTkLabel(
+            align_frame,
+            text=(
+                "Elegi 3+ pernos fijos (mismo orden en ambas nubes) para alinear el 'despues' "
+                "contra el 'antes' aunque el sensor no haya quedado en el mismo lugar."
+            ),
+            font=FONT_SMALL,
+            text_color=COLOR_MUTED,
+            wraplength=900,
+            justify="left",
+        ).pack(anchor="w", padx=14, pady=(0, 8))
+
+        row = self._row(align_frame)
+        self.pick_base_landmarks_button = ctk.CTkButton(
+            row, text="1) Elegir pernos en BASE", command=lambda: self._pick_alignment_points("base")
+        )
+        self.pick_base_landmarks_button.pack(side="left")
+        self.base_landmarks_label = ctk.CTkLabel(row, text="(sin puntos)", font=FONT_SMALL, text_color=COLOR_MUTED)
+        self.base_landmarks_label.pack(side="left", padx=8)
+
+        row = self._row(align_frame)
+        self.pick_updated_landmarks_button = ctk.CTkButton(
+            row, text="2) Elegir pernos en ACTUALIZADA", command=lambda: self._pick_alignment_points("updated")
+        )
+        self.pick_updated_landmarks_button.pack(side="left")
+        self.updated_landmarks_label = ctk.CTkLabel(row, text="(sin puntos)", font=FONT_SMALL, text_color=COLOR_MUTED)
+        self.updated_landmarks_label.pack(side="left", padx=8)
+
+        row = self._row(align_frame, pady=(0, 12))
+        self.apply_alignment_button = ctk.CTkButton(
+            row, text="3) Alinear ACTUALIZADA con pernos", command=self._apply_landmark_alignment
+        )
+        self.apply_alignment_button.pack(side="left")
+        self.alignment_result_label = ctk.CTkLabel(row, text="", font=FONT_SMALL, text_color=COLOR_MUTED)
+        self.alignment_result_label.pack(side="left", padx=8)
 
     # -- Tab: Procesamiento ---------------------------------------------------
 
@@ -537,6 +586,98 @@ class AuroraGUI:
         self._apply_viewer_settings()
         self.viewer.set_live_sensor(self.sensor_connection)
         return True
+
+    # ----------------------------------------------------- Alineacion pernos
+
+    def _pick_alignment_points(self, which: str) -> None:
+        cloud_path = Path(self.base_path.get()) if which == "base" else Path(self.updated_path.get())
+        if not cloud_path.exists():
+            messagebox.showerror("Archivo faltante", f"No se encontro la nube:\n{cloud_path}")
+            return
+
+        try:
+            cloud = load_point_cloud(cloud_path)
+            title = (
+                "BASE - Shift+Click en cada perno de referencia (mismo orden), luego Q"
+                if which == "base"
+                else "ACTUALIZADA - Shift+Click en los MISMOS pernos (mismo orden), luego Q"
+            )
+            points = pick_landmark_points(cloud, title)
+        except Exception as exc:
+            messagebox.showerror("Error al elegir pernos", str(exc))
+            return
+
+        if points is None:
+            messagebox.showinfo(
+                "Faltan puntos", "Debes elegir al menos 3 pernos de referencia (Shift+Click), luego cerrar con Q."
+            )
+            return
+
+        if which == "base":
+            self.landmarks_base = points
+            self.base_landmarks_label.configure(text=f"{len(points)} pernos ✓", text_color=COLOR_OK)
+        else:
+            self.landmarks_updated = points
+            self.updated_landmarks_label.configure(text=f"{len(points)} pernos ✓", text_color=COLOR_OK)
+
+    def _apply_landmark_alignment(self) -> None:
+        if self.landmarks_base is None or self.landmarks_updated is None:
+            messagebox.showwarning("Faltan puntos", "Primero elige los pernos en BASE y ACTUALIZADA.")
+            return
+        if len(self.landmarks_base) != len(self.landmarks_updated):
+            messagebox.showwarning(
+                "Cantidad distinta de puntos",
+                f"BASE: {len(self.landmarks_base)} pernos, ACTUALIZADA: {len(self.landmarks_updated)} pernos.\n"
+                "Deben ser la misma cantidad y en el mismo orden.",
+            )
+            return
+
+        try:
+            rotation, translation = compute_rigid_transform(self.landmarks_base, self.landmarks_updated)
+            rms = rigid_transform_rms_error(self.landmarks_base, self.landmarks_updated, rotation, translation)
+        except Exception as exc:
+            messagebox.showerror("Error de alineacion", str(exc))
+            return
+
+        updated_file = Path(self.updated_path.get())
+        if not updated_file.exists():
+            messagebox.showerror("Archivo faltante", f"No se encontro la nube actualizada:\n{updated_file}")
+            return
+
+        self.apply_alignment_button.configure(state="disabled")
+        self.alignment_result_label.configure(text="Aplicando alineacion...", text_color=COLOR_WARN)
+
+        def worker() -> None:
+            try:
+                updated_cloud = load_point_cloud(updated_file)
+                aligned = apply_rigid_transform(updated_cloud, rotation, translation)
+                aligned_path = updated_file.with_name(updated_file.stem + "_alineado_pernos.ply")
+                import open3d as o3d
+
+                o3d.io.write_point_cloud(str(aligned_path), aligned)
+            except Exception as exc:
+                self.root.after(0, lambda exc=exc: self._on_alignment_failed(exc))
+                return
+
+            self.root.after(0, lambda: self._on_alignment_done(aligned_path, rms))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_alignment_done(self, aligned_path: Path, rms: float) -> None:
+        self.apply_alignment_button.configure(state="normal")
+        self.updated_path.set(str(aligned_path))
+        self.updated_source.set("static")
+        self.alignment_result_label.configure(text=f"OK — error residual: {rms * 1000:.2f} mm", text_color=COLOR_OK)
+        self._log(f"Nube alineada guardada en: {aligned_path} (RMS pernos: {rms * 1000:.2f} mm)")
+        messagebox.showinfo(
+            "Alineacion lista",
+            f"Se guardo la nube alineada en:\n{aligned_path}\n\nError residual en pernos: {rms * 1000:.2f} mm.",
+        )
+
+    def _on_alignment_failed(self, exc: Exception) -> None:
+        self.apply_alignment_button.configure(state="normal")
+        self.alignment_result_label.configure(text="Error al alinear", text_color=COLOR_ERROR)
+        messagebox.showerror("Error al aplicar alineacion", str(exc))
 
     # ---------------------------------------------------------------- Crop
 

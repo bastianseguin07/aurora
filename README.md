@@ -257,6 +257,11 @@ real"** (abre/activa la vista live), **"Fijar BASE en vivo (MVP)"** y
 **"Guardar nubes en vivo"** (guarda en una carpeta la nube base de referencia y
 la nube live actual como dos archivos `.ply`).
 
+Tambien en esa primera pestaña se agrego **"Alineacion por pernos (MVP)"**:
+elegis 3+ pernos fijos en la nube BASE y luego los mismos pernos (mismo orden)
+en la ACTUALIZADA; la app calcula la transformacion rigida, guarda
+`*_alineado_pernos.ply` y actualiza la nube ACTUALIZADA para el analisis.
+
 ### Pestaña "Comparacion"
 
 **"Tunel original"** / **"Tunel con shotcrete"** — cada seccion muestra el
