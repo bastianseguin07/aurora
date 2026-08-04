@@ -23,6 +23,7 @@ class LiveViewer:
     def __init__(self, base_cloud: o3d.geometry.PointCloud):
         self._base_cloud_initial = o3d.geometry.PointCloud(base_cloud)
         self._distance_reference_cloud = o3d.geometry.PointCloud(base_cloud)
+        self._using_live_baseline = False
 
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -97,6 +98,7 @@ class LiveViewer:
             baseline.points = o3d.utility.Vector3dVector(self._last_live_points.copy())
             self._distance_reference_cloud = baseline
             self._pending_base_cloud = baseline
+            self._using_live_baseline = True
             return len(self._last_live_points)
 
     def clear_live_baseline(self) -> None:
@@ -104,6 +106,19 @@ class LiveViewer:
             baseline = o3d.geometry.PointCloud(self._base_cloud_initial)
             self._distance_reference_cloud = baseline
             self._pending_base_cloud = baseline
+            self._using_live_baseline = False
+
+    def get_live_snapshot_clouds(self) -> tuple[o3d.geometry.PointCloud | None, o3d.geometry.PointCloud | None, bool]:
+        with self._lock:
+            if self._last_live_points is None or len(self._last_live_points) == 0:
+                return None, None, self._using_live_baseline
+
+            current = o3d.geometry.PointCloud()
+            current.points = o3d.utility.Vector3dVector(self._last_live_points.copy())
+            baseline = o3d.geometry.PointCloud(self._distance_reference_cloud)
+            using_live_baseline = self._using_live_baseline
+
+        return baseline, current, using_live_baseline
 
     def push_static_points(self, points_xyz: np.ndarray) -> None:
         """Entrega una nube 'actualizada' fija (por ejemplo, la cargada desde archivo)."""

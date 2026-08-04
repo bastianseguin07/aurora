@@ -13,6 +13,7 @@ from __future__ import annotations
 import queue
 import threading
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -154,10 +155,17 @@ class AuroraGUI:
         self.sensor_status_label.pack(side="left", padx=8)
 
         row = self._row(sensor_frame, pady=(0, 12))
+        self.start_live_capture_button = ctk.CTkButton(
+            row,
+            text="Iniciar captura en tiempo real",
+            command=self._start_live_capture_clicked,
+            state="disabled",
+        )
+        self.start_live_capture_button.pack(side="left")
         self.capture_base_button = ctk.CTkButton(
             row, text="Capturar nube BASE", command=lambda: self._capture_clicked("base"), state="disabled"
         )
-        self.capture_base_button.pack(side="left")
+        self.capture_base_button.pack(side="left", padx=8)
         self.capture_updated_button = ctk.CTkButton(
             row,
             text="Capturar nube ACTUALIZADA",
@@ -165,6 +173,8 @@ class AuroraGUI:
             state="disabled",
         )
         self.capture_updated_button.pack(side="left", padx=8)
+
+        row = self._row(sensor_frame, pady=(0, 12))
         self.capture_live_baseline_button = ctk.CTkButton(
             row,
             text="Fijar BASE en vivo (MVP)",
@@ -179,6 +189,13 @@ class AuroraGUI:
             state="disabled",
         )
         self.clear_live_baseline_button.pack(side="left", padx=8)
+        self.save_live_clouds_button = ctk.CTkButton(
+            row,
+            text="Guardar nubes en vivo",
+            command=self._save_live_clouds_clicked,
+            state="disabled",
+        )
+        self.save_live_clouds_button.pack(side="left", padx=8)
 
     # -- Tab: Procesamiento ---------------------------------------------------
 
@@ -376,8 +393,10 @@ class AuroraGUI:
         self.sensor_status_label.configure(text="●  Conectado", text_color=COLOR_OK)
         self.capture_base_button.configure(state="normal")
         self.capture_updated_button.configure(state="normal")
+        self.start_live_capture_button.configure(state="normal")
         self.capture_live_baseline_button.configure(state="normal")
         self.clear_live_baseline_button.configure(state="normal")
+        self.save_live_clouds_button.configure(state="normal")
         if self.viewer is not None and self.updated_source.get() == "live":
             self.viewer.set_live_sensor(connection)
             self._apply_viewer_settings()
@@ -400,8 +419,10 @@ class AuroraGUI:
         self.sensor_status_label.configure(text="●  Desconectado", text_color=COLOR_ERROR)
         self.capture_base_button.configure(state="disabled")
         self.capture_updated_button.configure(state="disabled")
+        self.start_live_capture_button.configure(state="disabled")
         self.capture_live_baseline_button.configure(state="disabled")
         self.clear_live_baseline_button.configure(state="disabled")
+        self.save_live_clouds_button.configure(state="disabled")
 
     def _capture_clicked(self, target: str) -> None:
         if self.sensor_connection is None:
@@ -457,16 +478,8 @@ class AuroraGUI:
         if self.sensor_connection is None:
             messagebox.showwarning("Sensor no conectado", "Conecta el sensor antes de fijar la base en vivo.")
             return
-        if self.updated_source.get() != "live":
-            self.updated_source.set("live")
-
-        if self.viewer is None or not self.viewer.is_running():
-            self._open_viewer()
-            if self.viewer is None:
-                return
-
-        self._apply_viewer_settings()
-        self.viewer.set_live_sensor(self.sensor_connection)
+        if not self._ensure_live_capture_running():
+            return
         try:
             count = self.viewer.capture_live_baseline()
         except RuntimeError as exc:
@@ -481,6 +494,49 @@ class AuroraGUI:
             return
         self.viewer.clear_live_baseline()
         self._log("BASE en vivo quitada. Se restauro la nube base original.")
+
+    def _start_live_capture_clicked(self) -> None:
+        if self.sensor_connection is None:
+            messagebox.showwarning("Sensor no conectado", "Conecta el sensor antes de iniciar captura en tiempo real.")
+            return
+        if not self._ensure_live_capture_running():
+            return
+        self._log("Captura en tiempo real activa en la vista 3D.")
+
+    def _save_live_clouds_clicked(self) -> None:
+        if not self._ensure_live_capture_running():
+            return
+
+        baseline_cloud, current_cloud, using_live_baseline = self.viewer.get_live_snapshot_clouds()
+        if baseline_cloud is None or current_cloud is None:
+            messagebox.showinfo("Sin frame disponible", "Aun no hay nube en vivo para guardar.")
+            return
+
+        target_dir = filedialog.askdirectory(title="Seleccionar carpeta para guardar nubes en vivo")
+        if not target_dir:
+            self._log("Guardado de nubes en vivo cancelado.")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        baseline_name = "base_live_fijada" if using_live_baseline else "base_referencia_original"
+        base_path = Path(target_dir) / f"{baseline_name}_{timestamp}.ply"
+        updated_path = Path(target_dir) / f"updated_live_{timestamp}.ply"
+
+        import open3d as o3d
+
+        o3d.io.write_point_cloud(str(base_path), baseline_cloud)
+        o3d.io.write_point_cloud(str(updated_path), current_cloud)
+        self._log(f"Nubes en vivo guardadas en: {base_path} y {updated_path}")
+
+    def _ensure_live_capture_running(self) -> bool:
+        self.updated_source.set("live")
+        if self.viewer is None or not self.viewer.is_running():
+            self._open_viewer()
+            if self.viewer is None:
+                return False
+        self._apply_viewer_settings()
+        self.viewer.set_live_sensor(self.sensor_connection)
+        return True
 
     # ---------------------------------------------------------------- Crop
 

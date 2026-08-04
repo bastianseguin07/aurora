@@ -252,6 +252,11 @@ como referencia "ex-ante" y deja la comparacion en vivo contra esa base en la
 vista 3D (sin necesidad de guardar un `.ply` intermedio). El boton **"Quitar
 BASE en vivo"** vuelve a usar la nube base original cargada en la app.
 
+En la misma pestaña hay un flujo directo de MVP: **"Iniciar captura en tiempo
+real"** (abre/activa la vista live), **"Fijar BASE en vivo (MVP)"** y
+**"Guardar nubes en vivo"** (guarda en una carpeta la nube base de referencia y
+la nube live actual como dos archivos `.ply`).
+
 ### Pestaña "Comparacion"
 
 **"Tunel original"** / **"Tunel con shotcrete"** — cada seccion muestra el
