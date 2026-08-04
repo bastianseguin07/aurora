@@ -67,6 +67,11 @@ class AuroraGUI:
         self.updated_source = tk.StringVar(value="static")  # "static" o "live"
 
         self.sensor_address = tk.StringVar(value="192.168.11.1")
+        self.live_max_distance = tk.StringVar(value="5.0")
+        self.live_cone_angle = tk.StringVar(value="90")
+        self.live_forward_axis = tk.StringVar(value="z")
+        self.live_invert_y = tk.BooleanVar(value=True)
+        self.live_invert_z = tk.BooleanVar(value=True)
         self.sensor_connection = None
 
         self.result = None
@@ -160,6 +165,20 @@ class AuroraGUI:
             state="disabled",
         )
         self.capture_updated_button.pack(side="left", padx=8)
+        self.capture_live_baseline_button = ctk.CTkButton(
+            row,
+            text="Fijar BASE en vivo (MVP)",
+            command=self._capture_live_baseline_clicked,
+            state="disabled",
+        )
+        self.capture_live_baseline_button.pack(side="left", padx=8)
+        self.clear_live_baseline_button = ctk.CTkButton(
+            row,
+            text="Quitar BASE en vivo",
+            command=self._clear_live_baseline_clicked,
+            state="disabled",
+        )
+        self.clear_live_baseline_button.pack(side="left", padx=8)
 
     # -- Tab: Procesamiento ---------------------------------------------------
 
@@ -262,6 +281,19 @@ class AuroraGUI:
         )
         self.close_viewer_button.pack(side="left", padx=8)
 
+        live_frame = self._section(parent, "Ajustes live (MVP)", fill="x")
+        row = self._row(live_frame)
+        ctk.CTkLabel(row, text="Distancia maxima (m):", font=FONT_BODY).pack(side="left")
+        ctk.CTkEntry(row, textvariable=self.live_max_distance, width=80).pack(side="left", padx=(8, 16))
+        ctk.CTkLabel(row, text="Cono (grados):", font=FONT_BODY).pack(side="left")
+        ctk.CTkEntry(row, textvariable=self.live_cone_angle, width=80).pack(side="left", padx=8)
+
+        row = self._row(live_frame, pady=(0, 12))
+        ctk.CTkLabel(row, text="Eje frontal:", font=FONT_BODY).pack(side="left")
+        ctk.CTkOptionMenu(row, values=["x", "y", "z"], variable=self.live_forward_axis).pack(side="left", padx=(8, 16))
+        ctk.CTkCheckBox(row, text="Invertir Y", variable=self.live_invert_y).pack(side="left")
+        ctk.CTkCheckBox(row, text="Invertir Z", variable=self.live_invert_z).pack(side="left", padx=12)
+
     # -- Helpers de layout -----------------------------------------------------
 
     def _section(self, parent, title: str, fill: str = "x", expand: bool = False) -> ctk.CTkFrame:
@@ -344,8 +376,11 @@ class AuroraGUI:
         self.sensor_status_label.configure(text="●  Conectado", text_color=COLOR_OK)
         self.capture_base_button.configure(state="normal")
         self.capture_updated_button.configure(state="normal")
+        self.capture_live_baseline_button.configure(state="normal")
+        self.clear_live_baseline_button.configure(state="normal")
         if self.viewer is not None and self.updated_source.get() == "live":
             self.viewer.set_live_sensor(connection)
+            self._apply_viewer_settings()
         self._log(f"Conectado al sensor Aurora en {self.sensor_address.get()}.")
 
     def _on_sensor_connect_failed(self, exc: Exception) -> None:
@@ -365,6 +400,8 @@ class AuroraGUI:
         self.sensor_status_label.configure(text="●  Desconectado", text_color=COLOR_ERROR)
         self.capture_base_button.configure(state="disabled")
         self.capture_updated_button.configure(state="disabled")
+        self.capture_live_baseline_button.configure(state="disabled")
+        self.clear_live_baseline_button.configure(state="disabled")
 
     def _capture_clicked(self, target: str) -> None:
         if self.sensor_connection is None:
@@ -415,6 +452,35 @@ class AuroraGUI:
         self.capture_base_button.configure(state="normal")
         self.capture_updated_button.configure(state="normal")
         messagebox.showerror("Error de captura", str(exc))
+
+    def _capture_live_baseline_clicked(self) -> None:
+        if self.sensor_connection is None:
+            messagebox.showwarning("Sensor no conectado", "Conecta el sensor antes de fijar la base en vivo.")
+            return
+        if self.updated_source.get() != "live":
+            self.updated_source.set("live")
+
+        if self.viewer is None or not self.viewer.is_running():
+            self._open_viewer()
+            if self.viewer is None:
+                return
+
+        self._apply_viewer_settings()
+        self.viewer.set_live_sensor(self.sensor_connection)
+        try:
+            count = self.viewer.capture_live_baseline()
+        except RuntimeError as exc:
+            messagebox.showinfo("Frame aun no disponible", str(exc))
+            return
+
+        self._log(f"BASE en vivo fijada con {count} puntos. La comparacion continua se actualiza en tiempo real.")
+
+    def _clear_live_baseline_clicked(self) -> None:
+        if self.viewer is None or not self.viewer.is_running():
+            messagebox.showinfo("Vista 3D cerrada", "Abre primero la vista 3D para quitar la base en vivo.")
+            return
+        self.viewer.clear_live_baseline()
+        self._log("BASE en vivo quitada. Se restauro la nube base original.")
 
     # ---------------------------------------------------------------- Crop
 
@@ -551,12 +617,39 @@ class AuroraGUI:
 
         self.viewer.set_color_mode(self.color_mode.get(), low_m, high_m, max_distance)
         self.viewer.set_show_updated(self.show_updated.get())
+        try:
+            live_max_distance, live_cone_angle = self._parse_live_filter_params()
+        except ValueError as exc:
+            self._log(f"Parametros live invalidos: {exc}. Se usan valores por defecto.")
+            live_max_distance, live_cone_angle = None, None
+        self.viewer.set_live_filters(
+            max_distance_m=live_max_distance,
+            cone_angle_deg=live_cone_angle,
+            forward_axis=self.live_forward_axis.get(),
+            invert_y=self.live_invert_y.get(),
+            invert_z=self.live_invert_z.get(),
+        )
 
         if self.updated_source.get() == "live":
             self.viewer.set_live_sensor(self.sensor_connection)
         else:
             self.viewer.set_live_sensor(None)
             self._push_static_result_to_viewer()
+
+    def _parse_live_filter_params(self) -> tuple[float | None, float | None]:
+        max_distance = None
+        if self.live_max_distance.get().strip():
+            max_distance = float(self.live_max_distance.get())
+            if max_distance <= 0:
+                raise ValueError("la distancia maxima debe ser > 0")
+
+        cone_angle = None
+        if self.live_cone_angle.get().strip():
+            cone_angle = float(self.live_cone_angle.get())
+            if cone_angle <= 0 or cone_angle > 180:
+                raise ValueError("el cono debe estar en (0, 180]")
+
+        return max_distance, cone_angle
 
     def _push_static_result_to_viewer(self) -> None:
         if self.viewer is None or self.updated_source.get() != "static":

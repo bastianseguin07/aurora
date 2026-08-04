@@ -247,6 +247,11 @@ tunel con shotcrete"** (toman una foto fija acumulando ~15 frames del sensor
 para reducir ruido). Al guardar, la app cambia sola a "Comparacion" mostrando
 el archivo ya cargado.
 
+Tambien incluye **"Fijar BASE en vivo (MVP)"**: toma el frame actual del sensor
+como referencia "ex-ante" y deja la comparacion en vivo contra esa base en la
+vista 3D (sin necesidad de guardar un `.ply` intermedio). El boton **"Quitar
+BASE en vivo"** vuelve a usar la nube base original cargada en la app.
+
 ### Pestaña "Comparacion"
 
 **"Tunel original"** / **"Tunel con shotcrete"** — cada seccion muestra el
@@ -292,6 +297,10 @@ color (verde/amarillo/rojo segun umbrales en mm). **Vista 3D en pantalla** —
 mostrar/ocultar el resultado, y elegir si la vista es estatica (ultima
 captura/archivo) o en vivo (sensor conectado, redibuja continuamente). Botones
 **"Abrir vista 3D"** / **"Cerrar vista 3D"** (ventana de Open3D aparte).
+
+En **"Ajustes live (MVP)"** se puede afinar la captura en tiempo real con:
+distancia maxima de lectura, angulo de cono (FOV), eje frontal (`x`/`y`/`z`) e
+inversion de ejes `Y`/`Z` para adaptar la orientacion al montaje del sensor.
 
 ### Pestaña "Comparacion (prueba)" — seccion experimental
 
