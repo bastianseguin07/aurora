@@ -141,6 +141,17 @@ class AuroraGUI:
             state="disabled",
         )
         self.view_heatmap_button.pack(side="left", padx=8)
+        self.generate_report_button = ctk.CTkButton(
+            actions_frame,
+            text="Generar Informe",
+            command=self._generate_report,
+            height=38,
+            fg_color="transparent",
+            border_width=1,
+            text_color=("gray10", "gray90"),
+            state="disabled",
+        )
+        self.generate_report_button.pack(side="left", padx=8)
 
         log_section = self._section(self.root, "Resultado", fill="both", expand=True)
         self.log_text = ctk.CTkTextbox(log_section, height=180, font=("Consolas", 11))
@@ -722,6 +733,7 @@ class AuroraGUI:
         self.log_text.delete("1.0", "end")
         self.run_button.configure(state="disabled")
         self.view_heatmap_button.configure(state="disabled")
+        self.generate_report_button.configure(state="disabled")
 
         self.worker_thread = threading.Thread(target=self._run_pipeline_worker, args=(params,), daemon=True)
         self.worker_thread.start()
@@ -756,7 +768,9 @@ class AuroraGUI:
             self.result = run_pipeline(params, log=self._log)
             self._log("\nListo.")
             self.root.after(0, lambda: self.view_heatmap_button.configure(state="normal"))
+            self.root.after(0, lambda: self.generate_report_button.configure(state="normal"))
             self.root.after(0, self._push_static_result_to_viewer)
+            self.root.after(0, self._generate_alerts)
         except Exception as exc:
             self._log(f"\nERROR: {exc}")
             self.root.after(0, lambda exc=exc: messagebox.showerror("Error durante el procesamiento", str(exc)))
@@ -767,6 +781,76 @@ class AuroraGUI:
         if not self.result:
             return
         visualize(self.result.base_cloud, self.result.heatmap_cloud, show_overlay=True)
+
+    def _generate_alerts(self) -> None:
+        if not self.result:
+            return
+        
+        low_mm = float(self.band_low_mm.get() or 20)
+        high_mm = float(self.band_high_mm.get() or 50)
+        stats = self.result.stats
+        mean_mm = stats.mean * 1000
+
+        if mean_mm < low_mm:
+            messagebox.showwarning("Alerta de Espesor (Falta)", f"El espesor medio ({mean_mm:.2f} mm) esta por debajo del umbral minimo ({low_mm} mm).\nFalta aplicar mas shotcrete.")
+        elif mean_mm >= high_mm:
+            messagebox.showwarning("Alerta de Espesor (Exceso)", f"El espesor medio ({mean_mm:.2f} mm) supera el umbral maximo ({high_mm} mm).\nExceso de shotcrete.")
+
+    def _generate_report(self) -> None:
+        if not self.result:
+            return
+        
+        default_dir = Path(self.output_dir.get())
+        default_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = default_dir / f"informe_aurora_{timestamp}.md"
+        
+        stats = self.result.stats
+        low_mm = float(self.band_low_mm.get() or 20)
+        high_mm = float(self.band_high_mm.get() or 50)
+        mean_mm = stats.mean * 1000
+        
+        status = "✅ **DENTRO DE PARÁMETRO**"
+        if mean_mm < low_mm:
+            status = "⚠️ **FALTA SHOTCRETE** (Bajo el umbral)"
+        elif mean_mm >= high_mm:
+            status = "🚨 **EXCESO DE SHOTCRETE** (Sobre el umbral)"
+            
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write("# Informe de Medición de Espesor de Shotcrete\n\n")
+            f.write(f"**Fecha y Hora:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n")
+            f.write(f"**Proyecto:** CORFO Eureka (Aurora)  \n\n")
+            
+            f.write("## 1. Archivos Analizados\n")
+            f.write(f"- **Nube Base (Original):** `{self.base_path.get()}`\n")
+            f.write(f"- **Nube Actualizada (Shotcrete):** `{self.updated_path.get()}`\n\n")
+            
+            f.write("## 2. Alerta y Estado General\n")
+            f.write(f"- **Umbral Bajo (Mínimo):** {low_mm} mm\n")
+            f.write(f"- **Umbral Alto (Máximo):** {high_mm} mm\n")
+            f.write(f"- **Estado de la Medición:** {status}\n\n")
+            
+            f.write("## 3. Estadísticas de Espesor\n")
+            f.write("| Métrica | Valor (mm) |\n")
+            f.write("| :--- | :--- |\n")
+            f.write(f"| Puntos Analizados | {stats.n_points} |\n")
+            f.write(f"| Espesor Medio | **{stats.mean * 1000:.2f}** |\n")
+            f.write(f"| Espesor Mediano | {stats.median * 1000:.2f} |\n")
+            f.write(f"| Desviación Estándar | {stats.std * 1000:.2f} |\n")
+            f.write(f"| Mínimo | {stats.min * 1000:.2f} |\n")
+            f.write(f"| Máximo | {stats.max * 1000:.2f} |\n")
+            f.write(f"| Percentil 95 | {stats.p95 * 1000:.2f} |\n\n")
+            
+            f.write("## 4. Distribución (Histograma)\n")
+            f.write(f"![Histograma]({self.result.histogram_path.name})\n\n")
+            
+            f.write("## 5. Archivos Generados\n")
+            f.write(f"Los siguientes archivos se encuentran en el mismo directorio de este reporte (`{default_dir}`):\n")
+            f.write(f"- 📄 **Detalle por punto:** `{self.result.csv_path.name}`\n")
+            f.write(f"- 📊 **Histograma:** `{self.result.histogram_path.name}`\n")
+            f.write(f"- 🧊 **Nube 3D Heatmap:** `{self.result.heatmap_path.name}`\n")
+            
+        messagebox.showinfo("Informe Generado", f"El informe formal (Markdown) fue guardado exitosamente en:\n{report_path}")
 
     # --------------------------------------------------------------- Viewer
 
