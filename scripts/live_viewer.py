@@ -95,7 +95,7 @@ class LiveViewer:
         vis.add_geometry(base_vis)
 
         opt = vis.get_render_option()
-        opt.background_color = np.asarray([0.08, 0.08, 0.08])
+        opt.background_color = np.asarray([0.059, 0.067, 0.082])  # #0F1115
         opt.point_size = 2.5
 
         updated_vis = o3d.geometry.PointCloud()

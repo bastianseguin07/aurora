@@ -223,6 +223,11 @@ def summarize(distances: np.ndarray) -> DistanceStats:
     )
 
 
+# Extremos de la escala continua de espesor (paleta industrial de alto contraste).
+HEATMAP_COLOR_LOW = (0.0, 0.482, 1.0)  # azul #007AFF
+HEATMAP_COLOR_HIGH = (1.0, 0.231, 0.188)  # rojo #FF3B30
+
+
 def build_heatmap_cloud(
     updated: o3d.geometry.PointCloud,
     distances: np.ndarray,
@@ -230,11 +235,12 @@ def build_heatmap_cloud(
 ) -> o3d.geometry.PointCloud:
     clip_max = max_distance if max_distance else float(np.percentile(distances, 98))
     clip_max = max(clip_max, 1e-9)
-    normalized = np.clip(distances / clip_max, 0.0, 1.0)
+    normalized = np.clip(distances / clip_max, 0.0, 1.0)[:, None]
 
-    colors = np.zeros((normalized.shape[0], 3))
-    colors[:, 0] = normalized
-    colors[:, 2] = 1.0 - normalized
+    # Azul (bajo espesor) -> rojo (alto espesor), paleta "safety" de alto contraste.
+    low_color = np.array(HEATMAP_COLOR_LOW)
+    high_color = np.array(HEATMAP_COLOR_HIGH)
+    colors = low_color * (1 - normalized) + high_color * normalized
 
     heatmap_cloud = o3d.geometry.PointCloud(updated)
     heatmap_cloud.colors = o3d.utility.Vector3dVector(colors)
@@ -267,9 +273,9 @@ def build_subtle_overlay_cloud(
 
 
 # Verde = espesor bajo (dentro de spec / insuficiente), amarillo = medio, rojo = alto.
-BAND_COLOR_LOW = (0.15, 0.75, 0.20)
-BAND_COLOR_MEDIUM = (0.95, 0.75, 0.10)
-BAND_COLOR_HIGH = (0.85, 0.15, 0.15)
+BAND_COLOR_LOW = (0.204, 0.780, 0.349)  # verde #34C759
+BAND_COLOR_MEDIUM = (1.0, 0.8, 0.0)  # amarillo #FFCC00
+BAND_COLOR_HIGH = (1.0, 0.231, 0.188)  # rojo #FF3B30
 
 
 def build_heatmap_cloud_banded(

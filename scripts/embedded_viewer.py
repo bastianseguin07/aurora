@@ -59,7 +59,7 @@ class EmbeddedComparisonViewer(Gtk.DrawingArea):
         self._vis = o3d.visualization.Visualizer()
         self._vis.create_window(width=self._width, height=self._height, visible=False)
         opt = self._vis.get_render_option()
-        opt.background_color = np.array([0.10, 0.10, 0.10])
+        opt.background_color = np.array([0.059, 0.067, 0.082])  # #0F1115
         opt.point_size = 2.5
 
     def load_clouds(
@@ -94,7 +94,7 @@ class EmbeddedComparisonViewer(Gtk.DrawingArea):
     def _on_draw(self, _widget, ctx) -> bool:
         img = self._render_frame()
         if img is None:
-            ctx.set_source_rgb(0.10, 0.10, 0.10)
+            ctx.set_source_rgb(0.059, 0.067, 0.082)  # #0F1115
             ctx.paint()
             return True
 

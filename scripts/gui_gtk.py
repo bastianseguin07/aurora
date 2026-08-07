@@ -45,15 +45,224 @@ from pointcloud_core import (  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-COLOR_OK = "#2fa84f"
-COLOR_ERROR = "#d9534f"
-COLOR_WARN = "#d9a53f"
+# Paleta "Dark Industrial" - estados de sensor/pipeline.
+COLOR_OK = "#34C759"
+COLOR_ERROR = "#FF3B30"
+COLOR_WARN = "#FFCC00"
 
-CSS = b"""
-frame {
-    margin: 4px 2px;
-}
-"""
+# Paleta base del tema.
+COLOR_BG = "#0F1115"
+COLOR_CARD = "#1A1D24"
+COLOR_BORDER = "#2E3440"
+COLOR_ACCENT = "#FF8C00"
+COLOR_ACCENT_DARK = "#CC7000"
+COLOR_TEXT = "#F8F9FA"
+COLOR_TEXT_MUTED = "#8E95A5"
+
+CSS = f"""
+* {{
+    font-family: "Inter", "Roboto", "Segoe UI", sans-serif;
+}}
+
+window, .background {{
+    background-color: {COLOR_BG};
+    color: {COLOR_TEXT};
+}}
+
+headerbar {{
+    background-color: {COLOR_CARD};
+    background-image: none;
+    color: {COLOR_TEXT};
+    border-bottom: 1px solid {COLOR_BORDER};
+    box-shadow: none;
+    padding: 4px 8px;
+}}
+
+headerbar .title {{
+    color: {COLOR_TEXT};
+    font-weight: 700;
+}}
+
+headerbar .subtitle {{
+    color: {COLOR_TEXT_MUTED};
+}}
+
+stacksidebar {{
+    background-color: {COLOR_CARD};
+    border-right: 1px solid {COLOR_BORDER};
+    font-size: 1.02em;
+}}
+
+stacksidebar row {{
+    padding: 10px 6px;
+    min-height: 30px;
+    color: {COLOR_TEXT_MUTED};
+}}
+
+stacksidebar row:selected {{
+    background-color: rgba(255, 140, 0, 0.16);
+    border-left: 3px solid {COLOR_ACCENT};
+    color: {COLOR_TEXT};
+    font-weight: 600;
+}}
+
+stacksidebar row:hover {{
+    background-color: rgba(255, 255, 255, 0.04);
+}}
+
+frame {{
+    margin: 6px 2px;
+    background-color: {COLOR_CARD};
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 6px;
+}}
+
+frame > label {{
+    color: {COLOR_TEXT};
+}}
+
+frame > border {{
+    border: none;
+}}
+
+label {{
+    color: {COLOR_TEXT};
+}}
+
+label.dim-label {{
+    color: {COLOR_TEXT_MUTED};
+    opacity: 1;
+}}
+
+button {{
+    background-color: #22252D;
+    background-image: none;
+    color: {COLOR_TEXT};
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 4px;
+    padding: 10px 16px;
+    min-height: 28px;
+    transition: background-color 100ms ease;
+}}
+
+button:hover {{
+    background-color: #2A2E38;
+    border-color: {COLOR_ACCENT};
+}}
+
+button:active, button:checked {{
+    background-color: #171920;
+}}
+
+button:disabled {{
+    color: {COLOR_TEXT_MUTED};
+    border-color: {COLOR_BORDER};
+    background-color: #1A1D24;
+}}
+
+button.suggested-action {{
+    background-color: {COLOR_ACCENT};
+    background-image: none;
+    color: #0F1115;
+    border: 1px solid {COLOR_ACCENT};
+    font-weight: 700;
+}}
+
+button.suggested-action:hover {{
+    background-color: #FFA033;
+}}
+
+button.suggested-action:active {{
+    background-color: {COLOR_ACCENT_DARK};
+}}
+
+entry {{
+    background-color: #14161B;
+    background-image: none;
+    color: {COLOR_TEXT};
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 4px;
+    padding: 8px 10px;
+    min-height: 24px;
+    font-family: "Consolas", "DejaVu Sans Mono", monospace;
+}}
+
+entry:focus {{
+    border-color: {COLOR_ACCENT};
+}}
+
+checkbutton, radiobutton {{
+    color: {COLOR_TEXT};
+    min-height: 30px;
+}}
+
+checkbutton check, radiobutton radio {{
+    min-width: 20px;
+    min-height: 20px;
+    border: 1px solid {COLOR_BORDER};
+    background-color: #14161B;
+}}
+
+checkbutton check:checked, radiobutton radio:checked {{
+    background-color: {COLOR_ACCENT};
+    border-color: {COLOR_ACCENT};
+}}
+
+expander title {{
+    color: {COLOR_TEXT};
+    font-weight: 600;
+}}
+
+textview, textview text {{
+    background-color: #0B0C0F;
+    color: {COLOR_TEXT};
+    font-family: "Consolas", "DejaVu Sans Mono", monospace;
+}}
+
+scrolledwindow, viewport {{
+    background-color: {COLOR_BG};
+}}
+
+menubutton, menubutton button {{
+    background-color: transparent;
+    border: none;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 4px;
+}}
+
+menubutton:hover {{
+    background-color: rgba(255, 255, 255, 0.06);
+}}
+
+popover {{
+    background-color: {COLOR_CARD};
+    border: 1px solid {COLOR_BORDER};
+    color: {COLOR_TEXT};
+}}
+
+popover contents {{
+    background-color: {COLOR_CARD};
+    color: {COLOR_TEXT};
+}}
+
+.kpi-card {{
+    background-color: #14161B;
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 6px;
+    padding: 12px 18px;
+    min-width: 120px;
+}}
+
+.kpi-value {{
+    font-family: "Consolas", "DejaVu Sans Mono", monospace;
+}}
+
+.status-bar {{
+    background-color: #14161B;
+    border-top: 1px solid {COLOR_BORDER};
+}}
+""".encode("utf-8")
 
 
 class AuroraGUI:
@@ -118,6 +327,7 @@ class AuroraGUI:
         self.stack.add_titled(self._build_embedded_test_page(), "prueba_embebida", "Comparacion (prueba)")
 
         result_frame, result_box = self._section("Resultado")
+        result_frame.get_style_context().add_class("status-bar")
 
         status_row = self._row(result_box)
         self.status_spinner = Gtk.Spinner()
@@ -731,18 +941,23 @@ class AuroraGUI:
         return row
 
     def _stat_card(self, title: str) -> tuple[Gtk.Widget, Gtk.Label]:
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         box.set_halign(Gtk.Align.CENTER)
-        title_label = Gtk.Label(label=title)
+        box.get_style_context().add_class("kpi-card")
+        title_label = Gtk.Label(label=title.upper())
         title_label.get_style_context().add_class("dim-label")
         box.pack_start(title_label, False, False, 0)
         value_label = Gtk.Label()
-        value_label.set_markup("<span size='x-large' weight='bold'>—</span>")
+        value_label.get_style_context().add_class("kpi-value")
+        value_label.set_markup(f"<span size='xx-large' weight='bold' foreground='{COLOR_ACCENT}'>—</span>")
         box.pack_start(value_label, False, False, 0)
         return box, value_label
 
     def _set_stat(self, label: Gtk.Label, text: str) -> None:
-        label.set_markup(f"<span size='x-large' weight='bold'>{GLib.markup_escape_text(text)}</span>")
+        label.set_markup(
+            f"<span size='xx-large' weight='bold' foreground='{COLOR_ACCENT}'>"
+            f"{GLib.markup_escape_text(text)}</span>"
+        )
 
     def _info_button(self, text: str) -> Gtk.MenuButton:
         button = Gtk.MenuButton()
@@ -1187,6 +1402,10 @@ class AuroraGUI:
 
 
 def main() -> None:
+    settings = Gtk.Settings.get_default()
+    if settings is not None:
+        settings.set_property("gtk-application-prefer-dark-theme", True)
+
     style_provider = Gtk.CssProvider()
     style_provider.load_from_data(CSS)
     Gtk.StyleContext.add_provider_for_screen(
