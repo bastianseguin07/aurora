@@ -303,6 +303,15 @@ class AuroraGUI:
         self.run_button.connect("clicked", lambda _b: self._run_pipeline_clicked())
         header_bar.pack_start(self.run_button)
 
+        self.generate_report_button = Gtk.Button(label="Generar informe")
+        self.generate_report_button.set_tooltip_text(
+            "Exporta un informe en Markdown con las estadisticas y el estado (dentro/fuera de "
+            "los umbrales configurados en Visualizacion 3D)."
+        )
+        self.generate_report_button.set_sensitive(False)
+        self.generate_report_button.connect("clicked", lambda _b: self._generate_report())
+        header_bar.pack_start(self.generate_report_button)
+
         root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.window.add(root_box)
 
@@ -416,6 +425,35 @@ class AuroraGUI:
             self._info_button(
                 "Con el sensor conectado, toma una foto fija del tunel y la guarda "
                 "automaticamente como la nube 'original' o 'con shotcrete' segun el boton elegido."
+            ),
+            False,
+            False,
+            0,
+        )
+
+        row = self._row(sensor_box)
+        self.start_live_capture_button = Gtk.Button(label="Iniciar captura en tiempo real")
+        self.start_live_capture_button.set_sensitive(False)
+        self.start_live_capture_button.connect("clicked", lambda _b: self._start_live_capture_clicked())
+        row.pack_start(self.start_live_capture_button, False, False, 0)
+        self.capture_live_baseline_button = Gtk.Button(label="Fijar BASE en vivo (MVP)")
+        self.capture_live_baseline_button.set_sensitive(False)
+        self.capture_live_baseline_button.connect("clicked", lambda _b: self._capture_live_baseline_clicked())
+        row.pack_start(self.capture_live_baseline_button, False, False, 0)
+        self.clear_live_baseline_button = Gtk.Button(label="Quitar BASE en vivo")
+        self.clear_live_baseline_button.set_sensitive(False)
+        self.clear_live_baseline_button.connect("clicked", lambda _b: self._clear_live_baseline_clicked())
+        row.pack_start(self.clear_live_baseline_button, False, False, 0)
+        self.save_live_clouds_button = Gtk.Button(label="Guardar nubes en vivo")
+        self.save_live_clouds_button.set_sensitive(False)
+        self.save_live_clouds_button.connect("clicked", lambda _b: self._save_live_clouds_clicked())
+        row.pack_start(self.save_live_clouds_button, False, False, 0)
+        row.pack_start(
+            self._info_button(
+                "'Iniciar captura en tiempo real' abre la vista 3D mostrando lo que el sensor "
+                "ve ahora. 'Fijar BASE en vivo' usa ese frame como referencia para medir espesor "
+                "en vivo, sin necesidad de guardar un archivo antes. 'Guardar nubes en vivo' "
+                "vuelca a disco la base de referencia y el frame actual como dos .ply."
             ),
             False,
             False,
@@ -836,6 +874,43 @@ class AuroraGUI:
         row.pack_start(self.close_viewer_button, False, False, 0)
 
         page.pack_start(view_frame, False, True, 0)
+
+        live_frame, live_box = self._section("Ajustes de captura en vivo (MVP)")
+        row = self._row(live_box)
+        row.pack_start(Gtk.Label(label="Distancia maxima (m):"), False, False, 0)
+        self.live_max_distance_entry = Gtk.Entry()
+        self.live_max_distance_entry.set_text("5.0")
+        self.live_max_distance_entry.set_width_chars(8)
+        row.pack_start(self.live_max_distance_entry, False, False, 0)
+        row.pack_start(Gtk.Label(label="Cono (grados):"), False, False, 0)
+        self.live_cone_angle_entry = Gtk.Entry()
+        self.live_cone_angle_entry.set_text("90")
+        self.live_cone_angle_entry.set_width_chars(8)
+        row.pack_start(self.live_cone_angle_entry, False, False, 0)
+        row.pack_start(
+            self._info_button(
+                "Filtran los puntos leidos del sensor en cada frame en vivo: descartan lo que "
+                "esta mas lejos de la distancia maxima, o fuera del cono (campo de vision) "
+                "indicado, centrado en el eje frontal."
+            ),
+            False,
+            False,
+            0,
+        )
+
+        row = self._row(live_box)
+        row.pack_start(Gtk.Label(label="Eje frontal:"), False, False, 0)
+        self.live_forward_axis_combo = Gtk.ComboBoxText()
+        for axis in ("x", "y", "z"):
+            self.live_forward_axis_combo.append_text(axis)
+        self.live_forward_axis_combo.set_active(2)  # "z"
+        row.pack_start(self.live_forward_axis_combo, False, False, 0)
+        self.live_invert_y_check = Gtk.CheckButton(label="Invertir Y")
+        row.pack_start(self.live_invert_y_check, False, False, 0)
+        self.live_invert_z_check = Gtk.CheckButton(label="Invertir Z")
+        row.pack_start(self.live_invert_z_check, False, False, 0)
+
+        page.pack_start(live_frame, False, True, 0)
         return self._scrolled(page)
 
     # -- Pagina: Comparacion (prueba / experimental) ----------------------------
@@ -1124,8 +1199,13 @@ class AuroraGUI:
         self.sensor_status_label.set_markup(f'<span foreground="{COLOR_OK}">●</span>  Conectado')
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
+        self.start_live_capture_button.set_sensitive(True)
+        self.capture_live_baseline_button.set_sensitive(True)
+        self.clear_live_baseline_button.set_sensitive(True)
+        self.save_live_clouds_button.set_sensitive(True)
         if self.viewer is not None and self.source_live_rb.get_active():
             self.viewer.set_live_sensor(connection)
+            self._apply_viewer_settings()
         self._log(f"Conectado al sensor Aurora en {self.sensor_address_entry.get_text()}.")
 
     def _on_sensor_connect_failed(self, exc: Exception) -> None:
@@ -1145,6 +1225,10 @@ class AuroraGUI:
         self.sensor_status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  Desconectado')
         self.capture_base_button.set_sensitive(False)
         self.capture_updated_button.set_sensitive(False)
+        self.start_live_capture_button.set_sensitive(False)
+        self.capture_live_baseline_button.set_sensitive(False)
+        self.clear_live_baseline_button.set_sensitive(False)
+        self.save_live_clouds_button.set_sensitive(False)
 
     def _capture_clicked(self, target: str) -> None:
         if self.sensor_connection is None:
@@ -1192,6 +1276,83 @@ class AuroraGUI:
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
         self._show_error("Error de captura", str(exc))
+
+    # ------------------------------------------------------- Captura en vivo (MVP)
+
+    def _ensure_live_capture_running(self) -> bool:
+        self.source_live_rb.set_active(True)
+        if self.viewer is None or not self.viewer.is_running():
+            self._open_viewer()
+            if self.viewer is None:
+                return False
+        self._apply_viewer_settings()
+        self.viewer.set_live_sensor(self.sensor_connection)
+        return True
+
+    def _start_live_capture_clicked(self) -> None:
+        if self.sensor_connection is None:
+            self._show_warning("Sensor no conectado", "Conecta el sensor antes de iniciar captura en tiempo real.")
+            return
+        if not self._ensure_live_capture_running():
+            return
+        self.stack.set_visible_child_name("visualizacion")
+        self._log("Captura en tiempo real activa en la vista 3D.")
+
+    def _capture_live_baseline_clicked(self) -> None:
+        if self.sensor_connection is None:
+            self._show_warning("Sensor no conectado", "Conecta el sensor antes de fijar la base en vivo.")
+            return
+        if not self._ensure_live_capture_running():
+            return
+        try:
+            count = self.viewer.capture_live_baseline()
+        except RuntimeError as exc:
+            self._show_info("Frame aun no disponible", str(exc))
+            return
+        self._log(f"BASE en vivo fijada con {count} puntos. La comparacion continua se actualiza en tiempo real.")
+
+    def _clear_live_baseline_clicked(self) -> None:
+        if self.viewer is None or not self.viewer.is_running():
+            self._show_info("Vista 3D cerrada", "Abre primero la vista 3D para quitar la base en vivo.")
+            return
+        self.viewer.clear_live_baseline()
+        self._log("BASE en vivo quitada. Se restauro la nube base original.")
+
+    def _save_live_clouds_clicked(self) -> None:
+        if not self._ensure_live_capture_running():
+            return
+
+        baseline_cloud, current_cloud, using_live_baseline = self.viewer.get_live_snapshot_clouds()
+        if baseline_cloud is None or current_cloud is None:
+            self._show_info("Sin frame disponible", "Aun no hay nube en vivo para guardar.")
+            return
+
+        dialog = Gtk.FileChooserDialog(
+            title="Seleccionar carpeta para guardar nubes en vivo",
+            parent=self.window,
+            action=Gtk.FileChooserAction.SELECT_FOLDER,
+        )
+        dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Seleccionar", Gtk.ResponseType.OK)
+        target_dir = None
+        if dialog.run() == Gtk.ResponseType.OK:
+            target_dir = dialog.get_filename()
+        dialog.destroy()
+        if not target_dir:
+            self._log("Guardado de nubes en vivo cancelado.")
+            return
+
+        import datetime
+
+        import open3d as o3d
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        baseline_name = "base_live_fijada" if using_live_baseline else "base_referencia_original"
+        base_path = Path(target_dir) / f"{baseline_name}_{timestamp}.ply"
+        updated_path = Path(target_dir) / f"updated_live_{timestamp}.ply"
+
+        o3d.io.write_point_cloud(str(base_path), baseline_cloud)
+        o3d.io.write_point_cloud(str(updated_path), current_cloud)
+        self._log(f"Nubes en vivo guardadas en: {base_path} y {updated_path}")
 
     # ---------------------------------------------------------------- Crop
 
@@ -1298,9 +1459,92 @@ class AuroraGUI:
             f'<span foreground="{COLOR_OK}">●</span>  Analisis completo — '
             f"espesor promedio {stats.mean * 1000:.1f} mm"
         )
+        self.generate_report_button.set_sensitive(True)
+        self._generate_alerts()
 
     def _on_pipeline_failure(self, message: str) -> None:
         self.status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  El analisis fallo')
+
+    # ------------------------------------------------------- Alertas e informe
+
+    def _generate_alerts(self) -> None:
+        if not self.result:
+            return
+        low_mm = float(self.band_low_entry.get_text() or 20)
+        high_mm = float(self.band_high_entry.get_text() or 50)
+        mean_mm = self.result.stats.mean * 1000
+
+        if mean_mm < low_mm:
+            self._show_warning(
+                "Alerta de espesor (falta)",
+                f"El espesor medio ({mean_mm:.2f} mm) esta por debajo del umbral minimo ({low_mm} mm).\n"
+                "Falta aplicar mas shotcrete.",
+            )
+        elif mean_mm >= high_mm:
+            self._show_warning(
+                "Alerta de espesor (exceso)",
+                f"El espesor medio ({mean_mm:.2f} mm) supera el umbral maximo ({high_mm} mm).\n"
+                "Exceso de shotcrete.",
+            )
+
+    def _generate_report(self) -> None:
+        if not self.result:
+            return
+
+        import datetime
+
+        default_dir = Path(self.output_dir)
+        default_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = default_dir / f"informe_aurora_{timestamp}.md"
+
+        stats = self.result.stats
+        low_mm = float(self.band_low_entry.get_text() or 20)
+        high_mm = float(self.band_high_entry.get_text() or 50)
+        mean_mm = stats.mean * 1000
+
+        status = "✅ **DENTRO DE PARAMETRO**"
+        if mean_mm < low_mm:
+            status = "⚠️ **FALTA SHOTCRETE** (bajo el umbral)"
+        elif mean_mm >= high_mm:
+            status = "🚨 **EXCESO DE SHOTCRETE** (sobre el umbral)"
+
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write("# Informe de Medicion de Espesor de Shotcrete\n\n")
+            f.write(f"**Fecha y hora:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n")
+            f.write("**Proyecto:** CORFO Eureka (Aurora)  \n\n")
+
+            f.write("## 1. Archivos analizados\n")
+            f.write(f"- **Nube base (original):** `{self.base_path}`\n")
+            f.write(f"- **Nube actualizada (shotcrete):** `{self.updated_path}`\n\n")
+
+            f.write("## 2. Alerta y estado general\n")
+            f.write(f"- **Umbral bajo (minimo):** {low_mm} mm\n")
+            f.write(f"- **Umbral alto (maximo):** {high_mm} mm\n")
+            f.write(f"- **Estado de la medicion:** {status}\n\n")
+
+            f.write("## 3. Estadisticas de espesor\n")
+            f.write("| Metrica | Valor (mm) |\n")
+            f.write("| :--- | :--- |\n")
+            f.write(f"| Puntos analizados | {stats.n_points} |\n")
+            f.write(f"| Espesor medio | **{stats.mean * 1000:.2f}** |\n")
+            f.write(f"| Espesor mediano | {stats.median * 1000:.2f} |\n")
+            f.write(f"| Desviacion estandar | {stats.std * 1000:.2f} |\n")
+            f.write(f"| Minimo | {stats.min * 1000:.2f} |\n")
+            f.write(f"| Maximo | {stats.max * 1000:.2f} |\n")
+            f.write(f"| Percentil 95 | {stats.p95 * 1000:.2f} |\n\n")
+
+            f.write("## 4. Distribucion (histograma)\n")
+            f.write(f"![Histograma]({self.result.histogram_path.name})\n\n")
+
+            f.write("## 5. Archivos generados\n")
+            f.write(f"Los siguientes archivos se encuentran en el mismo directorio de este reporte (`{default_dir}`):\n")
+            f.write(f"- 📄 **Detalle por punto:** `{self.result.csv_path.name}`\n")
+            f.write(f"- 📊 **Histograma:** `{self.result.histogram_path.name}`\n")
+            f.write(f"- 🧊 **Nube 3D heatmap:** `{self.result.heatmap_path.name}`\n")
+
+        self._log(f"Informe generado: {report_path}")
+        self._show_info("Informe generado", f"El informe (Markdown) fue guardado en:\n{report_path}")
 
     # --------------------------------------------------------------- Viewer
 
@@ -1308,6 +1552,23 @@ class AuroraGUI:
         low_mm = float(self.band_low_entry.get_text() or 20)
         high_mm = float(self.band_high_entry.get_text() or 50)
         return low_mm / 1000.0, high_mm / 1000.0
+
+    def _parse_live_filter_params(self) -> tuple[float | None, float | None]:
+        max_distance = None
+        text = self.live_max_distance_entry.get_text().strip()
+        if text:
+            max_distance = float(text)
+            if max_distance <= 0:
+                raise ValueError("la distancia maxima debe ser > 0")
+
+        cone_angle = None
+        text = self.live_cone_angle_entry.get_text().strip()
+        if text:
+            cone_angle = float(text)
+            if cone_angle <= 0 or cone_angle > 180:
+                raise ValueError("el cono debe estar en (0, 180]")
+
+        return max_distance, cone_angle
 
     def _show_result_in_viewer(self) -> None:
         self.stack.set_visible_child_name("visualizacion")
@@ -1361,6 +1622,19 @@ class AuroraGUI:
         color_mode = "banded" if self.color_banded_rb.get_active() else "continuous"
         self.viewer.set_color_mode(color_mode, low_m, high_m, max_distance)
         self.viewer.set_show_updated(self.show_updated_check.get_active())
+
+        try:
+            live_max_distance, live_cone_angle = self._parse_live_filter_params()
+        except ValueError as exc:
+            self._log(f"Parametros de captura en vivo invalidos: {exc}. Se usan valores por defecto.")
+            live_max_distance, live_cone_angle = None, None
+        self.viewer.set_live_filters(
+            max_distance_m=live_max_distance,
+            cone_angle_deg=live_cone_angle,
+            forward_axis=self.live_forward_axis_combo.get_active_text() or "z",
+            invert_y=self.live_invert_y_check.get_active(),
+            invert_z=self.live_invert_z_check.get_active(),
+        )
 
         if self.source_live_rb.get_active():
             self.viewer.set_live_sensor(self.sensor_connection)

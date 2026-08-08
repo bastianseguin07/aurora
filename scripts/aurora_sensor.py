@@ -90,12 +90,21 @@ def disconnect(connection: AuroraConnection) -> None:
 
 
 def read_frame_points(
-    connection: AuroraConnection, max_points: int = 50000, timeout_ms: int = 200
+    connection: AuroraConnection,
+    max_points: int = 50000,
+    timeout_ms: int = 200,
+    max_distance_m: float | None = None,
+    cone_angle_deg: float | None = None,
+    forward_axis: str = "z",
 ) -> np.ndarray | None:
     """
     Espera y devuelve un frame de puntos 3D (Nx3) del sensor, filtrando puntos
-    invalidos (ceros, NaN/inf, fuera del rango 0.1m-50m). Devuelve None si no
-    hubo un frame disponible dentro del timeout.
+    invalidos (ceros, NaN/inf, fuera del rango 0.1m-max_distance_m). Devuelve
+    None si no hubo un frame disponible dentro del timeout.
+
+    'cone_angle_deg' (opcional) descarta puntos fuera de un cono de ese
+    angulo total, centrado en 'forward_axis' (x/y/z) — util para ignorar
+    reflejos o superficies fuera del area de interes frente al sensor.
     """
     _, _, DEPTHCAM_FRAME_TYPE_POINT3D, _ = _import_sdk()
     sdk = connection.sdk
@@ -114,7 +123,21 @@ def read_frame_points(
     valid = ~np.all(points == 0, axis=1)
     valid &= np.all(np.isfinite(points), axis=1)
     distance = np.linalg.norm(points, axis=1)
-    valid &= (distance > 0.1) & (distance < 50.0)
+    max_range = max_distance_m if (max_distance_m is not None and max_distance_m > 0) else 50.0
+    valid &= (distance > 0.1) & (distance < max_range)
+
+    if cone_angle_deg is not None:
+        if cone_angle_deg <= 0 or cone_angle_deg > 180:
+            raise ValueError("El angulo de cono debe estar en el rango (0, 180].")
+        axis_map = {"x": 0, "y": 1, "z": 2}
+        axis_idx = axis_map.get(forward_axis.lower())
+        if axis_idx is None:
+            raise ValueError("El eje frontal debe ser x, y o z.")
+        safe_distance = np.where(distance == 0, 1e-8, distance)
+        cos_theta = np.clip(points[:, axis_idx] / safe_distance, -1.0, 1.0)
+        angle_deg = np.degrees(np.arccos(cos_theta))
+        valid &= angle_deg <= (cone_angle_deg / 2.0)
+
     points = points[valid]
 
     if len(points) == 0:

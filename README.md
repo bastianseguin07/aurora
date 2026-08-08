@@ -236,7 +236,9 @@ que necesitan explicacion tienen un icono ⓘ al lado (`gui_gtk.py`).
 pestaña "Comparacion" (o los capturas primero en "Captura"), presionas
 **"Calcular espesor"**, y la app corre el analisis, muestra los resultados
 como tarjetas con los numeros principales, cambia sola a la pestaña
-"Visualizacion 3D" y abre la vista 3D coloreada por espesor.
+"Visualizacion 3D" y abre la vista 3D coloreada por espesor. El boton
+**"Generar informe"** (arriba, junto a "Calcular espesor") exporta un reporte
+en Markdown con las estadisticas y el estado (dentro/fuera de los umbrales).
 
 ### Pestaña "Captura"
 
@@ -246,6 +248,18 @@ verde/rojo/amarillo), y botones **"Capturar tunel original"** / **"Capturar
 tunel con shotcrete"** (toman una foto fija acumulando ~15 frames del sensor
 para reducir ruido). Al guardar, la app cambia sola a "Comparacion" mostrando
 el archivo ya cargado.
+
+**Captura en tiempo real (MVP)** — en la misma pestaña:
+
+- **"Iniciar captura en tiempo real"** — abre la vista 3D mostrando en vivo lo
+  que el sensor esta viendo en este momento.
+- **"Fijar BASE en vivo"** — usa el frame actual del sensor como referencia
+  para medir espesor en vivo, sin necesidad de guardar un `.ply` antes (util
+  para monitoreo continuo: apuntas el sensor, fijas la base, y segui viendo
+  el espesor actualizarse en tiempo real a medida que aplicas shotcrete).
+  **"Quitar BASE en vivo"** vuelve a usar la nube base original cargada.
+- **"Guardar nubes en vivo"** — vuelca a disco, como dos `.ply`, la base de
+  referencia actual y el frame en vivo mas reciente.
 
 ### Pestaña "Comparacion"
 
@@ -288,10 +302,27 @@ manuales de zona, y carpeta de resultados.
 ### Pestaña "Visualizacion 3D"
 
 **Color del espesor** — escala continua (degrade azul→rojo) o 3 niveles de
-color (verde/amarillo/rojo segun umbrales en mm). **Vista 3D en pantalla** —
-mostrar/ocultar el resultado, y elegir si la vista es estatica (ultima
-captura/archivo) o en vivo (sensor conectado, redibuja continuamente). Botones
-**"Abrir vista 3D"** / **"Cerrar vista 3D"** (ventana de Open3D aparte).
+color (verde/amarillo/rojo segun umbrales en mm, los mismos que se usan para
+la alerta y el informe). **Vista 3D en pantalla** — mostrar/ocultar el
+resultado, y elegir si la vista es estatica (ultima captura/archivo) o en
+vivo (sensor conectado, redibuja continuamente). Botones **"Abrir vista 3D"**
+/ **"Cerrar vista 3D"** (ventana de Open3D aparte).
+
+**Ajustes de captura en vivo (MVP)** — distancia maxima de lectura (m),
+angulo de cono/FOV (grados) centrado en un eje frontal (`x`/`y`/`z`), e
+inversion de ejes `Y`/`Z` para adaptar la orientacion al montaje fisico del
+sensor. Se aplican tanto a la vista en vivo como a "Fijar BASE en vivo".
+
+### Alertas e informe (RF5/RF6)
+
+Al terminar un analisis ("Calcular espesor"), si el espesor medio queda por
+debajo del umbral bajo o por encima del umbral alto (configurados en "Color
+del espesor" → 3 niveles), aparece una alerta indicando falta o exceso de
+shotcrete. El boton **"Generar informe"** (en la barra superior, se habilita
+despues de un analisis exitoso) exporta un reporte en Markdown a la carpeta
+de resultados, con fecha, archivos analizados, estado (dentro de
+parametro/falta/exceso), tabla de estadisticas, y referencias al histograma,
+CSV y heatmap generados.
 
 ### Pestaña "Comparacion (prueba)" — seccion experimental
 
