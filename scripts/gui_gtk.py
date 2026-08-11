@@ -41,6 +41,7 @@ from pointcloud_core import (  # noqa: E402
     pick_landmark_points,
     rigid_transform_rms_error,
     run_pipeline,
+    show_point_cloud,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -277,6 +278,9 @@ class AuroraGUI:
         self.output_dir = str(PROJECT_ROOT / "output")
 
         self.sensor_connection = None
+        self.capture_stop_event: threading.Event | None = None
+        self.last_base_capture_path: str | None = None
+        self.last_updated_capture_path: str | None = None
         self.result = None
         self.alignment_applied = False
         self.viewer: LiveViewer | None = None
@@ -422,10 +426,98 @@ class AuroraGUI:
         self.capture_updated_button.set_sensitive(False)
         self.capture_updated_button.connect("clicked", lambda _b: self._capture_clicked("updated"))
         row.pack_start(self.capture_updated_button, False, False, 0)
+        self.stop_capture_button = Gtk.Button(label="Detener captura")
+        self.stop_capture_button.set_sensitive(False)
+        self.stop_capture_button.connect("clicked", lambda _b: self._stop_capture_clicked())
+        row.pack_start(self.stop_capture_button, False, False, 0)
         row.pack_start(
             self._info_button(
-                "Con el sensor conectado, toma una foto fija del tunel y la guarda "
-                "automaticamente como la nube 'original' o 'con shotcrete' segun el boton elegido."
+                "Con el sensor conectado, acumula frames del tunel durante la duracion "
+                "configurada abajo y guarda el resultado automaticamente como la nube "
+                "'original' o 'con shotcrete' segun el boton elegido."
+            ),
+            False,
+            False,
+            0,
+        )
+
+        row = self._row(sensor_box)
+        self.view_base_capture_button = Gtk.Button(label="Ver ultima captura: tunel original")
+        self.view_base_capture_button.set_sensitive(False)
+        self.view_base_capture_button.connect("clicked", lambda _b: self._view_last_capture("base"))
+        row.pack_start(self.view_base_capture_button, False, False, 0)
+        self.view_updated_capture_button = Gtk.Button(label="Ver ultima captura: tunel con shotcrete")
+        self.view_updated_capture_button.set_sensitive(False)
+        self.view_updated_capture_button.connect("clicked", lambda _b: self._view_last_capture("updated"))
+        row.pack_start(self.view_updated_capture_button, False, False, 0)
+        row.pack_start(
+            self._info_button(
+                "Abre en una ventana 3D la ultima captura guardada de cada tunel, para "
+                "verificar que se capturo lo esperado antes de seguir con el analisis."
+            ),
+            False,
+            False,
+            0,
+        )
+
+        row = self._row(sensor_box)
+        self.capture_status_label = Gtk.Label(xalign=0)
+        row.pack_start(self.capture_status_label, False, False, 0)
+
+        row = self._row(sensor_box)
+        row.pack_start(Gtk.Label(label="Duracion de la captura (s):"), False, False, 0)
+        self.capture_duration_entry = Gtk.Entry()
+        self.capture_duration_entry.set_text("15")
+        self.capture_duration_entry.set_width_chars(6)
+        row.pack_start(self.capture_duration_entry, False, False, 0)
+        row.pack_start(Gtk.Label(label="Persistencia minima de puntos (0-1):"), False, False, 0)
+        self.capture_persistence_entry = Gtk.Entry()
+        self.capture_persistence_entry.set_text("0.6")
+        self.capture_persistence_entry.set_width_chars(6)
+        row.pack_start(self.capture_persistence_entry, False, False, 0)
+        row.pack_start(
+            self._info_button(
+                "Duracion: cuanto tiempo se acumulan frames del sensor para armar la "
+                "captura (por defecto 15 s).\n\n"
+                "Persistencia minima: fraccion de esos frames en la que un punto debe "
+                "aparecer (en la misma zona) para conservarse. Un valor mas alto (por "
+                "ejemplo 0.6-0.8) descarta mejor el polvo en el aire u otro ruido "
+                "transitorio, ya que esas particulas no aparecen siempre en el mismo "
+                "lugar entre un frame y otro. Un valor muy alto puede descartar tambien "
+                "puntos reales si el sensor tiembla."
+            ),
+            False,
+            False,
+            0,
+        )
+
+        row = self._row(sensor_box)
+        self.capture_limit_fov_check = Gtk.CheckButton(label="Limitar campo de vision")
+        row.pack_start(self.capture_limit_fov_check, False, False, 0)
+        row.pack_start(Gtk.Label(label="Cono (grados):"), False, False, 0)
+        self.capture_cone_angle_entry = Gtk.Entry()
+        self.capture_cone_angle_entry.set_text("90")
+        self.capture_cone_angle_entry.set_width_chars(6)
+        row.pack_start(self.capture_cone_angle_entry, False, False, 0)
+        row.pack_start(Gtk.Label(label="Eje frontal:"), False, False, 0)
+        self.capture_forward_axis_combo = Gtk.ComboBoxText()
+        for axis in ("x", "y", "z"):
+            self.capture_forward_axis_combo.append_text(axis)
+        self.capture_forward_axis_combo.set_active(2)  # "z"
+        row.pack_start(self.capture_forward_axis_combo, False, False, 0)
+        row.pack_start(Gtk.Label(label="Distancia maxima (m):"), False, False, 0)
+        self.capture_max_distance_entry = Gtk.Entry()
+        self.capture_max_distance_entry.set_text("")
+        self.capture_max_distance_entry.set_width_chars(8)
+        row.pack_start(self.capture_max_distance_entry, False, False, 0)
+        row.pack_start(
+            self._info_button(
+                "Opcional, desactivado por defecto (captura todo el campo de vision del "
+                "sensor). Al activarlo, descarta puntos fuera de un cono centrado en el "
+                "eje frontal indicado — util para capturar solo una caja de prueba sin "
+                "incluir lo que esta detras o a los costados.\n\n"
+                "Distancia maxima: vacio = sin limite. Descarta puntos mas lejos que ese "
+                "valor, aplique o no el cono."
             ),
             False,
             False,
@@ -1235,6 +1327,7 @@ class AuroraGUI:
         self.sensor_status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  Desconectado')
         self.capture_base_button.set_sensitive(False)
         self.capture_updated_button.set_sensitive(False)
+        self.stop_capture_button.set_sensitive(False)
         self.start_live_capture_button.set_sensitive(False)
         self.capture_live_baseline_button.set_sensitive(False)
         self.clear_live_baseline_button.set_sensitive(False)
@@ -1245,28 +1338,76 @@ class AuroraGUI:
             self._show_warning("Sensor no conectado", "Conecta el sensor antes de capturar.")
             return
 
+        try:
+            duration_s = float(self.capture_duration_entry.get_text() or 15.0)
+            persistence_ratio = float(self.capture_persistence_entry.get_text() or 0.6)
+        except ValueError:
+            self._show_error("Parametros invalidos", "Duracion y persistencia deben ser numeros.")
+            return
+
+        cone_angle_deg = None
+        max_distance_m = None
+        try:
+            if self.capture_limit_fov_check.get_active():
+                cone_text = self.capture_cone_angle_entry.get_text().strip()
+                if cone_text:
+                    cone_angle_deg = float(cone_text)
+                    if cone_angle_deg <= 0 or cone_angle_deg > 180:
+                        raise ValueError("El cono debe estar entre 0 y 180 grados.")
+            dist_text = self.capture_max_distance_entry.get_text().strip()
+            if dist_text:
+                max_distance_m = float(dist_text)
+        except ValueError as exc:
+            self._show_error("Parametros invalidos", str(exc) or "Cono y distancia maxima deben ser numeros.")
+            return
+        forward_axis = self.capture_forward_axis_combo.get_active_text() or "z"
+
         self.capture_base_button.set_sensitive(False)
         self.capture_updated_button.set_sensitive(False)
-        self._log(f"Capturando nube ({'tunel original' if target == 'base' else 'tunel con shotcrete'})...")
+        self.stop_capture_button.set_sensitive(True)
+        self.capture_stop_event = threading.Event()
+        label = "tunel original" if target == "base" else "tunel con shotcrete"
+        self.capture_status_label.set_text(f"Capturando {label} durante {duration_s:.0f} s...")
+        self._log(f"Capturando nube ({label}) durante {duration_s:.0f} s, persistencia >= {persistence_ratio:.2f}...")
+
+        stop_event = self.capture_stop_event
 
         def worker():
             try:
-                cloud = aurora_sensor.capture_snapshot(self.sensor_connection)
+                cloud = aurora_sensor.capture_snapshot(
+                    self.sensor_connection,
+                    duration_s=duration_s,
+                    persistence_ratio=persistence_ratio,
+                    stop_event=stop_event,
+                    max_distance_m=max_distance_m,
+                    cone_angle_deg=cone_angle_deg,
+                    forward_axis=forward_axis,
+                )
                 self._ui(self._on_capture_done, target, cloud)
             except Exception as exc:
                 self._ui(self._on_capture_failed, exc)
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _stop_capture_clicked(self) -> None:
+        if self.capture_stop_event is not None:
+            self.capture_stop_event.set()
+            self.stop_capture_button.set_sensitive(False)
+            self.capture_status_label.set_text("Deteniendo captura...")
+            self._log("Captura detenida manualmente, procesando frames acumulados hasta ahora...")
+
     def _on_capture_done(self, target: str, cloud) -> None:
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
+        self.stop_capture_button.set_sensitive(False)
+        self.capture_stop_event = None
 
         default_name = "base_capturada.ply" if target == "base" else "updated_capturada.ply"
         default_dir = PROJECT_ROOT / "data"
         default_dir.mkdir(parents=True, exist_ok=True)
         path = self._save_file_dialog("Guardar captura como", default_dir, default_name)
         if not path:
+            self.capture_status_label.set_text("Captura descartada (no se eligio archivo de destino).")
             self._log("Captura descartada (no se eligio archivo de destino).")
             return
 
@@ -1278,14 +1419,39 @@ class AuroraGUI:
         if target == "base":
             self.base_path = path
             self._set_path_label(self.base_path_label, path)
+            self.last_base_capture_path = path
+            self.view_base_capture_button.set_sensitive(True)
+            self.capture_status_label.set_text("Tunel original capturado")
         else:
             self.updated_path = path
             self._set_path_label(self.updated_path_label, path)
-        self.stack.set_visible_child_name("comparacion")
+            self.last_updated_capture_path = path
+            self.view_updated_capture_button.set_sensitive(True)
+            self.capture_status_label.set_text("Tunel con shotcrete capturado")
+
+    def _view_last_capture(self, target: str) -> None:
+        path = self.last_base_capture_path if target == "base" else self.last_updated_capture_path
+        if not path:
+            self._show_info("Sin captura", "Todavia no capturaste este tunel.")
+            return
+        label = "Tunel original" if target == "base" else "Tunel con shotcrete"
+
+        def worker():
+            try:
+                cloud = load_point_cloud(Path(path))
+            except Exception as exc:
+                self._ui(self._show_error, "Error al abrir la captura", str(exc))
+                return
+            show_point_cloud(cloud, window_name=f"Aurora - {label} (ultima captura)")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _on_capture_failed(self, exc: Exception) -> None:
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
+        self.stop_capture_button.set_sensitive(False)
+        self.capture_stop_event = None
+        self.capture_status_label.set_text("")
         self._show_error("Error de captura", str(exc))
 
     # ------------------------------------------------------- Captura en vivo (MVP)

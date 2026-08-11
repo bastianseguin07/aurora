@@ -182,6 +182,35 @@ def apply_rigid_transform(
     return result
 
 
+def _apply_sdk_render_style(vis, cloud: o3d.geometry.PointCloud) -> None:
+    """Replica el estilo de visualizacion del demo oficial del SDK
+    (examples/dense_point_cloud.py): fondo oscuro, puntos mas grandes,
+    iluminacion desactivada para mostrar el color real, y evita el colormap
+    arcoiris por defecto de Open3D (por altura Z) cuando la nube no trae
+    colores propios (usa gris uniforme en ese caso)."""
+    if not cloud.has_colors():
+        cloud.paint_uniform_color([0.7, 0.7, 0.7])
+    opt = vis.get_render_option()
+    opt.background_color = np.asarray([0.1, 0.1, 0.1])
+    opt.point_size = 3.0
+    opt.point_color_option = o3d.visualization.PointColorOption.Color
+    opt.light_on = False
+
+
+def show_point_cloud(cloud: o3d.geometry.PointCloud, window_name: str = "Aurora - Vista de la captura") -> None:
+    """Abre una ventana 3D simple (no editable) mostrando la nube tal cual,
+    con el mismo estilo del demo oficial del SDK, para verificar visualmente
+    que la captura salio bien."""
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(window_name=window_name)
+    vis.add_geometry(cloud)
+    coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
+    vis.add_geometry(coord_frame)
+    _apply_sdk_render_style(vis, cloud)
+    vis.run()
+    vis.destroy_window()
+
+
 def pick_landmark_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np.ndarray | None:
     """
     Abre un visor 3D interactivo para elegir puntos de referencia (landmarks)
@@ -193,6 +222,7 @@ def pick_landmark_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np
     vis = o3d.visualization.VisualizerWithEditing()
     vis.create_window(window_name=window_name)
     vis.add_geometry(cloud)
+    _apply_sdk_render_style(vis, cloud)
     vis.run()
     vis.destroy_window()
 
@@ -360,6 +390,7 @@ def pick_crop_bounds(cloud: o3d.geometry.PointCloud, margin: float = 0.08) -> tu
     vis = o3d.visualization.VisualizerWithEditing()
     vis.create_window(window_name="Aurora - Shift+Click en 2 esquinas, luego cerrar (Q)")
     vis.add_geometry(cloud)
+    _apply_sdk_render_style(vis, cloud)
     vis.run()
     vis.destroy_window()
 
