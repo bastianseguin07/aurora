@@ -192,23 +192,15 @@ def _apply_sdk_render_style(vis, cloud: o3d.geometry.PointCloud) -> None:
         cloud.paint_uniform_color([0.7, 0.7, 0.7])
     opt = vis.get_render_option()
     opt.background_color = np.asarray([0.1, 0.1, 0.1])
-    opt.point_size = 3.0
+    opt.point_size = 2.0
     opt.point_color_option = o3d.visualization.PointColorOption.Color
     opt.light_on = False
 
 
-def show_point_cloud(cloud: o3d.geometry.PointCloud, window_name: str = "Aurora - Vista de la captura") -> None:
-    """Abre una ventana 3D simple (no editable) mostrando la nube tal cual,
-    con el mismo estilo del demo oficial del SDK, para verificar visualmente
-    que la captura salio bien. Arranca posicionada en el punto de vista del
-    sensor (los puntos ya vienen en su marco local, origen en el sensor,
-    con X=derecha, Y=abajo, Z=adelante), en vez de encuadrar toda la nube."""
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(window_name=window_name)
-    vis.add_geometry(cloud)
-    coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
-    vis.add_geometry(coord_frame)
-    _apply_sdk_render_style(vis, cloud)
+def _start_at_sensor_pov(vis) -> None:
+    """Posiciona la camara del visor en el origen del sensor mirando hacia
+    +Z (los puntos ya vienen en su marco local: X=derecha, Y=abajo,
+    Z=adelante), en vez de encuadrar toda la nube desde afuera."""
     try:
         ctr = vis.get_view_control()
         params = ctr.convert_to_pinhole_camera_parameters()
@@ -216,20 +208,21 @@ def show_point_cloud(cloud: o3d.geometry.PointCloud, window_name: str = "Aurora 
         ctr.convert_from_pinhole_camera_parameters(params, allow_arbitrary=True)
     except Exception:
         pass  # si el visor no soporta esto, se queda con el encuadre por defecto
+
+
+def show_point_cloud(cloud: o3d.geometry.PointCloud, window_name: str = "Aurora - Vista de la captura") -> None:
+    """Abre una ventana 3D simple (no editable) mostrando la nube tal cual,
+    con el mismo estilo del demo oficial del SDK, para verificar visualmente
+    que la captura salio bien. Arranca en el punto de vista del sensor."""
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(window_name=window_name)
+    vis.add_geometry(cloud)
+    coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
+    vis.add_geometry(coord_frame)
+    _apply_sdk_render_style(vis, cloud)
+    _start_at_sensor_pov(vis)
     vis.run()
     vis.destroy_window()
-
-
-def transform_points_inverse(points: np.ndarray, rotation: np.ndarray, translation: np.ndarray) -> np.ndarray:
-    """
-    Aplica la transformacion inversa de 'compute_rigid_transform' a un array
-    Nx3: lleva puntos ya expresados en el sistema de referencia 'base' de
-    vuelta al sistema de coordenadas original de la nube 'moving' (previo a
-    alinearla). Util para ubicar una region elegida en la nube alineada
-    dentro de la nube cruda sin tener que transformar la nube completa.
-    """
-    points = np.asarray(points, dtype=np.float64)
-    return (points - translation) @ rotation
 
 
 def pick_landmark_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np.ndarray | None:
@@ -237,13 +230,14 @@ def pick_landmark_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np
     Abre un visor 3D interactivo para elegir puntos de referencia (landmarks)
     en orden: Shift + click izquierdo sobre cada punto, en el mismo orden en
     que se van a elegir en la otra nube, despues cerrar la ventana (Q).
-    Devuelve las coordenadas en el orden elegido, o None si se eligieron
-    menos de 3 puntos.
+    Arranca en el punto de vista del sensor. Devuelve las coordenadas en el
+    orden elegido, o None si se eligieron menos de 3 puntos.
     """
     vis = o3d.visualization.VisualizerWithEditing()
     vis.create_window(window_name=window_name)
     vis.add_geometry(cloud)
     _apply_sdk_render_style(vis, cloud)
+    _start_at_sensor_pov(vis)
     vis.run()
     vis.destroy_window()
 
@@ -260,12 +254,14 @@ def pick_quad_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np.nda
     Abre un visor 3D interactivo para elegir los 4 puntos que definen una
     region cuadrada/rectangular sobre la superficie: Shift + click izquierdo
     en las 4 esquinas, en orden alrededor del perimetro, despues cerrar la
-    ventana (Q). Devuelve None si no se eligieron exactamente 4 puntos.
+    ventana (Q). Arranca en el punto de vista del sensor. Devuelve None si
+    no se eligieron exactamente 4 puntos.
     """
     vis = o3d.visualization.VisualizerWithEditing()
     vis.create_window(window_name=window_name)
     vis.add_geometry(cloud)
     _apply_sdk_render_style(vis, cloud)
+    _start_at_sensor_pov(vis)
     vis.run()
     vis.destroy_window()
 
@@ -490,6 +486,7 @@ def pick_crop_bounds(cloud: o3d.geometry.PointCloud, margin: float = 0.08) -> tu
     vis.create_window(window_name="Aurora - Shift+Click en 2 esquinas, luego cerrar (Q)")
     vis.add_geometry(cloud)
     _apply_sdk_render_style(vis, cloud)
+    _start_at_sensor_pov(vis)
     vis.run()
     vis.destroy_window()
 

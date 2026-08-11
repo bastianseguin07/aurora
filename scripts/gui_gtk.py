@@ -44,7 +44,6 @@ from pointcloud_core import (  # noqa: E402
     rigid_transform_rms_error,
     run_pipeline,
     show_point_cloud,
-    transform_points_inverse,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -762,17 +761,17 @@ class AuroraGUI:
         note = Gtk.Label(
             label=(
                 "Elegi 4 puntos (Shift+Click), en orden alrededor del perimetro, sobre la "
-                "nube original (el tunel sin shotcrete), para marcar una region "
-                "cuadrada/rectangular de la pared (por ejemplo, un tramo especifico del "
-                "tunel). La app arma un 'box' 3D extruyendo esa region a lo largo de su "
-                "normal (el ancho del box es configurable abajo) y recorta las DOS nubes a "
-                "los puntos que caen dentro de ese box, generando dos archivos .ply nuevos "
-                "que el resto del analisis va a usar en vez de las nubes completas.\n\n"
-                "Requiere haber calculado la alineacion primero (pestaña 'Alineacion'): en "
-                "vez de transformar toda la nube con shotcrete para despues recortarla, la "
-                "app ubica el box en la posicion original de esa nube (sin shotcrete "
-                "todavia transformada) y transforma unicamente el resultado ya recortado — "
-                "mucho mas rapido que alinear la nube completa primero."
+                "nube CON shotcrete (la capturada despues), para marcar una region "
+                "cuadrada/rectangular (por ejemplo, un tramo especifico del tunel o una de "
+                "tus cajas de prueba). La app arma un 'box' 3D extruyendo esa region a lo "
+                "largo de su normal (el ancho del box es configurable abajo) y recorta las "
+                "DOS nubes (con shotcrete y original) a los puntos que caen dentro de ese "
+                "box, generando dos archivos .ply nuevos que el resto del analisis va a usar "
+                "en vez de las nubes completas.\n\n"
+                "La misma region (mismas coordenadas) se aplica tal cual a la nube original. "
+                "Esto asume que ambas nubes comparten el mismo sistema de coordenadas: si el "
+                "sensor se reubico entre una captura y otra, calcula la alineacion primero "
+                "(pestaña 'Alineacion') antes de segmentar; si no se movio, no hace falta."
             ),
             xalign=0,
         )
@@ -782,7 +781,7 @@ class AuroraGUI:
 
         step_frame, step_box = self._section("Paso 1: elegir la region y el ancho del box")
         row = self._row(step_box)
-        pick_button = Gtk.Button(label="Elegir 4 puntos en el tunel alineado...")
+        pick_button = Gtk.Button(label="Elegir 4 puntos en el tunel con shotcrete...")
         pick_button.set_tooltip_text(
             "Shift+Click en las 4 esquinas de la region, en orden alrededor del perimetro, "
             "despues cerrar la ventana."
@@ -823,7 +822,7 @@ class AuroraGUI:
         return self._scrolled(page)
 
     def _pick_segmentation_quad(self) -> None:
-        path = Path(self.base_path)
+        path = Path(self.updated_path)
         if not path.exists():
             self._show_error("Error", f"No se encontro el archivo:\n{path}")
             return
@@ -831,7 +830,7 @@ class AuroraGUI:
             cloud = load_point_cloud(path)
             points = pick_quad_points(
                 cloud,
-                "Shift+Click en las 4 esquinas de la region, en orden, luego cerrar (Q)",
+                "Tunel con shotcrete - Shift+Click en las 4 esquinas de la region, en orden, luego cerrar (Q)",
             )
         except Exception as exc:
             self._show_error("Error al abrir el visor 3D", str(exc))
@@ -852,23 +851,13 @@ class AuroraGUI:
         if self.segmentation_quad is None:
             self._show_warning("Falta la region", "Elegi los 4 puntos de la region primero.")
             return
-        if self.alignment_rotation is None or self._raw_updated_path is None:
-            self._show_warning(
-                "Falta la alineacion",
-                "Primero calcula la alineacion en la pestaña 'Alineacion': la app la usa "
-                "para ubicar el box elegido en la nube con shotcrete sin tener que "
-                "transformarla entera.",
-            )
-            return
 
         if self._segmentation_source_base_path is None:
             self._segmentation_source_base_path = self.base_path
-            self._segmentation_source_updated_path = self._raw_updated_path
+            self._segmentation_source_updated_path = self.updated_path
 
         width_m = self.segmentation_width_spin.get_value() / 100.0
         quad = self.segmentation_quad
-        rotation = self.alignment_rotation
-        translation = self.alignment_translation
         base_source = Path(self._segmentation_source_base_path)
         updated_source = Path(self._segmentation_source_updated_path)
 
@@ -877,16 +866,15 @@ class AuroraGUI:
 
         def worker():
             try:
+                # La region se eligio sobre la nube con shotcrete; se aplica tal cual
+                # (mismas coordenadas) a la nube original, ambas en el mismo sistema
+                # de referencia (si el sensor no se movio, o si ya se aplico la
+                # alineacion previamente).
+                updated_cloud = load_point_cloud(updated_source)
+                updated_cropped = crop_cloud_by_quad_box(updated_cloud, quad, width_m)
+
                 base_cloud = load_point_cloud(base_source)
                 base_cropped = crop_cloud_by_quad_box(base_cloud, quad, width_m)
-
-                # Ubicar el box en el sistema de coordenadas original de la nube con
-                # shotcrete (previo a alinear), recortar ahi, y recien transformar el
-                # resultado ya chico — evita transformar la nube completa.
-                quad_raw = transform_points_inverse(quad, rotation, translation)
-                updated_cloud_raw = load_point_cloud(updated_source)
-                updated_cropped_raw = crop_cloud_by_quad_box(updated_cloud_raw, quad_raw, width_m)
-                updated_cropped = apply_rigid_transform(updated_cropped_raw, rotation, translation)
 
                 if len(base_cropped.points) == 0 or len(updated_cropped.points) == 0:
                     raise RuntimeError(
