@@ -278,6 +278,7 @@ class AuroraGUI:
 
         self.sensor_connection = None
         self.result = None
+        self.alignment_applied = False
         self.viewer: LiveViewer | None = None
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.worker_thread: threading.Thread | None = None
@@ -472,7 +473,7 @@ class AuroraGUI:
         self.base_path_label = self._file_row(
             base_box,
             self.base_path,
-            lambda p: setattr(self, "base_path", p),
+            lambda p: self._set_base_path(p),
             info_text="La nube de puntos del tunel ANTES de aplicar el shotcrete. "
             "Puede ser un archivo ya guardado o una captura hecha en la pestaña 'Captura'.",
         )
@@ -482,13 +483,21 @@ class AuroraGUI:
         self.updated_path_label = self._file_row(
             updated_box,
             self.updated_path,
-            lambda p: setattr(self, "updated_path", p),
+            lambda p: self._set_updated_path(p),
             info_text="La nube de puntos del mismo tunel DESPUES de aplicar el shotcrete. "
             "Puede ser un archivo ya guardado o una captura hecha en la pestaña 'Captura'.",
         )
         page.pack_start(updated_frame, False, True, 0)
 
         return self._scrolled(page)
+
+    def _set_base_path(self, path: str) -> None:
+        self.base_path = path
+        self.alignment_applied = False
+
+    def _set_updated_path(self, path: str) -> None:
+        self.updated_path = path
+        self.alignment_applied = False
 
     # -- Pagina: Alineacion (Procrustes por puntos de referencia) ---------------
 
@@ -502,7 +511,7 @@ class AuroraGUI:
         note = Gtk.Label(
             label=(
                 "Si las dos capturas no comparten exactamente la misma posicion (el sensor "
-                "se reubico entre una y otra), podes alinearlas eligiendo 3 o mas puntos "
+                "se reubico entre una y otra), puedes alinearlas eligiendo 3 o mas puntos "
                 "fijos que NO se muevan entre capturas — por ejemplo cabezas de pernos de "
                 "anclaje, marcas o esquinas rigidas. A diferencia de ICP (que ajusta toda "
                 "la superficie y puede confundir el espesor real con error de alineacion), "
@@ -529,7 +538,7 @@ class AuroraGUI:
         row = self._row(step_box)
         pick_updated_button = Gtk.Button(label="2. Elegir los MISMOS puntos en el tunel con shotcrete...")
         pick_updated_button.set_tooltip_text(
-            "Elegi los puntos en el MISMO orden que en el paso 1, sobre los mismos puntos fisicos."
+            "Elige los puntos en el MISMO orden que en el paso 1, sobre los mismos puntos fisicos."
         )
         pick_updated_button.connect("clicked", lambda _b: self._pick_alignment_points("updated"))
         row.pack_start(pick_updated_button, False, False, 0)
@@ -559,7 +568,7 @@ class AuroraGUI:
             title = (
                 "Tunel original - Shift+Click en cada punto de referencia, en orden, luego cerrar (Q)"
                 if which == "base"
-                else "Tunel con shotcrete - Elegi los MISMOS puntos, en el mismo orden, luego cerrar (Q)"
+                else "Tunel con shotcrete - Elige los MISMOS puntos, en el mismo orden, luego cerrar (Q)"
             )
             points = pick_landmark_points(cloud, title)
         except Exception as exc:
@@ -567,7 +576,7 @@ class AuroraGUI:
             return
 
         if points is None:
-            self._show_info("Sin seleccion", "Elegi al menos 3 puntos (Shift+Click) antes de cerrar la ventana.")
+            self._show_info("Sin seleccion", "Elige al menos 3 puntos (Shift+Click) antes de cerrar la ventana.")
             return
 
         if which == "base":
@@ -579,7 +588,7 @@ class AuroraGUI:
 
     def _apply_alignment(self) -> None:
         if self.landmarks_base is None or self.landmarks_updated is None:
-            self._show_warning("Faltan puntos", "Elegi los puntos de referencia en las dos nubes primero.")
+            self._show_warning("Faltan puntos", "Elige los puntos de referencia en las dos nubes primero.")
             return
         if len(self.landmarks_base) != len(self.landmarks_updated):
             self._show_error(
@@ -619,6 +628,7 @@ class AuroraGUI:
     def _on_alignment_done(self, aligned_path: str, rms: float) -> None:
         self.apply_alignment_button.set_sensitive(True)
         self.alignment_result_label.set_text(f"Error residual: {rms * 1000:.2f} mm — nube alineada guardada")
+        self.alignment_applied = True
         self.updated_path = aligned_path
         self._set_path_label(self.updated_path_label, aligned_path)
         self._show_info(
@@ -717,7 +727,7 @@ class AuroraGUI:
             self._info_button(
                 "Usar solo si las dos capturas no quedaron en la misma posicion exacta "
                 "(el sensor se movio levemente entre una y otra). No usar si lo que "
-                "cambio de una nube a otra es precisamente el espesor que queres medir "
+                "cambio de una nube a otra es precisamente el espesor que quieres medir "
                 "en TODA la superficie, porque podria confundirse con error de alineacion."
             ),
             False,
@@ -953,7 +963,7 @@ class AuroraGUI:
         updated_file = Path(self.updated_path)
         if not base_file.exists() or not updated_file.exists():
             self._show_error(
-                "Error", "Elegi ambos archivos en la pestaña 'Comparacion' antes de cargar la vista."
+                "Error", "Elige ambos archivos en la pestaña 'Comparacion' antes de cargar la vista."
             )
             return
 
@@ -1264,6 +1274,7 @@ class AuroraGUI:
 
         o3d.io.write_point_cloud(path, cloud)
         self._log(f"Captura guardada en: {path} ({len(cloud.points)} puntos)")
+        self.alignment_applied = False
         if target == "base":
             self.base_path = path
             self._set_path_label(self.base_path_label, path)
@@ -1384,6 +1395,37 @@ class AuroraGUI:
 
     # ---------------------------------------------------------- Pipeline
 
+    def _confirm_missing_alignment(self) -> bool:
+        """Advierte si no se aplico alineacion por puntos de referencia ni ICP.
+
+        Sin alguna de las dos, un desplazamiento del sensor entre capturas se
+        mide como si fuera espesor real de shotcrete.
+        """
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            flags=0,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.NONE,
+            text="No se aplico alineacion entre las dos capturas",
+        )
+        dialog.format_secondary_text(
+            "Si el sensor se reubico entre la captura del tunel original y la del tunel "
+            "con shotcrete, el resultado puede incluir ese desplazamiento como si fuera "
+            "espesor real, en vez de solo el shotcrete aplicado.\n\n"
+            "Puedes ir a la pestaña 'Alineacion' y marcar puntos de referencia fijos "
+            "(por ejemplo pernos o marcas) antes de calcular, o continuar si sabes que "
+            "las dos capturas se tomaron desde la misma posicion."
+        )
+        dialog.add_button("Ir a Alineacion", Gtk.ResponseType.CANCEL)
+        continue_button = dialog.add_button("Continuar de todas formas", Gtk.ResponseType.OK)
+        continue_button.get_style_context().add_class("destructive-action")
+        response = dialog.run()
+        dialog.destroy()
+        if response == Gtk.ResponseType.OK:
+            return True
+        self.stack.set_visible_child_name("alineacion")
+        return False
+
     def _run_pipeline_clicked(self) -> None:
         if self.worker_thread and self.worker_thread.is_alive():
             self._show_warning("En progreso", "Ya hay un analisis en ejecucion.")
@@ -1394,6 +1436,10 @@ class AuroraGUI:
         except Exception as exc:
             self._show_error("Parametros invalidos", str(exc))
             return
+
+        if not self.alignment_applied and not params.use_icp:
+            if not self._confirm_missing_alignment():
+                return
 
         self.log_buffer.set_text("")
         self.run_button.set_sensitive(False)
