@@ -335,7 +335,7 @@ def capture_snapshot(
     max_points_per_frame: int = 100000,
     voxel_size: float = 0.005,
     frame_timeout_ms: int = 300,
-    persistence_ratio: float = 0.6,
+    persistence_ratio: float = 0.0,
     stop_event: threading.Event | None = None,
     max_distance_m: float | None = None,
     cone_angle_deg: float | None = None,
@@ -343,11 +343,13 @@ def capture_snapshot(
 ) -> o3d.geometry.PointCloud:
     """
     Acumula frames del sensor durante 'duration_s' segundos en una sola nube
-    de puntos ("foto fija"). Para evitar que particulas de polvo en el aire
-    (que solo aparecen en algunos frames, en posiciones distintas cada vez)
-    contaminen la captura, cada celda de voxel debe estar presente en al
-    menos 'persistence_ratio' de los frames capturados para conservarse; el
-    resto se descarta por no ser lo suficientemente persistente.
+    de puntos ("foto fija"), tal como los entrega el sensor (sin alineacion,
+    sin transformar por pose/SLAM). Para evitar que particulas de polvo en
+    el aire (que solo aparecen en algunos frames, en posiciones distintas
+    cada vez) contaminen la captura, cada celda de voxel debe estar presente
+    en al menos 'persistence_ratio' de los frames capturados para
+    conservarse; el resto se descarta por no ser lo suficientemente
+    persistente.
 
     Si se pasa 'stop_event' y se activa antes de que termine la duracion,
     la captura corta ahi y procesa los frames acumulados hasta ese momento.
@@ -374,9 +376,11 @@ def capture_snapshot(
             cone_angle_deg=cone_angle_deg,
             forward_axis=forward_axis,
         )
-        if points is not None:
-            collected_points.append(points)
-            collected_colors.append(colors)
+        if points is None:
+            continue
+
+        collected_points.append(points)
+        collected_colors.append(colors)
 
     if not collected_points:
         raise RuntimeError(

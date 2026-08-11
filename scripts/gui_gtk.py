@@ -472,7 +472,7 @@ class AuroraGUI:
         row.pack_start(self.capture_duration_entry, False, False, 0)
         row.pack_start(Gtk.Label(label="Persistencia minima de puntos (0-1):"), False, False, 0)
         self.capture_persistence_entry = Gtk.Entry()
-        self.capture_persistence_entry.set_text("0.6")
+        self.capture_persistence_entry.set_text("0")
         self.capture_persistence_entry.set_width_chars(6)
         row.pack_start(self.capture_persistence_entry, False, False, 0)
         row.pack_start(
@@ -1340,7 +1340,7 @@ class AuroraGUI:
 
         try:
             duration_s = float(self.capture_duration_entry.get_text() or 15.0)
-            persistence_ratio = float(self.capture_persistence_entry.get_text() or 0.6)
+            persistence_ratio = float(self.capture_persistence_entry.get_text() or 0.0)
         except ValueError:
             self._show_error("Parametros invalidos", "Duracion y persistencia deben ser numeros.")
             return

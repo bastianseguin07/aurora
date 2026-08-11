@@ -200,13 +200,22 @@ def _apply_sdk_render_style(vis, cloud: o3d.geometry.PointCloud) -> None:
 def show_point_cloud(cloud: o3d.geometry.PointCloud, window_name: str = "Aurora - Vista de la captura") -> None:
     """Abre una ventana 3D simple (no editable) mostrando la nube tal cual,
     con el mismo estilo del demo oficial del SDK, para verificar visualmente
-    que la captura salio bien."""
+    que la captura salio bien. Arranca posicionada en el punto de vista del
+    sensor (los puntos ya vienen en su marco local, origen en el sensor,
+    con X=derecha, Y=abajo, Z=adelante), en vez de encuadrar toda la nube."""
     vis = o3d.visualization.Visualizer()
     vis.create_window(window_name=window_name)
     vis.add_geometry(cloud)
     coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
     vis.add_geometry(coord_frame)
     _apply_sdk_render_style(vis, cloud)
+    try:
+        ctr = vis.get_view_control()
+        params = ctr.convert_to_pinhole_camera_parameters()
+        params.extrinsic = np.eye(4)  # camara en el origen del sensor, mirando hacia +Z
+        ctr.convert_from_pinhole_camera_parameters(params, allow_arbitrary=True)
+    except Exception:
+        pass  # si el visor no soporta esto, se queda con el encuadre por defecto
     vis.run()
     vis.destroy_window()
 
