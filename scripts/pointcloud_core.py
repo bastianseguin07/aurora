@@ -220,6 +220,18 @@ def show_point_cloud(cloud: o3d.geometry.PointCloud, window_name: str = "Aurora 
     vis.destroy_window()
 
 
+def transform_points_inverse(points: np.ndarray, rotation: np.ndarray, translation: np.ndarray) -> np.ndarray:
+    """
+    Aplica la transformacion inversa de 'compute_rigid_transform' a un array
+    Nx3: lleva puntos ya expresados en el sistema de referencia 'base' de
+    vuelta al sistema de coordenadas original de la nube 'moving' (previo a
+    alinearla). Util para ubicar una region elegida en la nube alineada
+    dentro de la nube cruda sin tener que transformar la nube completa.
+    """
+    points = np.asarray(points, dtype=np.float64)
+    return (points - translation) @ rotation
+
+
 def pick_landmark_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np.ndarray | None:
     """
     Abre un visor 3D interactivo para elegir puntos de referencia (landmarks)
@@ -241,6 +253,84 @@ def pick_landmark_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np
 
     points = np.asarray(cloud.points)
     return points[picked_indices]
+
+
+def pick_quad_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np.ndarray | None:
+    """
+    Abre un visor 3D interactivo para elegir los 4 puntos que definen una
+    region cuadrada/rectangular sobre la superficie: Shift + click izquierdo
+    en las 4 esquinas, en orden alrededor del perimetro, despues cerrar la
+    ventana (Q). Devuelve None si no se eligieron exactamente 4 puntos.
+    """
+    vis = o3d.visualization.VisualizerWithEditing()
+    vis.create_window(window_name=window_name)
+    vis.add_geometry(cloud)
+    _apply_sdk_render_style(vis, cloud)
+    vis.run()
+    vis.destroy_window()
+
+    picked_indices = vis.get_picked_points()
+    if len(picked_indices) != 4:
+        return None
+
+    points = np.asarray(cloud.points)
+    return points[picked_indices]
+
+
+def _points_in_polygon_2d(points_2d: np.ndarray, polygon_2d: np.ndarray) -> np.ndarray:
+    """Ray casting vectorizado: True para los puntos que caen dentro del poligono."""
+    x, y = points_2d[:, 0], points_2d[:, 1]
+    n = polygon_2d.shape[0]
+    inside = np.zeros(points_2d.shape[0], dtype=bool)
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon_2d[i]
+        xj, yj = polygon_2d[j]
+        crosses = (yi > y) != (yj > y)
+        x_intersect = (xj - xi) * (y - yi) / (yj - yi + 1e-15) + xi
+        inside ^= crosses & (x < x_intersect)
+        j = i
+    return inside
+
+
+def crop_cloud_by_quad_box(
+    cloud: o3d.geometry.PointCloud,
+    quad_points: np.ndarray,
+    depth_m: float,
+) -> o3d.geometry.PointCloud:
+    """
+    Recorta 'cloud' a un box 3D: la region delimitada por 'quad_points' (4
+    esquinas, en orden alrededor del perimetro) extruida +/- depth_m/2 a lo
+    largo de la normal del plano que mejor ajusta esos 4 puntos (ajuste por
+    SVD, tolera que no sean perfectamente coplanares).
+    """
+    quad_points = np.asarray(quad_points, dtype=np.float64)
+    if quad_points.shape[0] != 4:
+        raise ValueError("Se necesitan exactamente 4 puntos para definir el box.")
+
+    centroid = quad_points.mean(axis=0)
+    _, _, vt = np.linalg.svd(quad_points - centroid)
+    u_axis, v_axis, normal = vt[0], vt[1], vt[2]
+
+    def to_local(points_3d: np.ndarray) -> np.ndarray:
+        rel = points_3d - centroid
+        return np.column_stack([rel @ u_axis, rel @ v_axis, rel @ normal])
+
+    quad_local_2d = to_local(quad_points)[:, :2]
+
+    points = np.asarray(cloud.points)
+    local = to_local(points)
+
+    inside_polygon = _points_in_polygon_2d(local[:, :2], quad_local_2d)
+    inside_depth = np.abs(local[:, 2]) <= (depth_m / 2.0)
+    mask = inside_polygon & inside_depth
+
+    cropped = o3d.geometry.PointCloud()
+    cropped.points = o3d.utility.Vector3dVector(points[mask])
+    if cloud.has_colors():
+        colors = np.asarray(cloud.colors)
+        cropped.colors = o3d.utility.Vector3dVector(colors[mask])
+    return cropped
 
 
 def compute_c2c_distance(

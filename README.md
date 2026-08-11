@@ -290,6 +290,38 @@ la superficie (que puede confundir el espesor real con error de alineacion).
    `<nombre>_alineado.ply`, y actualiza la pestaña "Comparacion" para usar ese
    archivo.
 
+### Pestaña "Segmentacion" (recorte por box, opcional)
+
+Va despues de "Alineacion" porque necesita la transformacion ya calculada
+ahi (rotacion + traslacion): la nube original y la nube con shotcrete no
+comparten sistema de coordenadas (el sensor se reposiciona entre captura y
+captura), asi que un mismo box no selecciona la misma region fisica en las
+dos a menos que se sepa como convertir entre ambos sistemas.
+
+En vez de transformar la nube con shotcrete COMPLETA y recien despues
+recortarla, esta pestaña hace lo inverso — mucho mas barato cuando el box
+final es una fraccion chica de la nube: ubica el box en el sistema de
+coordenadas ORIGINAL (crudo) de la nube con shotcrete aplicando la
+transformacion inversa solo a las 4 esquinas del box, recorta ahi, y recien
+transforma el resultado ya chico. La nube original nunca se transforma (es
+el sistema de referencia).
+
+1. **"Elegir 4 puntos en el tunel alineado..."** — abre un visor 3D con la
+   nube base. Shift+Click en las 4 esquinas de la region deseada (por
+   ejemplo, un tramo especifico del tunel), en orden alrededor del
+   perimetro, despues cerrar la ventana (`Q`).
+2. **"Ancho del box (cm)"** — profundidad del recorte a lo largo de la
+   normal del plano que mejor ajusta esos 4 puntos, centrada en ese plano
+   (10 cm por defecto, +/- 5 cm a cada lado). Tiene que ser mayor que el
+   espesor de shotcrete esperado, para no cortar la superficie con
+   shotcrete (que queda mas cerca del sensor que la superficie original).
+3. **"Aplicar segmentacion"** — requiere haber calculado la alineacion
+   primero (pestaña "Alineacion"); recorta las dos nubes a los puntos que
+   caen dentro del box, guarda `<nombre>_segmento.ply` para cada una, y
+   actualiza la pestaña "Comparacion" para usar esos archivos recortados en
+   el resto del analisis. **"Quitar segmentacion"** vuelve a usar las nubes
+   completas.
+
 ### Pestaña "Ajustes de analisis"
 
 **"Analizar solo una zona"** (opcional) — checkbox + boton **"Seleccionar
