@@ -29,12 +29,12 @@ class DistanceStats:
     def __str__(self) -> str:
         return (
             f"  Puntos analizados : {self.n_points}\n"
-            f"  Espesor medio     : {self.mean * 1000:.2f} mm\n"
-            f"  Espesor mediano   : {self.median * 1000:.2f} mm\n"
-            f"  Desv. estandar    : {self.std * 1000:.2f} mm\n"
-            f"  Minimo            : {self.min * 1000:.2f} mm\n"
-            f"  Maximo            : {self.max * 1000:.2f} mm\n"
-            f"  Percentil 95      : {self.p95 * 1000:.2f} mm"
+            f"  Espesor medio     : {self.mean * 100:.2f} cm\n"
+            f"  Espesor mediano   : {self.median * 100:.2f} cm\n"
+            f"  Desv. estandar    : {self.std * 100:.2f} cm\n"
+            f"  Minimo            : {self.min * 100:.2f} cm\n"
+            f"  Maximo            : {self.max * 100:.2f} cm\n"
+            f"  Percentil 95      : {self.p95 * 100:.2f} cm"
         )
 
 
@@ -289,6 +289,40 @@ def _points_in_polygon_2d(points_2d: np.ndarray, polygon_2d: np.ndarray) -> np.n
     return inside
 
 
+def _quad_box_axes(quad_points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Centroide y ejes (u, v, normal) del box que representa la region.
+
+    En vez de usar el plano que mejor ajusta los 4 puntos clickeados (que
+    queda inclinado si el click no fue perfectamente parejo en algun eje),
+    el box se fuerza a quedar recto: se ajusta al eje global mas cercano a
+    la normal ajustada por SVD (X, Y o Z), y los otros dos ejes del box
+    quedan exactamente sobre los otros dos ejes globales. El resultado es
+    siempre un paralelepipedo alineado a los ejes, nunca inclinado, sin
+    importar la imprecision al elegir los puntos.
+    """
+    quad_points = np.asarray(quad_points, dtype=np.float64)
+    if quad_points.shape[0] != 4:
+        raise ValueError("Se necesitan exactamente 4 puntos para definir el box.")
+    centroid = quad_points.mean(axis=0)
+    _, _, vt = np.linalg.svd(quad_points - centroid)
+    raw_normal = vt[2]
+
+    axis_idx = int(np.argmax(np.abs(raw_normal)))
+    sign = 1.0 if raw_normal[axis_idx] >= 0 else -1.0
+    normal = np.zeros(3)
+    normal[axis_idx] = sign
+
+    x_axis, y_axis, z_axis = np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0])
+    if axis_idx == 2:  # normal ~ Z (el sensor mirando de frente, caso tipico)
+        u_axis, v_axis = x_axis, y_axis
+    elif axis_idx == 1:  # normal ~ Y (sensor mirando hacia arriba/abajo)
+        u_axis, v_axis = x_axis, z_axis
+    else:  # normal ~ X (sensor mirando de costado)
+        u_axis, v_axis = z_axis, y_axis
+
+    return centroid, u_axis, v_axis, normal
+
+
 def crop_cloud_by_quad_box(
     cloud: o3d.geometry.PointCloud,
     quad_points: np.ndarray,
@@ -297,16 +331,10 @@ def crop_cloud_by_quad_box(
     """
     Recorta 'cloud' a un box 3D: la region delimitada por 'quad_points' (4
     esquinas, en orden alrededor del perimetro) extruida +/- depth_m/2 a lo
-    largo de la normal del plano que mejor ajusta esos 4 puntos (ajuste por
-    SVD, tolera que no sean perfectamente coplanares).
+    largo de la normal del plano que mejor ajusta esos 4 puntos.
     """
     quad_points = np.asarray(quad_points, dtype=np.float64)
-    if quad_points.shape[0] != 4:
-        raise ValueError("Se necesitan exactamente 4 puntos para definir el box.")
-
-    centroid = quad_points.mean(axis=0)
-    _, _, vt = np.linalg.svd(quad_points - centroid)
-    u_axis, v_axis, normal = vt[0], vt[1], vt[2]
+    centroid, u_axis, v_axis, normal = _quad_box_axes(quad_points)
 
     def to_local(points_3d: np.ndarray) -> np.ndarray:
         rel = points_3d - centroid
@@ -327,6 +355,59 @@ def crop_cloud_by_quad_box(
         colors = np.asarray(cloud.colors)
         cropped.colors = o3d.utility.Vector3dVector(colors[mask])
     return cropped
+
+
+def build_quad_box_wireframe(
+    quad_points: np.ndarray,
+    depth_m: float,
+    color: tuple[float, float, float] = (1.0, 0.549, 0.0),
+) -> o3d.geometry.LineSet:
+    """
+    Arma el contorno (wireframe) del box 3D que usaria 'crop_cloud_by_quad_box'
+    con el mismo 'quad_points'/'depth_m', para previsualizar la region antes
+    de aplicar el recorte.
+    """
+    quad_points = np.asarray(quad_points, dtype=np.float64)
+    centroid, u_axis, v_axis, normal = _quad_box_axes(quad_points)
+    rel = quad_points - centroid
+    quad_local_2d = np.column_stack([rel @ u_axis, rel @ v_axis])
+    half_depth = depth_m / 2.0
+
+    corners = []
+    for sign in (-half_depth, half_depth):
+        for lu, lv in quad_local_2d:
+            corners.append(centroid + lu * u_axis + lv * v_axis + sign * normal)
+    corners = np.array(corners)
+
+    edges = [
+        (0, 1), (1, 2), (2, 3), (3, 0),  # cara del plano elegido
+        (4, 5), (5, 6), (6, 7), (7, 4),  # cara opuesta (a +depth_m)
+        (0, 4), (1, 5), (2, 6), (3, 7),  # aristas verticales
+    ]
+    line_set = o3d.geometry.LineSet()
+    line_set.points = o3d.utility.Vector3dVector(corners)
+    line_set.lines = o3d.utility.Vector2iVector(np.array(edges))
+    line_set.colors = o3d.utility.Vector3dVector(np.tile(np.array(color), (len(edges), 1)))
+    return line_set
+
+
+def show_quad_box_preview(
+    cloud: o3d.geometry.PointCloud,
+    quad_points: np.ndarray,
+    depth_m: float,
+    window_name: str = "Aurora - Region seleccionada (previsualizacion)",
+) -> None:
+    """Muestra la nube completa junto con el contorno del box 3D que se va a
+    recortar (naranja), para confirmar visualmente la region antes de
+    aplicar la segmentacion."""
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(window_name=window_name)
+    vis.add_geometry(cloud)
+    vis.add_geometry(build_quad_box_wireframe(quad_points, depth_m))
+    _apply_sdk_render_style(vis, cloud)
+    _start_at_sensor_pov(vis)
+    vis.run()
+    vis.destroy_window()
 
 
 def compute_c2c_distance(
@@ -426,6 +507,41 @@ def build_heatmap_cloud_banded(
     banded_cloud = o3d.geometry.PointCloud(updated)
     banded_cloud.colors = o3d.utility.Vector3dVector(colors)
     return banded_cloud
+
+
+# Escala termica de 6 niveles equidistantes segun el espesor objetivo definido
+# por el usuario (0 = frio/sin aplicar, tope = caliente/objetivo alcanzado).
+SIX_BAND_LABELS = ("Muy Frio", "Frio", "Fresco", "Templado", "Calido", "Caliente")
+SIX_BAND_COLORS = (
+    (0.557, 0.267, 0.678),  # Muy Frio - Morado
+    (0.0, 0.482, 1.0),  # Frio - Azul #007AFF
+    (0.0, 0.780, 0.820),  # Fresco - Cian
+    (0.204, 0.780, 0.349),  # Templado - Verde #34C759
+    (1.0, 0.549, 0.0),  # Calido - Naranja #FF8C00
+    (1.0, 0.231, 0.188),  # Caliente - Rojo #FF3B30
+)
+
+
+def build_heatmap_cloud_six_bands(
+    updated: o3d.geometry.PointCloud,
+    distances: np.ndarray,
+    target_thickness_m: float,
+) -> o3d.geometry.PointCloud:
+    """
+    Colorea la nube en 6 niveles equidistantes entre 0 y 'target_thickness_m'
+    (el espesor objetivo definido por el usuario), con la escala termica
+    Muy Frio/Frio/Fresco/Templado/Calido/Caliente (morado -> azul -> cian ->
+    verde -> naranja -> rojo). Puntos por debajo de 0 o por encima del
+    objetivo se recortan a la primera/ultima banda.
+    """
+    target_thickness_m = max(float(target_thickness_m), 1e-9)
+    band_width = target_thickness_m / len(SIX_BAND_COLORS)
+    band_idx = np.clip((distances / band_width).astype(np.int64), 0, len(SIX_BAND_COLORS) - 1)
+    colors = np.asarray(SIX_BAND_COLORS)[band_idx]
+
+    six_band_cloud = o3d.geometry.PointCloud(updated)
+    six_band_cloud.colors = o3d.utility.Vector3dVector(colors)
+    return six_band_cloud
 
 
 def save_distances_csv(path: Path, points: np.ndarray, distances: np.ndarray) -> None:

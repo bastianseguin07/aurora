@@ -20,7 +20,7 @@ import numpy as np
 import open3d as o3d
 
 from aurora_sensor import AuroraConnection, read_frame_points
-from pointcloud_core import build_heatmap_cloud, build_heatmap_cloud_banded
+from pointcloud_core import build_heatmap_cloud, build_heatmap_cloud_banded, build_heatmap_cloud_six_bands
 
 
 class LiveViewer:
@@ -34,10 +34,11 @@ class LiveViewer:
         self._thread: Optional[threading.Thread] = None
 
         self.show_updated = True
-        self.color_mode = "continuous"  # o "banded"
+        self.color_mode = "continuous"  # o "banded" o "six_bands"
         self.low_threshold = 0.02
         self.high_threshold = 0.05
         self.max_distance: float | None = None
+        self.target_thickness: float = 0.12
 
         self.aurora_connection: AuroraConnection | None = None
         self._pending_static_cloud: o3d.geometry.PointCloud | None = None
@@ -68,12 +69,21 @@ class LiveViewer:
         with self._lock:
             self.show_updated = value
 
-    def set_color_mode(self, mode: str, low_threshold: float, high_threshold: float, max_distance: float | None) -> None:
+    def set_color_mode(
+        self,
+        mode: str,
+        low_threshold: float,
+        high_threshold: float,
+        max_distance: float | None,
+        target_thickness: float | None = None,
+    ) -> None:
         with self._lock:
             self.color_mode = mode
             self.low_threshold = low_threshold
             self.high_threshold = high_threshold
             self.max_distance = max_distance
+            if target_thickness is not None:
+                self.target_thickness = target_thickness
 
     def set_live_sensor(self, connection: AuroraConnection | None) -> None:
         with self._lock:
@@ -155,8 +165,11 @@ class LiveViewer:
             mode = self.color_mode
             low, high = self.low_threshold, self.high_threshold
             max_d = self.max_distance
+            target_thickness = self.target_thickness
         if mode == "banded":
             return build_heatmap_cloud_banded(cloud, distances, low, high)
+        if mode == "six_bands":
+            return build_heatmap_cloud_six_bands(cloud, distances, target_thickness)
         return build_heatmap_cloud(cloud, distances, max_d)
 
     def _run(self) -> None:

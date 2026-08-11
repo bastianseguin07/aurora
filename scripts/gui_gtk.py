@@ -32,6 +32,8 @@ from embedded_viewer import EmbeddedComparisonViewer  # noqa: E402
 from live_viewer import LiveViewer  # noqa: E402
 from pointcloud_core import (  # noqa: E402
     PipelineParams,
+    SIX_BAND_COLORS,
+    SIX_BAND_LABELS,
     apply_rigid_transform,
     build_subtle_overlay_cloud,
     compute_c2c_distance,
@@ -44,6 +46,7 @@ from pointcloud_core import (  # noqa: E402
     rigid_transform_rms_error,
     run_pipeline,
     show_point_cloud,
+    show_quad_box_preview,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -815,8 +818,24 @@ class AuroraGUI:
         clear_button = Gtk.Button(label="Quitar segmentacion (usar nube completa)")
         clear_button.connect("clicked", lambda _b: self._clear_segmentation())
         row.pack_start(clear_button, False, False, 0)
-        self.segmentation_result_label = Gtk.Label(label="")
-        row.pack_start(self.segmentation_result_label, False, False, 0)
+
+        row = self._row(apply_box)
+        self.view_segmented_base_button = Gtk.Button(label="Ver nube segmentada: antes")
+        self.view_segmented_base_button.set_sensitive(False)
+        self.view_segmented_base_button.connect("clicked", lambda _b: self._view_segmented_cloud("base"))
+        row.pack_start(self.view_segmented_base_button, False, False, 0)
+        self.view_segmented_updated_button = Gtk.Button(label="Ver nube segmentada: despues")
+        self.view_segmented_updated_button.set_sensitive(False)
+        self.view_segmented_updated_button.connect("clicked", lambda _b: self._view_segmented_cloud("updated"))
+        row.pack_start(self.view_segmented_updated_button, False, False, 0)
+
+        self.segmentation_result_label = Gtk.Label(xalign=0)
+        self.segmentation_result_label.set_line_wrap(True)
+        apply_box.pack_start(self.segmentation_result_label, False, False, 0)
+        self.segmentation_paths_label = Gtk.Label(xalign=0)
+        self.segmentation_paths_label.set_line_wrap(True)
+        self.segmentation_paths_label.set_selectable(True)
+        apply_box.pack_start(self.segmentation_paths_label, False, False, 0)
         page.pack_start(apply_frame, False, True, 0)
 
         return self._scrolled(page)
@@ -846,6 +865,21 @@ class AuroraGUI:
 
         self.segmentation_quad = points
         self.segmentation_quad_label.set_text("4 puntos elegidos ✓")
+
+        width_m = self.segmentation_width_spin.get_value() / 100.0
+        try:
+            show_quad_box_preview(cloud, points, width_m, window_name="Aurora - Region elegida (despues, con shotcrete)")
+        except Exception as exc:
+            self._show_error("Error al mostrar la previsualizacion", str(exc))
+            return
+
+        try:
+            base_cloud = load_point_cloud(Path(self.base_path))
+            show_quad_box_preview(
+                base_cloud, points, width_m, window_name="Aurora - Misma region aplicada a la nube original (antes)"
+            )
+        except Exception as exc:
+            self._show_error("Error al mostrar la previsualizacion en la nube original", str(exc))
 
     def _apply_segmentation(self) -> None:
         if self.segmentation_quad is None:
@@ -904,13 +938,20 @@ class AuroraGUI:
     def _on_segmentation_done(self, base_out: str, updated_out: str, n_base: int, n_updated: int) -> None:
         self.apply_segmentation_button.set_sensitive(True)
         self.segmentation_result_label.set_text(f"Recorte: {n_base} / {n_updated} puntos (original/shotcrete)")
+        self.segmentation_paths_label.set_text(
+            f"Antes: {Path(base_out).name}\n  {base_out}\n"
+            f"Despues: {Path(updated_out).name}\n  {updated_out}"
+        )
         self.base_path = base_out
         self.updated_path = updated_out
         self._set_path_label(self.base_path_label, base_out)
         self._set_path_label(self.updated_path_label, updated_out)
+        self.view_segmented_base_button.set_sensitive(True)
+        self.view_segmented_updated_button.set_sensitive(True)
         self._show_info(
             "Segmentacion aplicada",
             f"Nube original recortada: {n_base} puntos.\nNube con shotcrete recortada: {n_updated} puntos.\n\n"
+            f"Guardadas en:\n{base_out}\n{updated_out}\n\n"
             "El resto del analisis (Ajustes, Visualizacion, Reporte) va a usar estas nubes recortadas.",
         )
 
@@ -928,8 +969,21 @@ class AuroraGUI:
         self._set_path_label(self.base_path_label, self.base_path)
         self._set_path_label(self.updated_path_label, self.updated_path)
         self.segmentation_result_label.set_text("Segmentacion quitada, usando la nube completa")
+        self.segmentation_paths_label.set_text("")
+        self.view_segmented_base_button.set_sensitive(False)
+        self.view_segmented_updated_button.set_sensitive(False)
         self._segmentation_source_base_path = None
         self._segmentation_source_updated_path = None
+
+    def _view_segmented_cloud(self, target: str) -> None:
+        path = self.base_path if target == "base" else self.updated_path
+        label = "Antes (segmentado)" if target == "base" else "Despues (segmentado)"
+        try:
+            cloud = load_point_cloud(Path(path))
+        except Exception as exc:
+            self._show_error("Error al abrir la nube segmentada", str(exc))
+            return
+        show_point_cloud(cloud, window_name=f"Aurora - {label}")
 
     # -- Pagina: Ajustes de analisis --------------------------------------------
 
@@ -1083,13 +1137,22 @@ class AuroraGUI:
         self.color_banded_rb = Gtk.RadioButton.new_with_label_from_widget(
             self.color_continuous_rb, "3 niveles de color"
         )
+        self.color_banded_rb.connect("toggled", lambda _b: self._on_color_mode_changed())
         row.pack_start(self.color_banded_rb, False, False, 0)
+        self.color_six_bands_rb = Gtk.RadioButton.new_with_label_from_widget(
+            self.color_continuous_rb, "6 niveles (espesor objetivo)"
+        )
+        self.color_six_bands_rb.connect("toggled", lambda _b: self._on_color_mode_changed())
+        row.pack_start(self.color_six_bands_rb, False, False, 0)
         row.pack_start(
             self._info_button(
                 "Escala continua: un degrade de color proporcional al espesor (azul = poco, "
                 "rojo = mucho).\n\n3 niveles: clasifica cada punto en verde/amarillo/rojo "
-                "segun los umbrales que definas abajo. Util para ver de un vistazo donde el "
-                "espesor es bajo, medio o alto."
+                "segun los umbrales que definas abajo.\n\n6 niveles: divide el espesor "
+                "objetivo en 6 tramos iguales con una escala termica (Muy Frio=morado, "
+                "Frio=azul, Fresco=cian, Templado=verde, Calido=naranja, Caliente=rojo = "
+                "objetivo alcanzado o superado). Util para ver de un vistazo el progreso de "
+                "aplicacion del shotcrete durante la operacion."
             ),
             False,
             False,
@@ -1111,6 +1174,23 @@ class AuroraGUI:
         band_row.pack_start(self.band_high_entry, False, False, 0)
         self.band_revealer.add(band_row)
         color_box.pack_start(self.band_revealer, False, False, 0)
+
+        self.six_bands_revealer = Gtk.Revealer()
+        self.six_bands_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        six_bands_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        six_bands_row.pack_start(Gtk.Label(label="Espesor objetivo (cm):"), False, False, 0)
+        self.target_thickness_entry = Gtk.Entry()
+        self.target_thickness_entry.set_text("12")
+        self.target_thickness_entry.set_width_chars(8)
+        six_bands_row.pack_start(self.target_thickness_entry, False, False, 0)
+        six_bands_row.pack_start(
+            Gtk.Label(label="(6 tramos iguales: Muy Frio/Frio/Fresco/Templado/Calido/Caliente)"),
+            False,
+            False,
+            0,
+        )
+        self.six_bands_revealer.add(six_bands_row)
+        color_box.pack_start(self.six_bands_revealer, False, False, 0)
 
         advanced_frame, advanced_box = Gtk.Expander(label="Opciones avanzadas"), None
         advanced_frame.set_expanded(False)
@@ -1856,16 +1936,16 @@ class AuroraGUI:
     def _on_pipeline_success(self) -> None:
         stats = self.result.stats
         self._set_stat(self.stat_points, f"{stats.n_points:,}")
-        self._set_stat(self.stat_mean, f"{stats.mean * 1000:.1f} mm")
-        self._set_stat(self.stat_median, f"{stats.median * 1000:.1f} mm")
-        self._set_stat(self.stat_min, f"{stats.min * 1000:.1f} mm")
-        self._set_stat(self.stat_max, f"{stats.max * 1000:.1f} mm")
-        self._set_stat(self.stat_p95, f"{stats.p95 * 1000:.1f} mm")
+        self._set_stat(self.stat_mean, f"{stats.mean * 100:.2f} cm")
+        self._set_stat(self.stat_median, f"{stats.median * 100:.2f} cm")
+        self._set_stat(self.stat_min, f"{stats.min * 100:.2f} cm")
+        self._set_stat(self.stat_max, f"{stats.max * 100:.2f} cm")
+        self._set_stat(self.stat_p95, f"{stats.p95 * 100:.2f} cm")
         self.cards_row.set_no_show_all(False)
         self.cards_row.show_all()
         self.status_label.set_markup(
             f'<span foreground="{COLOR_OK}">●</span>  Analisis completo — '
-            f"espesor promedio {stats.mean * 1000:.1f} mm"
+            f"espesor promedio {stats.mean * 100:.2f} cm"
         )
         self.generate_report_button.set_sensitive(True)
         self._generate_alerts()
@@ -1927,25 +2007,42 @@ class AuroraGUI:
             f.write(f"- **Nube actualizada (shotcrete):** `{self.updated_path}`\n\n")
 
             f.write("## 2. Alerta y estado general\n")
-            f.write(f"- **Umbral bajo (minimo):** {low_mm} mm\n")
-            f.write(f"- **Umbral alto (maximo):** {high_mm} mm\n")
+            f.write(f"- **Umbral bajo (minimo):** {low_mm / 10:.2f} cm\n")
+            f.write(f"- **Umbral alto (maximo):** {high_mm / 10:.2f} cm\n")
             f.write(f"- **Estado de la medicion:** {status}\n\n")
 
             f.write("## 3. Estadisticas de espesor\n")
-            f.write("| Metrica | Valor (mm) |\n")
+            f.write("| Metrica | Valor (cm) |\n")
             f.write("| :--- | :--- |\n")
             f.write(f"| Puntos analizados | {stats.n_points} |\n")
-            f.write(f"| Espesor medio | **{stats.mean * 1000:.2f}** |\n")
-            f.write(f"| Espesor mediano | {stats.median * 1000:.2f} |\n")
-            f.write(f"| Desviacion estandar | {stats.std * 1000:.2f} |\n")
-            f.write(f"| Minimo | {stats.min * 1000:.2f} |\n")
-            f.write(f"| Maximo | {stats.max * 1000:.2f} |\n")
-            f.write(f"| Percentil 95 | {stats.p95 * 1000:.2f} |\n\n")
+            f.write(f"| Espesor medio | **{stats.mean * 100:.2f}** |\n")
+            f.write(f"| Espesor mediano | {stats.median * 100:.2f} |\n")
+            f.write(f"| Desviacion estandar | {stats.std * 100:.2f} |\n")
+            f.write(f"| Minimo | {stats.min * 100:.2f} |\n")
+            f.write(f"| Maximo | {stats.max * 100:.2f} |\n")
+            f.write(f"| Percentil 95 | {stats.p95 * 100:.2f} |\n\n")
 
-            f.write("## 4. Distribucion (histograma)\n")
+            try:
+                target_thickness_cm = float(self.target_thickness_entry.get_text() or 12)
+            except ValueError:
+                target_thickness_cm = 12.0
+            band_width_cm = target_thickness_cm / len(SIX_BAND_LABELS)
+            f.write("## 4. Escala de colores (6 niveles, segun espesor objetivo)\n")
+            f.write(f"**Espesor objetivo:** {target_thickness_cm:.2f} cm\n\n")
+            f.write("| Rango (cm) | Nivel | Color |\n")
+            f.write("| :--- | :--- | :--- |\n")
+            for i, label in enumerate(SIX_BAND_LABELS):
+                band_low = band_width_cm * i
+                band_high = band_width_cm * (i + 1)
+                r, g, b = SIX_BAND_COLORS[i]
+                hex_color = f"#{int(r * 255):02X}{int(g * 255):02X}{int(b * 255):02X}"
+                f.write(f"| {band_low:.2f} - {band_high:.2f} | {label} | {hex_color} |\n")
+            f.write("\n")
+
+            f.write("## 5. Distribucion (histograma)\n")
             f.write(f"![Histograma]({self.result.histogram_path.name})\n\n")
 
-            f.write("## 5. Archivos generados\n")
+            f.write("## 6. Archivos generados\n")
             f.write(f"Los siguientes archivos se encuentran en el mismo directorio de este reporte (`{default_dir}`):\n")
             f.write(f"- 📄 **Detalle por punto:** `{self.result.csv_path.name}`\n")
             f.write(f"- 📊 **Histograma:** `{self.result.histogram_path.name}`\n")
@@ -2015,6 +2112,7 @@ class AuroraGUI:
 
     def _on_color_mode_changed(self) -> None:
         self.band_revealer.set_reveal_child(self.color_banded_rb.get_active())
+        self.six_bands_revealer.set_reveal_child(self.color_six_bands_rb.get_active())
         self._apply_viewer_settings()
 
     def _apply_viewer_settings(self) -> None:
@@ -2026,9 +2124,18 @@ class AuroraGUI:
             low_m, high_m = 0.02, 0.05
         max_distance_text = self.max_distance_entry.get_text().strip()
         max_distance = float(max_distance_text) if max_distance_text else None
+        try:
+            target_thickness_m = float(self.target_thickness_entry.get_text() or 12) / 100.0
+        except ValueError:
+            target_thickness_m = 0.12
 
-        color_mode = "banded" if self.color_banded_rb.get_active() else "continuous"
-        self.viewer.set_color_mode(color_mode, low_m, high_m, max_distance)
+        if self.color_banded_rb.get_active():
+            color_mode = "banded"
+        elif self.color_six_bands_rb.get_active():
+            color_mode = "six_bands"
+        else:
+            color_mode = "continuous"
+        self.viewer.set_color_mode(color_mode, low_m, high_m, max_distance, target_thickness_m)
         self.viewer.set_show_updated(self.show_updated_check.get_active())
 
         try:
