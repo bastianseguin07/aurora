@@ -1981,75 +1981,164 @@ class AuroraGUI:
 
         import datetime
 
+        from reportlab.lib import colors as rl_colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import cm as rl_cm
+        from reportlab.platypus import (
+            Image,
+            Paragraph,
+            SimpleDocTemplate,
+            Spacer,
+            Table,
+            TableStyle,
+        )
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_CENTER
+
         default_dir = Path(self.output_dir)
         default_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        report_path = default_dir / f"informe_aurora_{timestamp}.md"
+        now = datetime.datetime.now()
+        timestamp = now.strftime("%Y%m%d_%H%M%S")
+        report_path = default_dir / f"informe_aurora_{timestamp}.pdf"
 
         stats = self.result.stats
         low_mm = float(self.band_low_entry.get_text() or 20)
         high_mm = float(self.band_high_entry.get_text() or 50)
         mean_mm = stats.mean * 1000
 
-        status = "✅ **DENTRO DE PARAMETRO**"
         if mean_mm < low_mm:
-            status = "⚠️ **FALTA SHOTCRETE** (bajo el umbral)"
+            status_text, status_color = "FALTA SHOTCRETE (bajo el umbral)", rl_colors.HexColor("#FFCC00")
         elif mean_mm >= high_mm:
-            status = "🚨 **EXCESO DE SHOTCRETE** (sobre el umbral)"
+            status_text, status_color = "EXCESO DE SHOTCRETE (sobre el umbral)", rl_colors.HexColor("#FF3B30")
+        else:
+            status_text, status_color = "DENTRO DE PARAMETRO", rl_colors.HexColor("#34C759")
 
-        with open(report_path, "w", encoding="utf-8") as f:
-            f.write("# Informe de Medicion de Espesor de Shotcrete\n\n")
-            f.write(f"**Fecha y hora:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n")
-            f.write("**Proyecto:** CORFO Eureka (Aurora)  \n\n")
+        try:
+            target_thickness_cm = float(self.target_thickness_entry.get_text() or 12)
+        except ValueError:
+            target_thickness_cm = 12.0
+        band_width_cm = target_thickness_cm / len(SIX_BAND_LABELS)
 
-            f.write("## 1. Archivos analizados\n")
-            f.write(f"- **Nube base (original):** `{self.base_path}`\n")
-            f.write(f"- **Nube actualizada (shotcrete):** `{self.updated_path}`\n\n")
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            "AuroraTitle", parent=styles["Title"], textColor=rl_colors.HexColor("#1A1D24"), spaceAfter=4,
+        )
+        subtitle_style = ParagraphStyle(
+            "AuroraSubtitle", parent=styles["Normal"], textColor=rl_colors.HexColor("#8E95A5"), fontSize=10,
+        )
+        h2_style = ParagraphStyle(
+            "AuroraH2", parent=styles["Heading2"], textColor=rl_colors.HexColor("#CC7000"), spaceBefore=14, spaceAfter=6,
+        )
+        body_style = styles["Normal"]
+        status_style = ParagraphStyle(
+            "AuroraStatus",
+            parent=styles["Heading2"],
+            textColor=rl_colors.white,
+            backColor=status_color,
+            alignment=TA_CENTER,
+            borderPadding=8,
+            spaceAfter=6,
+        )
 
-            f.write("## 2. Alerta y estado general\n")
-            f.write(f"- **Umbral bajo (minimo):** {low_mm / 10:.2f} cm\n")
-            f.write(f"- **Umbral alto (maximo):** {high_mm / 10:.2f} cm\n")
-            f.write(f"- **Estado de la medicion:** {status}\n\n")
+        story = [
+            Paragraph("Informe de Medición de Espesor de Shotcrete", title_style),
+            Paragraph("Proyecto: CORFO Eureka (Aurora)", subtitle_style),
+            Paragraph(f"Fecha y hora: {now.strftime('%Y-%m-%d %H:%M:%S')}", subtitle_style),
+            Spacer(1, 12),
+            Paragraph(status_text, status_style),
+            Spacer(1, 6),
+            Paragraph("1. Archivos analizados", h2_style),
+            Paragraph(f"<b>Nube base (original):</b> {self.base_path}", body_style),
+            Paragraph(f"<b>Nube actualizada (shotcrete):</b> {self.updated_path}", body_style),
+            Paragraph("2. Umbrales de alerta", h2_style),
+            Paragraph(f"Umbral bajo (mínimo): {low_mm / 10:.2f} cm — Umbral alto (máximo): {high_mm / 10:.2f} cm", body_style),
+            Paragraph("3. Estadísticas de espesor", h2_style),
+        ]
 
-            f.write("## 3. Estadisticas de espesor\n")
-            f.write("| Metrica | Valor (cm) |\n")
-            f.write("| :--- | :--- |\n")
-            f.write(f"| Puntos analizados | {stats.n_points} |\n")
-            f.write(f"| Espesor medio | **{stats.mean * 100:.2f}** |\n")
-            f.write(f"| Espesor mediano | {stats.median * 100:.2f} |\n")
-            f.write(f"| Desviacion estandar | {stats.std * 100:.2f} |\n")
-            f.write(f"| Minimo | {stats.min * 100:.2f} |\n")
-            f.write(f"| Maximo | {stats.max * 100:.2f} |\n")
-            f.write(f"| Percentil 95 | {stats.p95 * 100:.2f} |\n\n")
+        stats_rows = [
+            ["Métrica", "Valor (cm)"],
+            ["Puntos analizados", f"{stats.n_points:,}"],
+            ["Espesor medio", f"{stats.mean * 100:.2f}"],
+            ["Espesor mediano", f"{stats.median * 100:.2f}"],
+            ["Desviación estándar", f"{stats.std * 100:.2f}"],
+            ["Mínimo", f"{stats.min * 100:.2f}"],
+            ["Máximo", f"{stats.max * 100:.2f}"],
+            ["Percentil 95", f"{stats.p95 * 100:.2f}"],
+        ]
+        stats_table = Table(stats_rows, colWidths=[8 * rl_cm, 6 * rl_cm])
+        stats_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#1A1D24")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTNAME", (0, 1), (0, 1), "Helvetica-Bold"),
+                    ("BACKGROUND", (0, 1), (-1, 1), rl_colors.HexColor("#FFE9CC")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, rl_colors.HexColor("#2E3440")),
+                    ("ROWBACKGROUNDS", (0, 2), (-1, -1), [rl_colors.white, rl_colors.HexColor("#F5F6F8")]),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ]
+            )
+        )
+        story.append(stats_table)
 
-            try:
-                target_thickness_cm = float(self.target_thickness_entry.get_text() or 12)
-            except ValueError:
-                target_thickness_cm = 12.0
-            band_width_cm = target_thickness_cm / len(SIX_BAND_LABELS)
-            f.write("## 4. Escala de colores (6 niveles, segun espesor objetivo)\n")
-            f.write(f"**Espesor objetivo:** {target_thickness_cm:.2f} cm\n\n")
-            f.write("| Rango (cm) | Nivel | Color |\n")
-            f.write("| :--- | :--- | :--- |\n")
-            for i, label in enumerate(SIX_BAND_LABELS):
-                band_low = band_width_cm * i
-                band_high = band_width_cm * (i + 1)
-                r, g, b = SIX_BAND_COLORS[i]
-                hex_color = f"#{int(r * 255):02X}{int(g * 255):02X}{int(b * 255):02X}"
-                f.write(f"| {band_low:.2f} - {band_high:.2f} | {label} | {hex_color} |\n")
-            f.write("\n")
+        story.append(Paragraph("4. Escala de colores (6 niveles, según espesor objetivo)", h2_style))
+        story.append(Paragraph(f"Espesor objetivo: {target_thickness_cm:.2f} cm", body_style))
+        story.append(Spacer(1, 6))
+        band_rows = [["Rango (cm)", "Nivel", "Color"]]
+        band_styles = [
+            ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#1A1D24")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("GRID", (0, 0), (-1, -1), 0.5, rl_colors.HexColor("#2E3440")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]
+        for i, label in enumerate(SIX_BAND_LABELS):
+            band_low = band_width_cm * i
+            band_high = band_width_cm * (i + 1)
+            r, g, b = SIX_BAND_COLORS[i]
+            band_rows.append([f"{band_low:.2f} - {band_high:.2f}", label, ""])
+            row_idx = i + 1
+            band_styles.append(("BACKGROUND", (2, row_idx), (2, row_idx), rl_colors.Color(r, g, b)))
+        band_table = Table(band_rows, colWidths=[5 * rl_cm, 5 * rl_cm, 4 * rl_cm])
+        band_table.setStyle(TableStyle(band_styles))
+        story.append(band_table)
 
-            f.write("## 5. Distribucion (histograma)\n")
-            f.write(f"![Histograma]({self.result.histogram_path.name})\n\n")
+        story.append(Paragraph("5. Distribución (histograma)", h2_style))
+        try:
+            story.append(Image(str(self.result.histogram_path), width=15 * rl_cm, height=9 * rl_cm))
+        except Exception as exc:
+            story.append(Paragraph(f"(No se pudo incluir el histograma: {exc})", body_style))
 
-            f.write("## 6. Archivos generados\n")
-            f.write(f"Los siguientes archivos se encuentran en el mismo directorio de este reporte (`{default_dir}`):\n")
-            f.write(f"- 📄 **Detalle por punto:** `{self.result.csv_path.name}`\n")
-            f.write(f"- 📊 **Histograma:** `{self.result.histogram_path.name}`\n")
-            f.write(f"- 🧊 **Nube 3D heatmap:** `{self.result.heatmap_path.name}`\n")
+        story.append(Paragraph("6. Archivos generados", h2_style))
+        story.append(
+            Paragraph(
+                f"Los siguientes archivos se encuentran en el mismo directorio de este reporte "
+                f"({default_dir}):",
+                body_style,
+            )
+        )
+        story.append(Paragraph(f"• Detalle por punto: {self.result.csv_path.name}", body_style))
+        story.append(Paragraph(f"• Histograma: {self.result.histogram_path.name}", body_style))
+        story.append(Paragraph(f"• Nube 3D heatmap: {self.result.heatmap_path.name}", body_style))
+
+        doc = SimpleDocTemplate(
+            str(report_path),
+            pagesize=A4,
+            leftMargin=2 * rl_cm,
+            rightMargin=2 * rl_cm,
+            topMargin=1.5 * rl_cm,
+            bottomMargin=1.5 * rl_cm,
+        )
+        doc.build(story)
 
         self._log(f"Informe generado: {report_path}")
-        self._show_info("Informe generado", f"El informe (Markdown) fue guardado en:\n{report_path}")
+        self._show_info("Informe generado", f"El informe (PDF) fue guardado en:\n{report_path}")
 
     # --------------------------------------------------------------- Viewer
 
