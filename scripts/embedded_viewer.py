@@ -59,7 +59,7 @@ class EmbeddedComparisonViewer(Gtk.DrawingArea):
         self._vis = o3d.visualization.Visualizer()
         self._vis.create_window(width=self._width, height=self._height, visible=False)
         opt = self._vis.get_render_option()
-        opt.background_color = np.array([0.059, 0.067, 0.082])  # #0F1115
+        opt.background_color = np.array([1.0, 1.0, 1.0])  # blanco, para que se vean nubes con puntos negros
         opt.point_size = 1.5
 
     def load_clouds(
