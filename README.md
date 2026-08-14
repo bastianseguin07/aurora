@@ -1,9 +1,8 @@
 # Aurora — Medicion de espesor de shotcrete a partir de nubes de puntos
 
 Proyecto autocontenido: todo (entorno virtual, scripts y archivos `.ply`) vive
-dentro de esta carpeta `Aurora`. Esta branch (`gui_GTK`) agrega la interfaz
-grafica GTK3, pensada para mostrar la app a clientes con un aspecto nativo de
-escritorio Linux/Mac.
+dentro de esta carpeta `Aurora`. Incluye la interfaz gráfica GTK3 (`scripts/gui_gtk.py`),
+pensada para mostrar la app a clientes con un aspecto nativo de escritorio Linux/Mac.
 
 ## Compatibilidad real por sistema operativo
 
@@ -14,7 +13,7 @@ bindings de GTK3 para Python en cada sistema:
 
 | Sistema | GUI recomendada | Estado |
 |---|---|---|
-| **Linux (Ubuntu 20.04+)** | `scripts/gui_gtk.py` | Camino soportado y esperado a funcionar: GTK3 se instala como paquete de sistema (`apt`) y Open3D se instala normal via `pip`, ambos conviven en el mismo entorno virtual. **No se pudo probar contra una maquina Ubuntu real durante el desarrollo** (el entorno de desarrollo fue Windows), pero cada pieza por separado esta verificada. |
+| **Linux (Ubuntu 20.04+)** | `scripts/gui_gtk.py` | **Probado y verificado en Ubuntu Linux**: GTK3 se instala como paquete de sistema (`apt`) y Open3D se instala normal via `pip`, ambos conviven en el mismo entorno virtual. |
 | **macOS** | `scripts/gui_gtk.py` | Debería funcionar via Homebrew (`brew install gtk+3 pygobject3`), siguiendo el mismo patron que Linux. Instrucciones basadas en la practica estandar documentada de PyGObject/Homebrew — **no se pudo probar en una Mac real** (no hay una disponible en el entorno de desarrollo). |
 | **Windows** | `scripts/gui.py` (CustomTkinter) | GTK3 **no tiene un camino simple** en Windows: no existe un wheel de pip que lo instale, la unica forma es MSYS2 (un Python separado del de Windows) o compilar GTK desde cero con `gvsbuild` (un proceso de horas, no apto para un setup de "un comando"). Se probo exhaustivamente en este desarrollo: **MSYS2 permite correr GTK3, pero ese mismo Python no puede instalar Open3D** (no hay wheel compatible). Por eso, en Windows se recomienda usar `gui.py`, una interfaz equivalente hecha con CustomTkinter que instala con un simple `pip install` y funciona con Open3D sin problemas. |
 
