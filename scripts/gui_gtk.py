@@ -126,8 +126,6 @@ frame {{
 
 frame > label {{
     color: {COLOR_TEXT};
-    margin-left: 8px;
-    margin-right: 8px;
 }}
 
 frame > border {{
@@ -1380,9 +1378,11 @@ class AuroraGUI:
     def _section(self, title: str) -> tuple[Gtk.Frame, Gtk.Box]:
         frame = Gtk.Frame()
         label = Gtk.Label()
-        label.set_markup(f"<b>  {title}</b>")
+        label.set_markup(f"<b>{title}</b>")
         label.set_margin_start(8)
         label.set_margin_end(8)
+        label.set_margin_top(4)
+        label.set_margin_bottom(4)
         frame.set_label_widget(label)
         frame.set_shadow_type(Gtk.ShadowType.ETCHED_IN)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
