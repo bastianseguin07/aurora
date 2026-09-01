@@ -20,23 +20,30 @@ import numpy as np
 import open3d as o3d
 
 from aurora_sensor import AuroraConnection, read_frame_points
+from live_stream_server import LiveStreamServer
 from pointcloud_core import build_heatmap_cloud, build_heatmap_cloud_banded, build_heatmap_cloud_six_bands
+
+LIVE_STREAM_INTERVAL_S = 0.2  # ritmo de envio al celular, mas lento que el redibujado local
 
 
 class LiveViewer:
-    def __init__(self, base_cloud: o3d.geometry.PointCloud):
+    def __init__(self, base_cloud: o3d.geometry.PointCloud, log=print):
         self._base_cloud_initial = o3d.geometry.PointCloud(base_cloud)
         self._distance_reference_cloud = o3d.geometry.PointCloud(base_cloud)
         self._using_live_baseline = False
+        self._log = log
 
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
+        self._stream_server: LiveStreamServer | None = None
+        self._stream_base_sent = False
+
         self.show_updated = True
-        self.color_mode = "continuous"  # o "banded" o "six_bands"
-        self.low_threshold = 0.02
-        self.high_threshold = 0.05
+        self.color_mode = "banded"  # o "continuous" o "six_bands"
+        self.low_threshold = 0.05
+        self.high_threshold = 0.10
         self.max_distance: float | None = None
         self.target_thickness: float = 0.12
 
@@ -61,9 +68,30 @@ class LiveViewer:
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=3.0)
+        self.stop_stream()
 
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
+
+    def start_stream(self) -> str:
+        """Arranca (si hace falta) el servidor de transmision al celular y devuelve su URL."""
+        if self._stream_server is None:
+            self._stream_server = LiveStreamServer(log=self._log)
+        url = self._stream_server.start()
+        self._stream_base_sent = False
+        return url
+
+    def stop_stream(self) -> None:
+        if self._stream_server is not None:
+            self._stream_server.stop()
+            self._stream_server = None
+        self._stream_base_sent = False
+
+    def is_streaming(self) -> bool:
+        return bool(self._stream_server and self._stream_server.is_running())
+
+    def get_stream_url(self) -> str | None:
+        return self._stream_server.url if self._stream_server is not None else None
 
     def set_show_updated(self, value: bool) -> None:
         with self._lock:
@@ -177,7 +205,6 @@ class LiveViewer:
         vis.create_window(window_name="Aurora - Vista 3D", width=1024, height=768)
 
         base_vis = o3d.geometry.PointCloud(self._base_cloud_initial)
-        base_vis.paint_uniform_color([0.6, 0.6, 0.6])
         vis.add_geometry(base_vis)
 
         opt = vis.get_render_option()
@@ -188,6 +215,7 @@ class LiveViewer:
         updated_added = False
         last_colored: o3d.geometry.PointCloud | None = None
         last_sensor_poll = 0.0
+        last_stream_send = 0.0
 
         while not self._stop_event.is_set():
             with self._lock:
@@ -205,8 +233,18 @@ class LiveViewer:
 
             if pending_base is not None:
                 base_vis.points = pending_base.points
-                base_vis.paint_uniform_color([0.6, 0.6, 0.6])
+                if pending_base.has_colors():
+                    base_vis.colors = pending_base.colors
                 vis.update_geometry(base_vis)
+                self._stream_base_sent = False
+
+            if self._stream_server is not None and self._stream_server.is_running() and not self._stream_base_sent:
+                base_colors = (
+                    np.asarray(base_vis.colors)
+                    if base_vis.has_colors()
+                    else np.full((len(base_vis.points), 3), 0.6)
+                )
+                self._stream_base_sent = self._stream_server.broadcast_base(np.asarray(base_vis.points), base_colors)
 
             new_colored = None
             if connection is not None:
@@ -230,6 +268,13 @@ class LiveViewer:
                 new_colored = self._colorize(np.asarray(pending_static.points))
 
             if new_colored is not None:
+                if self._stream_server is not None and self._stream_server.is_running():
+                    now = time.time()
+                    if now - last_stream_send > LIVE_STREAM_INTERVAL_S:
+                        self._stream_server.broadcast_live(
+                            np.asarray(new_colored.points), np.asarray(new_colored.colors)
+                        )
+                        last_stream_send = now
                 last_colored = new_colored
                 updated_vis.points = new_colored.points
                 updated_vis.colors = new_colored.colors

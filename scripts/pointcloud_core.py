@@ -249,6 +249,93 @@ def pick_landmark_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np
     return points[picked_indices]
 
 
+def reference_photo_path_for(ply_path: Path) -> Path:
+    """Convencion de nombre del sidecar con la foto de referencia (ver
+    aurora_sensor.capture_reference_frame) asociada a una captura .ply."""
+    return ply_path.with_name(ply_path.stem + "_ref.npz")
+
+
+def save_reference_photo(ply_path: Path, image: np.ndarray, point_grid: np.ndarray) -> None:
+    """Guarda la foto de referencia y su grid de puntos 3D junto a un .ply,
+    para poder elegir puntos de alineacion sobre la foto mas adelante."""
+    np.savez_compressed(reference_photo_path_for(ply_path), image=image, point_grid=point_grid)
+
+
+def load_reference_photo(ply_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
+    """Carga la foto de referencia de un .ply si existe, o None si no se
+    capturo ninguna para ese archivo (ej. .ply externo o sensor sin camara)."""
+    path = reference_photo_path_for(ply_path)
+    if not path.exists():
+        return None
+    data = np.load(path)
+    return data["image"], data["point_grid"]
+
+
+def _nearest_valid_point(point_grid: np.ndarray, row: int, col: int, max_radius: int = 6) -> np.ndarray | None:
+    """Busca el punto 3D valido mas cercano a (row, col) en un grid chico
+    creciente, porque un objeto fino (ej. la punta de un perno) puede no
+    tener profundidad valida exactamente en el pixel clickeado."""
+    height, width = point_grid.shape[:2]
+    for radius in range(max_radius + 1):
+        r0, r1 = max(0, row - radius), min(height, row + radius + 1)
+        c0, c1 = max(0, col - radius), min(width, col + radius + 1)
+        patch = point_grid[r0:r1, c0:c1]
+        valid = ~np.isnan(patch[..., 0])
+        if valid.any():
+            return patch[valid][0]
+    return None
+
+
+def pick_landmark_points_from_photo(
+    image: np.ndarray, point_grid: np.ndarray, window_title: str, log=print
+) -> np.ndarray | None:
+    """
+    Igual que pick_landmark_points, pero eligiendo los puntos sobre la foto
+    de referencia (2D) en vez de la nube 3D cruda: util cuando el punto de
+    referencia (ej. la punta de un perno tapado por shotcrete) se ve claro
+    en la foto pero no como puntos 3D limpios. Cada click se traduce a la
+    coordenada 3D real usando 'point_grid'. Click en orden, cerrar la
+    ventana para terminar; devuelve None si se eligieron menos de 3 puntos.
+    """
+    import matplotlib.pyplot as plt
+
+    depth_height, depth_width = point_grid.shape[:2]
+    img_height, img_width = image.shape[:2]
+
+    picked: list[np.ndarray] = []
+
+    fig, ax = plt.subplots()
+    fig.canvas.manager.set_window_title(window_title)
+    ax.imshow(image)
+    ax.set_axis_off()
+    ax.set_title("Click en cada punto de referencia, en orden. Cerrar la ventana para terminar.")
+
+    def on_click(event) -> None:
+        if event.xdata is None or event.ydata is None or event.button != 1:
+            return
+        depth_col = int(event.xdata * depth_width / img_width)
+        depth_row = int(event.ydata * depth_height / img_height)
+        depth_row = min(max(depth_row, 0), depth_height - 1)
+        depth_col = min(max(depth_col, 0), depth_width - 1)
+
+        point = _nearest_valid_point(point_grid, depth_row, depth_col)
+        if point is None:
+            log("Ese punto no tiene profundidad valida cerca; elige otro.")
+            return
+
+        picked.append(point)
+        ax.plot(event.xdata, event.ydata, "o", color="lime", markersize=8, markeredgecolor="black")
+        ax.annotate(str(len(picked)), (event.xdata, event.ydata), color="black", fontsize=9, ha="center", va="center")
+        fig.canvas.draw()
+
+    fig.canvas.mpl_connect("button_press_event", on_click)
+    plt.show()
+
+    if len(picked) < 3:
+        return None
+    return np.asarray(picked)
+
+
 def pick_quad_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np.ndarray | None:
     """
     Abre un visor 3D interactivo para elegir los 4 puntos que definen una
@@ -551,19 +638,23 @@ def save_distances_csv(path: Path, points: np.ndarray, distances: np.ndarray) ->
 
 
 def save_histogram(path: Path, distances: np.ndarray) -> None:
-    import matplotlib
+    # No usar pyplot/matplotlib.use("Agg") aca: eso cambia el backend
+    # globalmente para todo el proceso (matplotlib es un singleton), y
+    # rompe en silencio el picking interactivo sobre foto de referencia
+    # (pick_landmark_points_from_photo, mas abajo) si se corre despues.
+    # Figure + FigureCanvasAgg generan el PNG sin tocar el backend global.
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
 
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig = Figure(figsize=(8, 5))
+    FigureCanvasAgg(fig)
+    ax = fig.add_subplot(111)
     ax.hist(distances * 1000, bins=60, color="steelblue", edgecolor="black")
     ax.set_xlabel("Espesor de shotcrete (mm)")
     ax.set_ylabel("Cantidad de puntos")
     ax.set_title("Distribucion del espesor de shotcrete (Cloud-to-Cloud)")
     fig.tight_layout()
     fig.savefig(path, dpi=150)
-    plt.close(fig)
 
 
 def visualize(

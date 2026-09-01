@@ -320,6 +320,64 @@ def read_frame_points_and_colors(
     return points, colors
 
 
+def capture_reference_frame(
+    connection: AuroraConnection,
+    timeout_ms: int = 300,
+    max_distance_m: float | None = None,
+) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    """
+    Captura un unico frame "de referencia": la foto de camara tal cual la ve
+    el sensor, mas un grid 3D (alto x ancho x 3) con el punto correspondiente
+    a cada pixel del frame de profundidad (NaN donde no hay profundidad
+    valida). Sirve para elegir puntos de referencia sobre la foto en vez de
+    sobre la nube de puntos cruda, para el caso en que un punto (ej. la
+    punta de un perno) se ve claro en la foto pero el sensor de profundidad
+    no llega a resolverlo como puntos 3D limpios (objeto muy fino).
+
+    Devuelve (None, None) si no hay frame organizado o no hay imagen de
+    camara disponible (best-effort: no debe romper la captura principal).
+    """
+    _, _, DEPTHCAM_FRAME_TYPE_POINT3D, _ = _import_sdk()
+    sdk = connection.sdk
+
+    if not sdk.enhanced_imaging.wait_depth_camera_next_frame(timeout_ms):
+        return None, None
+
+    frame = sdk.enhanced_imaging.peek_depth_camera_frame(DEPTHCAM_FRAME_TYPE_POINT3D)
+    if frame is None or not frame.data:
+        return None, None
+
+    points = frame.to_point3d_array()
+    if points is None or len(points) == 0:
+        return None, None
+
+    width, height = frame.width, frame.height
+    if len(points) != width * height:
+        return None, None  # necesitamos un grid organizado para mapear pixel -> punto
+
+    camera_image = None
+    if hasattr(frame, "timestamp_ns") and frame.timestamp_ns > 0:
+        try:
+            camera_image = sdk.enhanced_imaging.peek_depth_camera_related_rectified_image(frame.timestamp_ns)
+        except Exception:
+            camera_image = None
+
+    img_rgb = _extract_camera_rgb_image(camera_image) if camera_image is not None else None
+    if img_rgb is None:
+        return None, None
+
+    point_grid = points.reshape(height, width, 3).astype(np.float32)
+    valid = ~np.all(point_grid == 0, axis=2)
+    valid &= np.all(np.isfinite(point_grid), axis=2)
+    distance = np.linalg.norm(point_grid, axis=2)
+    max_range = max_distance_m if (max_distance_m is not None and max_distance_m > 0) else 50.0
+    valid &= (distance > 0.1) & (distance < max_range)
+    point_grid[~valid] = np.nan
+
+    image_uint8 = np.clip(img_rgb * 255.0, 0, 255).astype(np.uint8)
+    return image_uint8, point_grid
+
+
 def _voxel_keys(points: np.ndarray, voxel_size: float) -> np.ndarray:
     """Codifica cada punto en un entero unico que identifica su celda de voxel,
     para poder comparar presencia de celdas entre frames de forma vectorizada."""

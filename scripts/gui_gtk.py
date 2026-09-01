@@ -23,12 +23,13 @@ from pathlib import Path
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
 
 import numpy as np  # noqa: E402
 
 import aurora_sensor  # noqa: E402
 from embedded_viewer import EmbeddedComparisonViewer  # noqa: E402
+from live_stream_server import make_qr_image  # noqa: E402
 from live_viewer import LiveViewer  # noqa: E402
 from pointcloud_core import (  # noqa: E402
     PipelineParams,
@@ -40,11 +41,14 @@ from pointcloud_core import (  # noqa: E402
     compute_rigid_transform,
     crop_cloud_by_quad_box,
     load_point_cloud,
+    load_reference_photo,
     pick_crop_bounds,
     pick_landmark_points,
+    pick_landmark_points_from_photo,
     pick_quad_points,
     rigid_transform_rms_error,
     run_pipeline,
+    save_reference_photo,
     show_point_cloud,
     show_quad_box_preview,
 )
@@ -333,11 +337,6 @@ class AuroraGUI:
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         self.stack.set_transition_duration(150)
 
-        sidebar = Gtk.StackSidebar()
-        sidebar.set_stack(self.stack)
-        content_box.pack_start(sidebar, False, False, 0)
-        content_box.pack_start(self.stack, True, True, 0)
-
         self.stack.add_titled(self._build_capture_page(), "captura", "Captura")
         self.stack.add_titled(self._build_comparison_page(), "comparacion", "Comparacion")
         self.stack.add_titled(self._build_alignment_page(), "alineacion", "Alineacion")
@@ -345,6 +344,10 @@ class AuroraGUI:
         self.stack.add_titled(self._build_processing_page(), "procesamiento", "Ajustes de analisis")
         self.stack.add_titled(self._build_visualization_page(), "visualizacion", "Visualizacion 3D")
         self.stack.add_titled(self._build_embedded_test_page(), "prueba_embebida", "Comparacion (prueba)")
+
+        sidebar = self._build_sidebar()
+        content_box.pack_start(sidebar, False, False, 0)
+        content_box.pack_start(self.stack, True, True, 0)
 
         result_frame, result_box = self._section("Resultado")
         result_frame.get_style_context().add_class("status-bar")
@@ -393,6 +396,75 @@ class AuroraGUI:
         result_box.pack_start(log_expander, False, True, 6)
 
         root_box.pack_start(result_frame, False, True, 8)
+
+    def _build_sidebar(self) -> Gtk.Widget:
+        """Barra lateral propia (en vez de Gtk.StackSidebar) para poder agrupar las
+        pestanas por proposito: flujo de trabajo (pasos secuenciales, algunos
+        opcionales) vs. configuracion (no son pasos, ajustan como se calcula/ve el
+        resultado) vs. experimental."""
+        listbox = Gtk.ListBox()
+        listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        listbox.get_style_context().add_class("sidebar")
+        self._sidebar_rows: dict[str, Gtk.ListBoxRow] = {}
+
+        def add_header(text: str) -> None:
+            row = Gtk.ListBoxRow()
+            row.set_selectable(False)
+            row.set_activatable(False)
+            label = Gtk.Label(xalign=0)
+            label.set_markup(f'<small><b>{GLib.markup_escape_text(text)}</b></small>')
+            label.get_style_context().add_class("dim-label")
+            label.set_margin_start(12)
+            label.set_margin_top(12)
+            label.set_margin_bottom(2)
+            row.add(label)
+            listbox.add(row)
+
+        def add_page(title: str, stack_name: str) -> None:
+            row = Gtk.ListBoxRow()
+            label = Gtk.Label(label=title, xalign=0)
+            label.set_margin_start(16)
+            label.set_margin_end(12)
+            label.set_margin_top(8)
+            label.set_margin_bottom(8)
+            row.add(label)
+            row.stack_name = stack_name
+            listbox.add(row)
+            self._sidebar_rows[stack_name] = row
+
+        add_header("Flujo de trabajo")
+        add_page("Captura", "captura")
+        add_page("Comparacion", "comparacion")
+        add_page("Alineacion (opcional)", "alineacion")
+        add_page("Segmentacion (opcional)", "segmentacion")
+
+        add_header("Configuracion")
+        add_page("Ajustes de analisis", "procesamiento")
+        add_page("Visualizacion 3D", "visualizacion")
+
+        add_header("Experimental")
+        add_page("Comparacion (prueba)", "prueba_embebida")
+
+        def on_row_selected(_listbox, row) -> None:
+            if row is not None and getattr(row, "stack_name", None):
+                self.stack.set_visible_child_name(row.stack_name)
+
+        listbox.connect("row-selected", on_row_selected)
+        listbox.select_row(self._sidebar_rows["captura"])
+
+        def on_stack_page_changed(stack: Gtk.Stack, _pspec) -> None:
+            name = stack.get_visible_child_name()
+            row = self._sidebar_rows.get(name)
+            if row is not None and listbox.get_selected_row() is not row:
+                listbox.select_row(row)
+
+        self.stack.connect("notify::visible-child-name", on_stack_page_changed)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_size_request(200, -1)
+        scroller.add(listbox)
+        return scroller
 
     # -- Pagina: Captura ---------------------------------------------------------
 
@@ -559,6 +631,31 @@ class AuroraGUI:
             0,
         )
 
+        row = self._row(sensor_box)
+        self.stream_toggle_button = Gtk.Button(label="Iniciar transmision")
+        self.stream_toggle_button.connect("clicked", lambda _b: self._toggle_stream_clicked())
+        row.pack_start(self.stream_toggle_button, False, False, 0)
+        row.pack_start(
+            self._info_button(
+                "Abre un servidor local en esta PC para ver la vista 3D en vivo desde un "
+                "celular. Conecta el celular a la MISMA red WiFi y escanea el codigo QR que "
+                "aparece aca abajo con la camara — vas a poder orbitar y hacer zoom con el "
+                "dedo. Si la vista en vivo todavia no esta abierta, se abre automaticamente."
+            ),
+            False,
+            False,
+            0,
+        )
+
+        row = self._row(sensor_box)
+        self.stream_qr_image = Gtk.Image()
+        row.pack_start(self.stream_qr_image, False, False, 0)
+        qr_side_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.stream_url_label = Gtk.Label(label="", xalign=0)
+        self.stream_url_label.set_selectable(True)
+        qr_side_box.pack_start(self.stream_url_label, False, False, 0)
+        row.pack_start(qr_side_box, False, False, 0)
+
         page.pack_start(sensor_frame, False, True, 0)
         return self._scrolled(page)
 
@@ -616,7 +713,13 @@ class AuroraGUI:
                 "fijos que NO se muevan entre capturas — por ejemplo cabezas de pernos de "
                 "anclaje, marcas o esquinas rigidas. A diferencia de ICP (que ajusta toda "
                 "la superficie y puede confundir el espesor real con error de alineacion), "
-                "esto usa solo esos puntos fijos como referencia."
+                "esto usa solo esos puntos fijos como referencia.\n\n"
+                "Si el punto de referencia queda tapado por el shotcrete (ej. solo sobresale "
+                "la punta de un perno, muy fina para que el sensor la resuelva como puntos "
+                "3D limpios), elige 'Foto de referencia' en vez de 'Nube 3D': se elige el "
+                "punto sobre la foto que el sensor capturo junto con la nube, y el sistema "
+                "busca el punto 3D correspondiente. Solo esta disponible si esa captura se "
+                "hizo con el sensor Aurora conectado."
             ),
             xalign=0,
         )
@@ -637,6 +740,15 @@ class AuroraGUI:
         row.pack_start(self.landmarks_base_label, False, False, 0)
 
         row = self._row(step_box)
+        row.pack_start(Gtk.Label(label="Elegir sobre:"), False, False, 0)
+        self.landmark_base_source_3d_rb = Gtk.RadioButton.new_with_label(None, "Nube 3D")
+        self.landmark_base_source_photo_rb = Gtk.RadioButton.new_with_label_from_widget(
+            self.landmark_base_source_3d_rb, "Foto de referencia"
+        )
+        row.pack_start(self.landmark_base_source_3d_rb, False, False, 0)
+        row.pack_start(self.landmark_base_source_photo_rb, False, False, 0)
+
+        row = self._row(step_box)
         pick_updated_button = Gtk.Button(label="2. Elegir los MISMOS puntos en el tunel con shotcrete...")
         pick_updated_button.set_tooltip_text(
             "Elige los puntos en el MISMO orden que en el paso 1, sobre los mismos puntos fisicos."
@@ -645,6 +757,15 @@ class AuroraGUI:
         row.pack_start(pick_updated_button, False, False, 0)
         self.landmarks_updated_label = Gtk.Label(label="(ninguno)")
         row.pack_start(self.landmarks_updated_label, False, False, 0)
+
+        row = self._row(step_box)
+        row.pack_start(Gtk.Label(label="Elegir sobre:"), False, False, 0)
+        self.landmark_updated_source_3d_rb = Gtk.RadioButton.new_with_label(None, "Nube 3D")
+        self.landmark_updated_source_photo_rb = Gtk.RadioButton.new_with_label_from_widget(
+            self.landmark_updated_source_3d_rb, "Foto de referencia"
+        )
+        row.pack_start(self.landmark_updated_source_3d_rb, False, False, 0)
+        row.pack_start(self.landmark_updated_source_photo_rb, False, False, 0)
 
         page.pack_start(step_frame, False, True, 0)
 
@@ -664,28 +785,54 @@ class AuroraGUI:
         if not path.exists():
             self._show_error("Error", f"No se encontro el archivo:\n{path}")
             return
+
+        use_photo = (
+            self.landmark_base_source_photo_rb.get_active()
+            if which == "base"
+            else self.landmark_updated_source_photo_rb.get_active()
+        )
+
         try:
-            cloud = load_point_cloud(path)
-            title = (
-                "Tunel original - Shift+Click en cada punto de referencia, en orden, luego cerrar (Q)"
-                if which == "base"
-                else "Tunel con shotcrete - Elige los MISMOS puntos, en el mismo orden, luego cerrar (Q)"
-            )
-            points = pick_landmark_points(cloud, title)
+            if use_photo:
+                reference = load_reference_photo(path)
+                if reference is None:
+                    self._show_warning(
+                        "Sin foto de referencia",
+                        f"No hay foto de referencia guardada para:\n{path}\n\n"
+                        "Solo se genera al capturar esa nube con el sensor Aurora conectado. "
+                        "Elige 'Nube 3D' para este archivo.",
+                    )
+                    return
+                image, point_grid = reference
+                title = (
+                    "Tunel original - click en cada punto de referencia, en orden, luego cerrar la ventana"
+                    if which == "base"
+                    else "Tunel con shotcrete - click en los MISMOS puntos, en el mismo orden, luego cerrar la ventana"
+                )
+                points = pick_landmark_points_from_photo(image, point_grid, title, log=self._log)
+            else:
+                cloud = load_point_cloud(path)
+                title = (
+                    "Tunel original - Shift+Click en cada punto de referencia, en orden, luego cerrar (Q)"
+                    if which == "base"
+                    else "Tunel con shotcrete - Elige los MISMOS puntos, en el mismo orden, luego cerrar (Q)"
+                )
+                points = pick_landmark_points(cloud, title)
         except Exception as exc:
-            self._show_error("Error al abrir el visor 3D", str(exc))
+            self._show_error("Error al elegir los puntos", str(exc))
             return
 
         if points is None:
-            self._show_info("Sin seleccion", "Elige al menos 3 puntos (Shift+Click) antes de cerrar la ventana.")
+            self._show_info("Sin seleccion", "Elige al menos 3 puntos antes de cerrar la ventana.")
             return
 
+        method_label = "foto" if use_photo else "nube 3D"
         if which == "base":
             self.landmarks_base = points
-            self.landmarks_base_label.set_text(f"{len(points)} puntos elegidos ✓")
+            self.landmarks_base_label.set_text(f"{len(points)} puntos elegidos ({method_label}) ✓")
         else:
             self.landmarks_updated = points
-            self.landmarks_updated_label.set_text(f"{len(points)} puntos elegidos ✓")
+            self.landmarks_updated_label.set_text(f"{len(points)} puntos elegidos ({method_label}) ✓")
 
     def _apply_alignment(self) -> None:
         if self.landmarks_base is None or self.landmarks_updated is None:
@@ -1164,12 +1311,12 @@ class AuroraGUI:
         band_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         band_row.pack_start(Gtk.Label(label="Hasta este espesor = verde (mm):"), False, False, 0)
         self.band_low_entry = Gtk.Entry()
-        self.band_low_entry.set_text("20")
+        self.band_low_entry.set_text("50")
         self.band_low_entry.set_width_chars(8)
         band_row.pack_start(self.band_low_entry, False, False, 0)
         band_row.pack_start(Gtk.Label(label="Desde este espesor = rojo (mm):"), False, False, 0)
         self.band_high_entry = Gtk.Entry()
-        self.band_high_entry.set_text("50")
+        self.band_high_entry.set_text("100")
         self.band_high_entry.set_width_chars(8)
         band_row.pack_start(self.band_high_entry, False, False, 0)
         self.band_revealer.add(band_row)
@@ -1191,6 +1338,8 @@ class AuroraGUI:
         )
         self.six_bands_revealer.add(six_bands_row)
         color_box.pack_start(self.six_bands_revealer, False, False, 0)
+
+        self.color_banded_rb.set_active(True)  # despues de crear los revealers: dispara _on_color_mode_changed
 
         advanced_frame, advanced_box = Gtk.Expander(label="Opciones avanzadas"), None
         advanced_frame.set_expanded(False)
@@ -1659,7 +1808,13 @@ class AuroraGUI:
                     cone_angle_deg=cone_angle_deg,
                     forward_axis=forward_axis,
                 )
-                self._ui(self._on_capture_done, target, cloud)
+                try:
+                    ref_image, ref_point_grid = aurora_sensor.capture_reference_frame(
+                        self.sensor_connection, max_distance_m=max_distance_m
+                    )
+                except Exception:
+                    ref_image, ref_point_grid = None, None
+                self._ui(self._on_capture_done, target, cloud, ref_image, ref_point_grid)
             except Exception as exc:
                 self._ui(self._on_capture_failed, exc)
 
@@ -1672,7 +1827,7 @@ class AuroraGUI:
             self.capture_status_label.set_text("Deteniendo captura...")
             self._log("Captura detenida manualmente, procesando frames acumulados hasta ahora...")
 
-    def _on_capture_done(self, target: str, cloud) -> None:
+    def _on_capture_done(self, target: str, cloud, ref_image=None, ref_point_grid=None) -> None:
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
         self.stop_capture_button.set_sensitive(False)
@@ -1691,6 +1846,16 @@ class AuroraGUI:
 
         o3d.io.write_point_cloud(path, cloud)
         self._log(f"Captura guardada en: {path} ({len(cloud.points)} puntos)")
+
+        if ref_image is not None and ref_point_grid is not None:
+            try:
+                save_reference_photo(Path(path), ref_image, ref_point_grid)
+                self._log("Foto de referencia guardada junto a la nube (util para alinear puntos tapados por shotcrete).")
+            except Exception as exc:
+                self._log(f"No se pudo guardar la foto de referencia: {exc}")
+        else:
+            self._log("Sin foto de referencia disponible para esta captura (se podra alinear igual con la nube 3D).")
+
         self.alignment_applied = False
         if target == "base":
             self.base_path = path
@@ -1958,8 +2123,8 @@ class AuroraGUI:
     def _generate_alerts(self) -> None:
         if not self.result:
             return
-        low_mm = float(self.band_low_entry.get_text() or 20)
-        high_mm = float(self.band_high_entry.get_text() or 50)
+        low_mm = float(self.band_low_entry.get_text() or 50)
+        high_mm = float(self.band_high_entry.get_text() or 100)
         mean_mm = self.result.stats.mean * 1000
 
         if mean_mm < low_mm:
@@ -2002,8 +2167,8 @@ class AuroraGUI:
         report_path = default_dir / f"informe_aurora_{timestamp}.pdf"
 
         stats = self.result.stats
-        low_mm = float(self.band_low_entry.get_text() or 20)
-        high_mm = float(self.band_high_entry.get_text() or 50)
+        low_mm = float(self.band_low_entry.get_text() or 50)
+        high_mm = float(self.band_high_entry.get_text() or 100)
         mean_mm = stats.mean * 1000
 
         if mean_mm < low_mm:
@@ -2143,8 +2308,8 @@ class AuroraGUI:
     # --------------------------------------------------------------- Viewer
 
     def _band_thresholds_m(self) -> tuple[float, float]:
-        low_mm = float(self.band_low_entry.get_text() or 20)
-        high_mm = float(self.band_high_entry.get_text() or 50)
+        low_mm = float(self.band_low_entry.get_text() or 50)
+        high_mm = float(self.band_high_entry.get_text() or 100)
         return low_mm / 1000.0, high_mm / 1000.0
 
     def _parse_live_filter_params(self) -> tuple[float | None, float | None]:
@@ -2187,7 +2352,7 @@ class AuroraGUI:
             self._show_error("Error", str(exc))
             return
 
-        self.viewer = LiveViewer(base_cloud)
+        self.viewer = LiveViewer(base_cloud, log=self._log)
         self.viewer.start()
         self.close_viewer_button.set_sensitive(True)
         self._apply_viewer_settings()
@@ -2198,6 +2363,49 @@ class AuroraGUI:
             self.viewer.stop()
             self.viewer = None
         self.close_viewer_button.set_sensitive(False)
+        self._clear_stream_ui()
+
+    def _clear_stream_ui(self) -> None:
+        self.stream_toggle_button.set_label("Iniciar transmision")
+        self.stream_url_label.set_text("")
+        self.stream_qr_image.clear()
+
+    def _set_stream_qr(self, url: str) -> None:
+        qr_img = make_qr_image(url).resize((160, 160))
+        data = qr_img.tobytes()
+        pixbuf = GdkPixbuf.Pixbuf.new_from_data(
+            data, GdkPixbuf.Colorspace.RGB, False, 8, qr_img.width, qr_img.height, qr_img.width * 3
+        )
+        self.stream_qr_image.set_from_pixbuf(pixbuf)
+        # GdkPixbuf.new_from_data no copia el buffer: se guarda una referencia para que no lo recolecte el GC.
+        self.stream_qr_image._qr_data_ref = data
+
+    def _toggle_stream_clicked(self) -> None:
+        if self.viewer is not None and self.viewer.is_streaming():
+            self.viewer.stop_stream()
+            self._clear_stream_ui()
+            self._log("Transmision al celular detenida.")
+            return
+
+        if self.viewer is None or not self.viewer.is_running():
+            if self.sensor_connection is not None:
+                if not self._ensure_live_capture_running():
+                    return
+            else:
+                self._open_viewer()
+                if self.viewer is None:
+                    return
+
+        try:
+            url = self.viewer.start_stream()
+        except Exception as exc:
+            self._show_error("Error al iniciar la transmision", str(exc))
+            return
+
+        self.stream_toggle_button.set_label("Detener transmision")
+        self.stream_url_label.set_text(f"Escanea con el celular (misma red WiFi):\n{url}")
+        self._set_stream_qr(url)
+        self._log(f"Transmision al celular activa en: {url}")
 
     def _on_color_mode_changed(self) -> None:
         self.band_revealer.set_reveal_child(self.color_banded_rb.get_active())

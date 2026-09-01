@@ -20,6 +20,7 @@ import customtkinter as ctk
 import numpy as np
 
 import aurora_sensor
+from live_stream_server import make_qr_image
 from live_viewer import LiveViewer
 from pointcloud_core import PipelineParams, pick_crop_bounds, run_pipeline, visualize, load_point_cloud
 
@@ -59,9 +60,9 @@ class AuroraGUI:
         self.crop_margin = tk.StringVar(value="0.08")
         self.max_distance = tk.StringVar(value="")
 
-        self.color_mode = tk.StringVar(value="continuous")
-        self.band_low_mm = tk.StringVar(value="20")
-        self.band_high_mm = tk.StringVar(value="50")
+        self.color_mode = tk.StringVar(value="banded")
+        self.band_low_mm = tk.StringVar(value="50")
+        self.band_high_mm = tk.StringVar(value="100")
 
         self.show_updated = tk.BooleanVar(value=True)
         self.updated_source = tk.StringVar(value="static")  # "static" o "live"
@@ -261,6 +262,16 @@ class AuroraGUI:
             text_color=("gray10", "gray90"),
         )
         self.close_viewer_button.pack(side="left", padx=8)
+
+        stream_frame = self._section(parent, "Transmitir a un celular", fill="x")
+        row = self._row(stream_frame)
+        self.stream_toggle_button = ctk.CTkButton(row, text="Iniciar transmision", command=self._toggle_stream)
+        self.stream_toggle_button.pack(side="left")
+        self.stream_url_var = tk.StringVar(value="")
+        ctk.CTkLabel(row, textvariable=self.stream_url_var, font=FONT_BODY).pack(side="left", padx=8)
+        row = self._row(stream_frame, pady=(0, 12))
+        self.stream_qr_label = ctk.CTkLabel(row, text="", image=None)
+        self.stream_qr_label.pack(side="left")
 
     # -- Helpers de layout -----------------------------------------------------
 
@@ -508,8 +519,8 @@ class AuroraGUI:
     # --------------------------------------------------------------- Viewer
 
     def _band_thresholds_m(self) -> tuple[float, float]:
-        low_mm = float(self.band_low_mm.get() or 20)
-        high_mm = float(self.band_high_mm.get() or 50)
+        low_mm = float(self.band_low_mm.get() or 50)
+        high_mm = float(self.band_high_mm.get() or 100)
         return low_mm / 1000.0, high_mm / 1000.0
 
     def _open_viewer(self) -> None:
@@ -528,7 +539,7 @@ class AuroraGUI:
             messagebox.showerror("Error", str(exc))
             return
 
-        self.viewer = LiveViewer(base_cloud)
+        self.viewer = LiveViewer(base_cloud, log=self._log)
         self.viewer.start()
         self.close_viewer_button.configure(state="normal")
         self._apply_viewer_settings()
@@ -539,6 +550,39 @@ class AuroraGUI:
             self.viewer.stop()
             self.viewer = None
         self.close_viewer_button.configure(state="disabled")
+        self._clear_stream_ui()
+
+    def _clear_stream_ui(self) -> None:
+        self.stream_toggle_button.configure(text="Iniciar transmision")
+        self.stream_url_var.set("")
+        self.stream_qr_label.configure(image=None)
+        self.stream_qr_label._qr_image_ref = None
+
+    def _toggle_stream(self) -> None:
+        if self.viewer is not None and self.viewer.is_streaming():
+            self.viewer.stop_stream()
+            self._clear_stream_ui()
+            self._log("Transmision al celular detenida.")
+            return
+
+        if self.viewer is None or not self.viewer.is_running():
+            self._open_viewer()
+            if self.viewer is None:
+                return
+
+        try:
+            url = self.viewer.start_stream()
+        except Exception as exc:
+            messagebox.showerror("Error al iniciar la transmision", str(exc))
+            return
+
+        self.stream_toggle_button.configure(text="Detener transmision")
+        self.stream_url_var.set(f"Escanea con el celular (misma red WiFi): {url}")
+        qr_img = make_qr_image(url).resize((160, 160))
+        ctk_qr = ctk.CTkImage(light_image=qr_img, dark_image=qr_img, size=(160, 160))
+        self.stream_qr_label.configure(image=ctk_qr, text="")
+        self.stream_qr_label._qr_image_ref = ctk_qr  # evita que el GC recolecte la imagen
+        self._log(f"Transmision al celular activa en: {url}")
 
     def _apply_viewer_settings(self) -> None:
         if self.viewer is None:
@@ -546,7 +590,7 @@ class AuroraGUI:
         try:
             low_m, high_m = self._band_thresholds_m()
         except ValueError:
-            low_m, high_m = 0.02, 0.05
+            low_m, high_m = 0.05, 0.10
         max_distance = float(self.max_distance.get()) if self.max_distance.get().strip() else None
 
         self.viewer.set_color_mode(self.color_mode.get(), low_m, high_m, max_distance)
