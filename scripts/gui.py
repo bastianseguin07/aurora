@@ -399,7 +399,10 @@ class AuroraGUI:
         self.capture_base_button.configure(state="normal")
         self.capture_updated_button.configure(state="normal")
 
-        default_name = "base_capturada.ply" if target == "base" else "updated_capturada.ply"
+        import datetime
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"base_capturada_{timestamp}.ply" if target == "base" else f"updated_capturada_{timestamp}.ply"
         default_dir = PROJECT_ROOT / "data"
         default_dir.mkdir(parents=True, exist_ok=True)
         path = filedialog.asksaveasfilename(

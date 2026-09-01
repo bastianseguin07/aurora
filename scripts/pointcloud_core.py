@@ -261,14 +261,99 @@ def save_reference_photo(ply_path: Path, image: np.ndarray, point_grid: np.ndarr
     np.savez_compressed(reference_photo_path_for(ply_path), image=image, point_grid=point_grid)
 
 
+def load_reference_photo_file(npz_path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Carga una foto de referencia (imagen + grid de profundidad) desde una
+    ruta .npz elegida directamente, sin asumir la convencion de nombre de
+    reference_photo_path_for. Util cuando el .ply se movio/renombro a mano y
+    el sidecar ya no queda junto a el con el nombre esperado."""
+    data = np.load(npz_path)
+    return data["image"], data["point_grid"]
+
+
 def load_reference_photo(ply_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
     """Carga la foto de referencia de un .ply si existe, o None si no se
     capturo ninguna para ese archivo (ej. .ply externo o sensor sin camara)."""
     path = reference_photo_path_for(ply_path)
     if not path.exists():
         return None
-    data = np.load(path)
-    return data["image"], data["point_grid"]
+    return load_reference_photo_file(path)
+
+
+def render_reference_photo_from_cloud(
+    cloud: o3d.geometry.PointCloud,
+    width: int = 960,
+    height: int = 720,
+    fov_deg: float = 140.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Genera una foto de referencia SINTETICA (no una foto de camara real) a
+    partir de una nube de puntos, proyectandola con un modelo de camara
+    pinhole simple desde el origen mirando hacia +Z (misma convencion que
+    _start_at_sensor_pov: X=derecha, Y=abajo). Sirve de respaldo cuando la
+    captura real (aurora_sensor.capture_reference_frame) no entrego un frame
+    organizado o no habia imagen de camara disponible: el punto de
+    referencia sigue siendo elegible por click en una imagen, aunque esa
+    imagen no sea la foto real del sensor.
+
+    Para cada punto se calcula su pixel proyectado; cuando varios puntos
+    caen en el mismo pixel, gana el mas cercano a la camara (z minimo, tipo
+    z-buffer). fov_deg=140 por defecto porque las capturas de tunel quedan
+    muy cerca del sensor (pared a centimetros), un FOV de camara "normal"
+    (~60-70 grados) dejaria la enorme mayoria de los puntos fuera de cuadro.
+
+    Devuelve (image, point_grid) con el mismo contrato que
+    load_reference_photo(): image uint8 (H,W,3), point_grid float64 (H,W,3)
+    con NaN donde no se proyecto ningun punto.
+    """
+    points = np.asarray(cloud.points, dtype=np.float64)
+    if points.shape[0] == 0:
+        raise ValueError("La nube no tiene puntos.")
+
+    if cloud.has_colors():
+        colors = np.asarray(cloud.colors, dtype=np.float64)
+    else:
+        y = points[:, 1]
+        y_norm = (y - y.min()) / max(y.max() - y.min(), 1e-9)
+        colors = np.stack([y_norm, np.zeros_like(y_norm), 1.0 - y_norm], axis=1)
+
+    x, y, z = points[:, 0], points[:, 1], points[:, 2]
+    valid = z > 1e-6
+    if not np.any(valid):
+        raise ValueError("Ningun punto queda delante de la camara (z > 0).")
+    x, y, z = x[valid], y[valid], z[valid]
+    point_colors = colors[valid]
+    point_xyz = points[valid]
+
+    fov_rad = np.deg2rad(fov_deg)
+    focal = (width / 2.0) / np.tan(fov_rad / 2.0)
+    cx, cy = width / 2.0, height / 2.0
+
+    u = (focal * x / z + cx).astype(np.int64)
+    v = (focal * y / z + cy).astype(np.int64)
+
+    in_frame = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+    u, v, z_f = u[in_frame], v[in_frame], z[in_frame]
+    point_colors = point_colors[in_frame]
+    point_xyz = point_xyz[in_frame]
+
+    image = np.zeros((height, width, 3), dtype=np.uint8)
+    point_grid = np.full((height, width, 3), np.nan, dtype=np.float64)
+
+    # Pintar en orden de profundidad decreciente: el ultimo write en cada
+    # pixel es el punto mas cercano (mismo efecto que un z-buffer, sin
+    # necesitar un renderer grafico).
+    order = np.argsort(-z_f)
+    u, v = u[order], v[order]
+    point_colors = point_colors[order]
+    point_xyz = point_xyz[order]
+
+    image[v, u] = np.clip(point_colors * 255.0, 0, 255).astype(np.uint8)
+    point_grid[v, u] = point_xyz
+
+    if np.count_nonzero(~np.isnan(point_grid[..., 0])) == 0:
+        raise ValueError("La proyeccion no genero ningun pixel valido; revisa fov_deg u orientacion de la nube.")
+
+    return image, point_grid
 
 
 def _nearest_valid_point(point_grid: np.ndarray, row: int, col: int, max_radius: int = 6) -> np.ndarray | None:

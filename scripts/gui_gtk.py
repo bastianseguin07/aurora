@@ -42,10 +42,12 @@ from pointcloud_core import (  # noqa: E402
     crop_cloud_by_quad_box,
     load_point_cloud,
     load_reference_photo,
+    load_reference_photo_file,
     pick_crop_bounds,
     pick_landmark_points,
     pick_landmark_points_from_photo,
     pick_quad_points,
+    render_reference_photo_from_cloud,
     rigid_transform_rms_error,
     run_pipeline,
     save_reference_photo,
@@ -54,6 +56,21 @@ from pointcloud_core import (  # noqa: E402
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _latest_capture_path(prefix: str) -> str:
+    """Ruta de la captura mas reciente en data/ para 'base' o 'updated'
+    (ej. base_capturada_20260901_154230.ply), o el placeholder generico si
+    todavia no se capturo nada — desde que las capturas se guardan con
+    fecha y hora en el nombre (ver _on_capture_done), ya no existe un
+    'base.ply'/'updated.ply' fijo que sirva de default confiable."""
+    # 8 digitos (fecha) + "_" + 6 digitos (hora), matcheado con "?" para no
+    # confundir con derivados como *_alineado.ply o *_segmento.ply.
+    candidates = sorted((PROJECT_ROOT / "data").glob(f"{prefix}_capturada_????????_??????.ply"))
+    if candidates:
+        return str(candidates[-1])
+    return str(PROJECT_ROOT / "data" / f"{prefix}.ply")
+
 
 # Paleta "Dark Industrial" - estados de sensor/pipeline.
 COLOR_OK = "#34C759"
@@ -282,8 +299,12 @@ class AuroraGUI:
         self.window.set_size_request(880, 660)
         self.window.connect("destroy", self._on_close)
 
-        self.base_path = str(PROJECT_ROOT / "data" / "base.ply")
-        self.updated_path = str(PROJECT_ROOT / "data" / "updated.ply")
+        # El "antes" queda fijo en esta captura de referencia (pedido del
+        # usuario); el "despues" siempre sigue a la captura mas reciente en
+        # data/, ya que ese es el que va cambiando con cada captura nueva.
+        _fixed_base = Path("/home/miguel/Desktop/gui_gtkV2/thickness_20260702_150301.ply")
+        self.base_path = str(_fixed_base) if _fixed_base.exists() else _latest_capture_path("base")
+        self.updated_path = _latest_capture_path("updated")
         self.output_dir = str(PROJECT_ROOT / "output")
 
         self.sensor_connection = None
@@ -689,10 +710,16 @@ class AuroraGUI:
     def _set_base_path(self, path: str) -> None:
         self.base_path = path
         self.alignment_applied = False
+        self.landmark_base_manual_photo_path = None
+        if hasattr(self, "landmark_base_manual_photo_label"):
+            self.landmark_base_manual_photo_label.set_text("")
 
     def _set_updated_path(self, path: str) -> None:
         self.updated_path = path
         self.alignment_applied = False
+        self.landmark_updated_manual_photo_path = None
+        if hasattr(self, "landmark_updated_manual_photo_label"):
+            self.landmark_updated_manual_photo_label.set_text("")
 
     # -- Pagina: Alineacion (Procrustes por puntos de referencia) ---------------
 
@@ -704,6 +731,11 @@ class AuroraGUI:
         self.alignment_rotation: np.ndarray | None = None
         self.alignment_translation: np.ndarray | None = None
         self._raw_updated_path: str | None = None
+        default_base_photo = "/home/miguel/Desktop/gui_gtkV2/thickness_20260702_150301_ref.npz"
+        self.landmark_base_manual_photo_path: str | None = (
+            default_base_photo if Path(default_base_photo).exists() else None
+        )
+        self.landmark_updated_manual_photo_path: str | None = None
 
         info_frame, info_box = self._section("Alinear con puntos de referencia (opcional)")
         note = Gtk.Label(
@@ -747,6 +779,19 @@ class AuroraGUI:
         )
         row.pack_start(self.landmark_base_source_3d_rb, False, False, 0)
         row.pack_start(self.landmark_base_source_photo_rb, False, False, 0)
+        load_base_photo_button = Gtk.Button(label="Cargar foto de referencia...")
+        load_base_photo_button.set_tooltip_text(
+            "Elegir manualmente el archivo _ref.npz (foto + profundidad) si el .ply se "
+            "movio/renombro y ya no se detecta automaticamente."
+        )
+        load_base_photo_button.connect("clicked", lambda _b: self._load_manual_reference_photo("base"))
+        row.pack_start(load_base_photo_button, False, False, 0)
+        self.landmark_base_manual_photo_label = Gtk.Label(
+            label=Path(self.landmark_base_manual_photo_path).name if self.landmark_base_manual_photo_path else ""
+        )
+        row.pack_start(self.landmark_base_manual_photo_label, False, False, 0)
+        if self.landmark_base_manual_photo_path:
+            self.landmark_base_source_photo_rb.set_active(True)
 
         row = self._row(step_box)
         pick_updated_button = Gtk.Button(label="2. Elegir los MISMOS puntos en el tunel con shotcrete...")
@@ -766,6 +811,15 @@ class AuroraGUI:
         )
         row.pack_start(self.landmark_updated_source_3d_rb, False, False, 0)
         row.pack_start(self.landmark_updated_source_photo_rb, False, False, 0)
+        load_updated_photo_button = Gtk.Button(label="Cargar foto de referencia...")
+        load_updated_photo_button.set_tooltip_text(
+            "Elegir manualmente el archivo _ref.npz (foto + profundidad) si el .ply se "
+            "movio/renombro y ya no se detecta automaticamente."
+        )
+        load_updated_photo_button.connect("clicked", lambda _b: self._load_manual_reference_photo("updated"))
+        row.pack_start(load_updated_photo_button, False, False, 0)
+        self.landmark_updated_manual_photo_label = Gtk.Label(label="")
+        row.pack_start(self.landmark_updated_manual_photo_label, False, False, 0)
 
         page.pack_start(step_frame, False, True, 0)
 
@@ -780,11 +834,42 @@ class AuroraGUI:
 
         return self._scrolled(page)
 
+    def _load_manual_reference_photo(self, which: str) -> None:
+        dialog = Gtk.FileChooserDialog(
+            title="Seleccionar foto de referencia (_ref.npz)",
+            parent=self.window,
+            action=Gtk.FileChooserAction.OPEN,
+        )
+        dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Abrir", Gtk.ResponseType.OK)
+        filter_npz = Gtk.FileFilter()
+        filter_npz.set_name("Foto de referencia (*_ref.npz)")
+        filter_npz.add_pattern("*.npz")
+        dialog.add_filter(filter_npz)
+        path = None
+        if dialog.run() == Gtk.ResponseType.OK:
+            path = dialog.get_filename()
+        dialog.destroy()
+        if not path:
+            return
+
+        try:
+            load_reference_photo_file(Path(path))
+        except Exception as exc:
+            self._show_error("Error al cargar la foto de referencia", str(exc))
+            return
+
+        name = Path(path).name
+        if which == "base":
+            self.landmark_base_manual_photo_path = path
+            self.landmark_base_manual_photo_label.set_text(name)
+            self.landmark_base_source_photo_rb.set_active(True)
+        else:
+            self.landmark_updated_manual_photo_path = path
+            self.landmark_updated_manual_photo_label.set_text(name)
+            self.landmark_updated_source_photo_rb.set_active(True)
+
     def _pick_alignment_points(self, which: str) -> None:
         path = Path(self.base_path if which == "base" else self.updated_path)
-        if not path.exists():
-            self._show_error("Error", f"No se encontro el archivo:\n{path}")
-            return
 
         use_photo = (
             self.landmark_base_source_photo_rb.get_active()
@@ -792,15 +877,30 @@ class AuroraGUI:
             else self.landmark_updated_source_photo_rb.get_active()
         )
 
+        manual_photo_path = (
+            self.landmark_base_manual_photo_path if which == "base" else self.landmark_updated_manual_photo_path
+        )
+
+        # Si se eligio una foto de referencia manual, no hace falta el .ply
+        # (base_path/updated_path) para nada: todo el picking usa el .npz.
+        if not (use_photo and manual_photo_path) and not path.exists():
+            self._show_error("Error", f"No se encontro el archivo:\n{path}")
+            return
+
         try:
             if use_photo:
-                reference = load_reference_photo(path)
+                if manual_photo_path:
+                    reference = load_reference_photo_file(Path(manual_photo_path))
+                else:
+                    reference = load_reference_photo(path)
                 if reference is None:
                     self._show_warning(
                         "Sin foto de referencia",
                         f"No hay foto de referencia guardada para:\n{path}\n\n"
                         "Solo se genera al capturar esa nube con el sensor Aurora conectado. "
-                        "Elige 'Nube 3D' para este archivo.",
+                        "Si tienes el archivo _ref.npz en otra ubicacion (ej. el .ply se "
+                        "movio/renombro), usa 'Cargar foto de referencia...'. Si no, elige "
+                        "'Nube 3D' para este archivo.",
                     )
                     return
                 image, point_grid = reference
@@ -1833,7 +1933,10 @@ class AuroraGUI:
         self.stop_capture_button.set_sensitive(False)
         self.capture_stop_event = None
 
-        default_name = "base_capturada.ply" if target == "base" else "updated_capturada.ply"
+        import datetime
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"base_capturada_{timestamp}.ply" if target == "base" else f"updated_capturada_{timestamp}.ply"
         default_dir = PROJECT_ROOT / "data"
         default_dir.mkdir(parents=True, exist_ok=True)
         path = self._save_file_dialog("Guardar captura como", default_dir, default_name)
@@ -1846,6 +1949,14 @@ class AuroraGUI:
 
         o3d.io.write_point_cloud(path, cloud)
         self._log(f"Captura guardada en: {path} ({len(cloud.points)} puntos)")
+
+        if ref_image is None or ref_point_grid is None:
+            try:
+                ref_image, ref_point_grid = render_reference_photo_from_cloud(cloud)
+                self._log("Sin foto real del sensor; se genero una foto de referencia sintetica a partir de la nube.")
+            except Exception as exc:
+                self._log(f"No se pudo generar una foto de referencia sintetica: {exc}")
+                ref_image, ref_point_grid = None, None
 
         if ref_image is not None and ref_point_grid is not None:
             try:
@@ -1971,6 +2082,14 @@ class AuroraGUI:
         o3d.io.write_point_cloud(str(base_path), baseline_cloud)
         o3d.io.write_point_cloud(str(updated_path), current_cloud)
         self._log(f"Nubes en vivo guardadas en: {base_path} y {updated_path}")
+
+        for cloud, cloud_path in ((baseline_cloud, base_path), (current_cloud, updated_path)):
+            try:
+                ref_image, ref_point_grid = render_reference_photo_from_cloud(cloud)
+                save_reference_photo(cloud_path, ref_image, ref_point_grid)
+            except Exception as exc:
+                self._log(f"No se pudo generar foto de referencia para {cloud_path.name}: {exc}")
+        self._log("Fotos de referencia (sinteticas) guardadas junto a las nubes en vivo.")
 
     # ---------------------------------------------------------------- Crop
 
