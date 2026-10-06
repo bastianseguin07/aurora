@@ -54,9 +54,10 @@ GTK3 (`gi`/PyGObject) NO estan en requirements.txt — vienen del sistema
 scripts/pointcloud_core.py   <- TODA la logica geometrica (sin GUI), usada por CLI y ambas GUIs
 scripts/aurora_sensor.py     <- wrapper del SDK del sensor Slamtec Aurora
 scripts/compare_point_clouds.py  <- CLI
-scripts/gui_gtk.py           <- GUI GTK3 (clase AuroraGUI, ~2400 lineas)
+scripts/gui_gtk.py           <- GUI GTK3 (clase AuroraGUI, ~3000 lineas)
 scripts/gui.py               <- GUI CustomTkinter (equivalente para Windows)
 scripts/live_viewer.py       <- ventana Open3D aparte (vista 3D estatica o en vivo)
+scripts/pose_alignment_viewer.py <- ventana Open3D "gizmo" para reposicionar el sensor via IMU/SLAM
 scripts/embedded_viewer.py   <- visor 3D embebido en la ventana GTK (Gtk.DrawingArea), experimental
 scripts/live_stream_server.py <- servidor HTTP+WebSocket para ver la vista en vivo desde un celular
 scripts/web_static/viewer.html <- pagina que abre el celular (WebGL propio, sin CDN)
@@ -87,6 +88,21 @@ PipelineResult`. Llamado tanto por el CLI como por `_run_pipeline_worker` en
   `_nearest_valid_point` (busca el punto 3D valido mas cercano al pixel
   clickeado, porque un objeto fino como la punta de un perno puede no tener
   profundidad exactamente en ese pixel).
+- **Pose de referencia del sensor (IMU/SLAM)** — alternativa a la
+  alineacion por puntos cuando el sensor no perdio tracking entre capturas
+  (ver pestaña "Alineacion IMU" mas abajo): `reference_pose_path_for`,
+  `save_reference_pose`/`load_reference_pose` (sidecar `<nombre>_pose.npz`,
+  posicion + roll/pitch/yaw en el instante de la captura),
+  `local_axes_from_rpy_deg` (ejes propios del sensor — adelante/derecha/
+  arriba — expresados en el sistema de coordenadas mundo, a partir de su
+  orientacion), `direction_word_pairs_for_axes` (que palabra
+  'adelante'/'atras'/'izquierda'/'derecha'/'arriba'/'abajo' le corresponde
+  a moverse en +X/-X, +Y/-Y, +Z/-Z del mundo, segun hacia donde miraba el
+  sensor al capturar la base). La convencion de ejes propios del sensor
+  (adelante=+Y, derecha=+X, arriba=+Z en su marco local) se ajusto a mano
+  contra el hardware real para adelante/atras; izquierda/derecha y
+  arriba/abajo son la mejor aproximacion disponible pero no estan
+  confirmados.
 - **Segmentacion por box orientado**: `_quad_box_axes`,
   `crop_cloud_by_quad_box`, `build_quad_box_wireframe`,
   `show_quad_box_preview` — ajusta un plano a 4 puntos elegidos y recorta una
@@ -161,7 +177,15 @@ mas abajo). Devuelve `(None, None)` si el frame no es organizado o no hay
 imagen de camara disponible — best-effort, nunca rompe la captura principal
 (`capture_snapshot`) que corre en paralelo.
 
-### `gui_gtk.py` — GUI GTK3 (clase `AuroraGUI`, ~2500 lineas)
+`get_current_pose(connection) -> SensorPose` — pose actual del sensor
+(posicion en metros + roll/pitch/yaw en grados) segun su tracking
+visual-inercial (SLAM+IMU), en el mismo sistema de coordenadas que las
+nubes crudas. Es la base de la pestaña "Alineacion IMU": mientras el
+sensor queda encendido y no pierde tracking, esta pose sirve para guiar al
+usuario de vuelta a la posicion donde capturo el "Tunel original", sin
+necesidad de alinear las nubes por software despues.
+
+### `gui_gtk.py` — GUI GTK3 (clase `AuroraGUI`, ~3000 lineas)
 
 Layout (`_build_layout`, L304): boton **"Calcular espesor"** siempre visible
 arriba, panel de resultado siempre visible abajo, tema "Dark Industrial".
@@ -171,8 +195,10 @@ arriba, panel de resultado siempre visible abajo, tema "Dark Industrial".
 proposito en vez de listarlas todas igual, ya que no todas son "pasos" del
 flujo:
 
-- **Flujo de trabajo**: Captura, Comparacion, Alineacion (opcional),
-  Segmentacion (opcional) — pasos secuenciales.
+- **Flujo de trabajo**: Captura, Alineacion IMU (reposicionar sensor,
+  opcional pero recomendado si el sensor sigue conectado y con tracking),
+  Comparacion, Alineacion (opcional, respaldo por software), Segmentacion
+  (opcional) — pasos secuenciales.
 - **Configuracion**: Ajustes de analisis, Visualizacion 3D — no son pasos,
   ajustan como se calcula o se ve el resultado, se puede llegar a
   "Calcular espesor" sin pasar por ahi.
@@ -215,7 +241,63 @@ Cada pestaña tiene su `_build_*_page()`:
      `GdkPixbuf.Pixbuf.new_from_data`) para ver la vista en vivo desde un
      celular en la misma WiFi. Ver seccion `live_stream_server.py` arriba.
 
-2. **Comparacion** (`_build_comparison_page`, L664) — Solo selecciona los dos
+2. **Alineacion IMU** (`_build_imu_alignment_page`, L709) — Alternativa a la
+   pestaña "Alineacion" (punto 4 mas abajo) que evita tener que alinear las
+   nubes por software: en vez de corregir el desajuste despues, guia al
+   usuario para que el sensor **nunca pierda tracking** entre las dos
+   capturas, devolviendolo a mano a la posicion fisica exacta de la base
+   antes de capturar el shotcrete. Solo tiene sentido si el sensor sigue
+   conectado y encendido desde la captura de la base (si se apago o perdio
+   tracking, hay que usar la pestaña "Alineacion" con puntos de referencia
+   en su lugar).
+   - Al capturar "Tunel original" con el sensor conectado (pestaña
+     Captura), ademas del `.ply` y la foto de referencia se guarda
+     automaticamente un sidecar `<nombre>_pose.npz` con la posicion +
+     orientacion del sensor en ese instante
+     (`aurora_sensor.get_current_pose`, `pointcloud_core.save_reference_pose`).
+   - **"Posicion de referencia"** — muestra desde que archivo se cargo esa
+     pose, o un aviso si esa captura no tiene sidecar (se hizo sin sensor,
+     o es anterior a esta funcion) — en ese caso no hay guia disponible y
+     hay que usar "Alineacion" por software.
+   - **"Guia en vivo"** (`_imu_poll_tick`, L956, cada 300ms via
+     `GLib.timeout_add`) — compara la pose actual del sensor contra la de
+     referencia y corrige **un eje a la vez** (X, despues Y, despues Z),
+     con tolerancia `IMU_POSITION_TOLERANCE_CM = 0.5` cm por eje (y
+     `IMU_ROTATION_TOLERANCE_DEG = 3.0`grados de rotacion). La correccion
+     se muestra en palabras ("mover hacia ADELANTE: 12.0 cm"), no en
+     ejes X/Y/Z crudos — `pointcloud_core.direction_word_pairs_for_axes`
+     traduce cada eje del mundo a la palabra que le corresponde segun
+     hacia donde miraba el sensor al capturar la base. Una linea grande
+     arriba de todo muestra solo la instruccion del eje que falta corregir
+     (el mismo que resalta la flecha de la ventana 3D, ver abajo); cuando
+     los tres ejes y la rotacion estan dentro de tolerancia, se marca
+     "✓ Sensor en posicion, listo para capturar".
+   - **"Ver posiciones en 3D"** (`_open_imu_pose_viewer`, L814) — abre una
+     ventana Open3D aparte (`pose_alignment_viewer.py`, clase
+     `PoseAlignmentViewer`), deliberadamente **sin la nube de puntos**
+     (mostrarla completa no ayuda a ver "hacia donde moverse", solo
+     satura la vista): un piso de referencia (grilla), una esfera que pasa
+     de rojo a ambar a verde segun la distancia total al objetivo, y un
+     **indicador fijo en la esquina superior izquierda** de la ventana —
+     una flecha por eje activo (cian=X, magenta=Y, amarillo=Z, mismos
+     colores que los cuadraditos ■ junto a "Eje X/Y/Z" en el panel de
+     abajo) que se recalcula cada frame proyectando un pixel fijo con la
+     intrinseca/extrinseca real de la camara (`_hud_frame`), para que
+     quede pegada a esa esquina sin importar si el usuario orbita o hace
+     zoom con el mouse — se convierte en un punto verde cuando los tres
+     ejes ya estan alineados. Junto a esa ventana se abre tambien un
+     **panel flotante GTK** (`_build_imu_hud_window`, L840, siempre
+     encima) con los mismos numeros en letra grande, para poder leerlos
+     sin volver a mirar la pestaña principal mientras se mueve el sensor
+     con las dos manos.
+   - Los ejes propios del sensor (que definen que es "adelante") se
+     ajustaron a mano contra el hardware real para adelante/atras;
+     izquierda/derecha y arriba/abajo son la mejor aproximacion disponible
+     pero no estan confirmados — si una palabra no coincide con el
+     movimiento fisico real, hay que confiar en el numero (cm) y el color
+     en vez de la palabra.
+
+3. **Comparacion** (`_build_comparison_page`, L664) — Solo selecciona los dos
    archivos `.ply` ("Tunel original" / "Tunel con shotcrete"), no calcula
    nada; el resto de la app lee/escribe estos dos paths (`self.base_path`,
    `self.updated_path`). Se actualiza sola tras capturar, alinear o
@@ -223,7 +305,7 @@ Cada pestaña tiene su `_build_*_page()`:
    calculada (`self.alignment_applied = False` en `_set_base_path`/
    `_set_updated_path`), porque corresponderia a otro par de archivos.
 
-3. **Alineacion** (`_build_alignment_page`, L699; `_pick_alignment_points`,
+4. **Alineacion** (`_build_alignment_page`, L699; `_pick_alignment_points`,
    L783; `_apply_alignment`, L837) — Procrustes/Kabsch con puntos de
    referencia manuales, para cuando el sensor se reubico entre capturas y
    ICP no es confiable:
@@ -271,7 +353,7 @@ Cada pestaña tiene su `_build_*_page()`:
    quiere marcar. Click en foto 2D -> punto 3D es mas simple y no depende de
    esa reconstruccion.
 
-4. **Segmentacion** (`_build_segmentation_page`, L903;
+5. **Segmentacion** (`_build_segmentation_page`, L903;
    `_apply_segmentation`, L1031) — Recorte por box, opcional, va despues de
    Alineacion porque necesita esa transformacion (rotacion+traslacion): las
    dos nubes no comparten sistema de coordenadas hasta que se calcula.
@@ -288,7 +370,7 @@ Cada pestaña tiene su `_build_*_page()`:
       para cada una, y actualiza "Comparacion" para usarlas. "Quitar
       segmentacion" vuelve a las nubes completas.
 
-5. **Ajustes de analisis** (`_build_processing_page`, L1137;
+6. **Ajustes de analisis** (`_build_processing_page`, L1137;
    avanzado en `_build_advanced_expander_page2`, L1172) —
    - "Analizar solo una zona" (checkbox) + "Seleccionar zona en el visor
      3D..." — Shift+Click sobre 2+ puntos que delimitan la zona de interes,
@@ -297,7 +379,7 @@ Cada pestaña tiene su `_build_*_page()`:
      outliers, ICP (checkbox "Corregir alineacion"), coordenadas manuales de
      zona, carpeta de resultados de salida.
 
-6. **Visualizacion 3D** (`_build_visualization_page`, L1275) —
+7. **Visualizacion 3D** (`_build_visualization_page`, L1275) —
    - "Color del espesor": escala continua (degrade azul->rojo), **3 niveles**
      (verde/amarillo/rojo, **modo por defecto**) o 6 niveles (escala
      termica), segun umbrales en mm — default **50mm/100mm** (5cm/10cm) —
@@ -313,7 +395,7 @@ Cada pestaña tiene su `_build_*_page()`:
      FOV, inversion de ejes) — comparten estado. El boton de transmision al
      celular NO esta aca (esta en "Captura", ver arriba).
 
-7. **Comparacion (prueba)** (`_build_embedded_test_page`, L1445) — Seccion
+8. **Comparacion (prueba)** (`_build_embedded_test_page`, L1445) — Seccion
    **experimental**, no decidido si queda en la version final. Visor 3D
    **embebido directamente en la ventana** (`embedded_viewer.py`,
    `EmbeddedComparisonViewer(Gtk.DrawingArea)`), a diferencia de
@@ -353,19 +435,40 @@ que traiga el `.ply`); ya no se fuerza `paint_uniform_color`.
   cubre toda la pared) vs. **ICP** (automatico sobre toda la superficie, solo
   recomendable si el fondo estatico domina en cantidad de puntos). No
   reemplazar uno por otro sin que el usuario lo pida.
+- **Tres formas de resolver la alineacion entre capturas, no una sola.**
+  Orden de preferencia real de uso:
+  1. **Alineacion IMU** (pestaña, fisica) — el sensor nunca se apaga entre
+     capturas, se lo devuelve a mano a la posicion original guiado por la
+     app; si funciona, las dos nubes ya comparten sistema de coordenadas y
+     **no hace falta transformar nada por software**.
+  2. **Alineacion por puntos de referencia** (Procrustes/Kabsch, pestaña
+     "Alineacion") — respaldo cuando el sensor se apago, perdio tracking, o
+     la captura es de una sesion anterior sin pose guardada.
+  3. **ICP** (checkbox en Ajustes de analisis) — ultimo recurso, solo si el
+     fondo estatico domina en cantidad de puntos.
+
+  Las tres coexisten a proposito, no se reemplazan entre si. Si el usuario
+  pide "ya no necesito alinear" tras usar Alineacion IMU, es porque esa
+  captura en particular no lo necesito (sensor sin cortes de tracking) — no
+  es una señal para eliminar o deprecar la pestaña "Alineacion", que sigue
+  siendo necesaria como respaldo.
 - `gui.py` (Windows/CustomTkinter) y `gui_gtk.py` (Linux-macOS/GTK3) deben
   mantenerse funcionalmente equivalentes: un cambio de comportamiento en el
   pipeline o en una pestaña generalmente aplica a ambas GUIs. Excepcion
-  actual conocida: `gui.py` todavia no tiene la pestaña "Alineacion" en
-  absoluto (solo el checkbox de ICP), asi que el picking sobre foto de
-  referencia (ver seccion `gui_gtk.py` arriba) solo existe en `gui_gtk.py`
-  por ahora — no es una regresion, es un gap de paridad preexistente.
+  actual conocida: `gui.py` todavia no tiene las pestañas "Alineacion" ni
+  "Alineacion IMU" (solo el checkbox de ICP), asi que el picking sobre foto
+  de referencia y todo el flujo de reposicionamiento por IMU/SLAM (ver
+  secciones `gui_gtk.py` arriba) solo existen en `gui_gtk.py` por ahora —
+  no es una regresion, es un gap de paridad preexistente.
 - El repo es autocontenido: venv, scripts y `.ply` viven todos dentro de esta
   carpeta `Aurora`. Al capturar con el sensor conectado, cada `.ply` puede
   venir acompañado de un sidecar `<nombre>_ref.npz` (foto de referencia +
-  grid de profundidad, ver `pointcloud_core.save_reference_photo`) — si se
-  copia o comparte un `.ply` capturado, hay que llevarse tambien su
-  `_ref.npz` para no perder la opcion de alinear sobre la foto.
+  grid de profundidad, ver `pointcloud_core.save_reference_photo`) y de un
+  sidecar `<nombre>_pose.npz` (posicion/orientacion del sensor, solo para
+  la captura de la base — ver `pointcloud_core.save_reference_pose`) — si
+  se copia o comparte un `.ply` capturado, hay que llevarse tambien esos
+  sidecars para no perder la opcion de alinear sobre la foto o de usar la
+  guia IMU.
 - **Header binario del stream (`live_stream_server.py`/`viewer.html`) debe
   quedar en multiplos de 4 bytes.** Un `Float32Array` en JavaScript exige que
   su offset dentro del `ArrayBuffer` sea multiplo de 4, o tira `RangeError`

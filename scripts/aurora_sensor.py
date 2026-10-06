@@ -89,6 +89,30 @@ def disconnect(connection: AuroraConnection) -> None:
         connection.sdk.release()
 
 
+@dataclass
+class SensorPose:
+    position: np.ndarray  # (x, y, z) en metros, mismo frame que las nubes crudas
+    rpy_deg: np.ndarray  # (roll, pitch, yaw) en grados
+    timestamp_ns: int
+
+
+def get_current_pose(connection: AuroraConnection) -> SensorPose:
+    """Pose actual del sensor (posicion + orientacion) segun el tracking
+    visual-inercial (SLAM+IMU) del Aurora, en el mismo sistema de coordenadas
+    que las nubes crudas que devuelve read_frame_points. Se usa para guiar al
+    usuario a devolver el sensor a la posicion donde capturo la nube base
+    (pestana 'Alineacion IMU'), sin necesidad de recorrer toda la nube."""
+    try:
+        position, rpy, timestamp_ns = connection.sdk.get_current_pose(use_se3=False)
+    except Exception as exc:
+        raise RuntimeError(f"No se pudo obtener la posicion actual del sensor: {exc}") from exc
+    return SensorPose(
+        position=np.array(position, dtype=np.float64),
+        rpy_deg=np.degrees(np.array(rpy, dtype=np.float64)),
+        timestamp_ns=int(timestamp_ns),
+    )
+
+
 def read_frame_points(
     connection: AuroraConnection,
     max_points: int = 50000,

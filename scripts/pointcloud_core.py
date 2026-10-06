@@ -279,6 +279,69 @@ def load_reference_photo(ply_path: Path) -> tuple[np.ndarray, np.ndarray] | None
     return load_reference_photo_file(path)
 
 
+def reference_pose_path_for(ply_path: Path) -> Path:
+    """Convencion de nombre del sidecar con la pose del sensor (posicion +
+    orientacion IMU/SLAM) al momento de una captura .ply — ver pestana
+    'Alineacion IMU' en gui_gtk.py."""
+    return ply_path.with_name(ply_path.stem + "_pose.npz")
+
+
+def save_reference_pose(ply_path: Path, position: np.ndarray, rpy_deg: np.ndarray) -> None:
+    """Guarda la pose del sensor (posicion en metros, orientacion roll/pitch/yaw
+    en grados) junto a un .ply, para poder guiar al usuario a devolver el
+    sensor a esa misma posicion fisica antes de la siguiente captura."""
+    np.savez_compressed(
+        reference_pose_path_for(ply_path),
+        position=np.asarray(position, dtype=np.float64),
+        rpy_deg=np.asarray(rpy_deg, dtype=np.float64),
+    )
+
+
+def load_reference_pose(ply_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
+    """Carga la pose de referencia de un .ply si existe, o None si esa
+    captura se hizo sin sensor conectado o antes de este cambio."""
+    path = reference_pose_path_for(ply_path)
+    if not path.exists():
+        return None
+    data = np.load(path)
+    return data["position"], data["rpy_deg"]
+
+
+def local_axes_from_rpy_deg(rpy_deg: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Ejes propios del sensor (adelante/derecha/arriba) expresados en el
+    sistema de coordenadas mundo/mapa, a partir de su orientacion
+    roll/pitch/yaw (grados) en un instante dado. Asume que en el marco
+    propio del sensor 'adelante' (la cara con las camaras) es +Y, 'derecha'
+    es +X y 'arriba' es +Z — ajustado a mano contra el sensor real (la
+    primera version tenia 'adelante' y 'arriba' cruzados: lo que se
+    mostraba como 'arriba'/'abajo' era en realidad 'adelante'/'atras')."""
+    rotation = o3d.geometry.get_rotation_matrix_from_xyz(np.radians(np.asarray(rpy_deg, dtype=np.float64)))
+    forward = rotation @ np.array([0.0, 1.0, 0.0])
+    right = rotation @ np.array([1.0, 0.0, 0.0])
+    up = rotation @ np.array([0.0, 0.0, 1.0])
+    return forward, right, up
+
+
+def direction_word_pairs_for_axes(rpy_deg: np.ndarray) -> dict[str, tuple[str, str]]:
+    """Para cada eje del mundo (x, y, z), la palabra que corresponde a
+    moverse en +eje y en -eje ('adelante'/'atras', 'derecha'/'izquierda' o
+    'arriba'/'abajo') segun cual de los ejes propios del sensor (ver
+    local_axes_from_rpy_deg) este mas alineado con ese eje del mundo."""
+    forward, right, up = local_axes_from_rpy_deg(rpy_deg)
+    candidates = [(forward, "adelante", "atras"), (right, "derecha", "izquierda"), (up, "arriba", "abajo")]
+
+    pairs: dict[str, tuple[str, str]] = {}
+    for index, axis in enumerate(("x", "y", "z")):
+        world_axis = np.zeros(3)
+        world_axis[index] = 1.0
+        local_axis, positive_word, negative_word = max(
+            candidates, key=lambda candidate: abs(float(np.dot(world_axis, candidate[0])))
+        )
+        projection = float(np.dot(world_axis, local_axis))
+        pairs[axis] = (positive_word, negative_word) if projection >= 0 else (negative_word, positive_word)
+    return pairs
+
+
 def render_reference_photo_from_cloud(
     cloud: o3d.geometry.PointCloud,
     width: int = 960,
@@ -714,6 +777,221 @@ def build_heatmap_cloud_six_bands(
     six_band_cloud = o3d.geometry.PointCloud(updated)
     six_band_cloud.colors = o3d.utility.Vector3dVector(colors)
     return six_band_cloud
+
+
+@dataclass
+class RaycastPipelineParams:
+    base_path: Path
+    updated_path: Path
+    output_dir: Path
+    poisson_depth: int = 9
+    density_trim_quantile: float = 0.02
+    max_distance: float | None = None
+    # Origen del sensor a usar si el .ply no tiene sidecar de pose (p. ej.
+    # nubes cargadas a mano, sin sensor conectado, para probar el flujo).
+    # Si es None se exige el sidecar (ver run_raycast_pipeline).
+    base_origin: Vec3 | None = None
+    updated_origin: Vec3 | None = None
+
+
+@dataclass
+class RaycastPipelineResult:
+    stats: DistanceStats
+    distances: np.ndarray
+    hit_points: np.ndarray
+    base_mesh: o3d.geometry.TriangleMesh
+    updated_mesh: o3d.geometry.TriangleMesh
+    heatmap_cloud: o3d.geometry.PointCloud
+    csv_path: Path
+    histogram_path: Path
+    heatmap_path: Path
+
+
+def mesh_from_point_cloud(
+    cloud: o3d.geometry.PointCloud,
+    poisson_depth: int = 9,
+    density_trim_quantile: float = 0.02,
+) -> o3d.geometry.TriangleMesh:
+    """
+    Reconstruye una malla triangulada a partir de una nube de puntos via
+    Poisson surface reconstruction (usada por el flujo experimental de
+    raycasting, ver run_raycast_pipeline). Requiere normales orientadas de
+    forma consistente (Poisson las necesita para saber que lado de la
+    superficie es 'afuera'); si la nube no las trae, se estiman. Se recortan
+    los triangulos de menor densidad (artefacto tipico de Poisson en zonas
+    con pocos puntos, ej. bordes/huecos del escaneo) segun
+    'density_trim_quantile'.
+    """
+    cloud = o3d.geometry.PointCloud(cloud)
+    if not cloud.has_normals():
+        cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+        cloud.orient_normals_consistent_tangent_plane(30)
+
+    mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(cloud, depth=poisson_depth)
+    if density_trim_quantile > 0:
+        densities = np.asarray(densities)
+        threshold = np.quantile(densities, density_trim_quantile)
+        mesh.remove_vertices_by_mask(densities < threshold)
+    mesh.remove_degenerate_triangles()
+    mesh.remove_unreferenced_vertices()
+    return mesh
+
+
+def raycast_thickness(
+    base_mesh: o3d.geometry.TriangleMesh,
+    updated_mesh: o3d.geometry.TriangleMesh,
+    base_origin: np.ndarray,
+    updated_origin: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Estima el espesor por raycasting en vez de vecino-mas-cercano (C2C):
+    para cada vertice de la malla 'actualizada' (con shotcrete), tira un
+    rayo desde el origen del sensor (posicion guardada al capturar, ver
+    save_reference_pose) pasando por ese vertice, y el MISMO rayo (mismo
+    origen+direccion) contra la malla 'base'. El espesor es la resta de las
+    distancias de impacto (base - actualizada): positivo si la superficie
+    con shotcrete quedo mas cerca del sensor que la original, como se
+    espera fisicamente.
+
+    Requiere que el sensor no se haya movido entre ambas capturas (o que se
+    haya vuelto a la misma posicion via la pestaña 'Alineacion IMU') — si
+    'base_origin' y 'updated_origin' difieren, las direcciones no apuntan
+    al mismo punto fisico en ambas mallas y el resultado deja de ser
+    valido; quien llama a esta funcion es responsable de avisar si el
+    desfasaje es grande (ver run_raycast_pipeline).
+
+    Devuelve (distancias, puntos de impacto sobre la malla actualizada)
+    solo para los rayos que impactaron ambas mallas.
+    """
+    scene_updated = o3d.t.geometry.RaycastingScene()
+    scene_updated.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(updated_mesh))
+    scene_base = o3d.t.geometry.RaycastingScene()
+    scene_base.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(base_mesh))
+
+    base_origin = np.asarray(base_origin, dtype=np.float64)
+    updated_origin = np.asarray(updated_origin, dtype=np.float64)
+
+    vertices = np.asarray(updated_mesh.vertices)
+    offsets = vertices - updated_origin
+    norms = np.linalg.norm(offsets, axis=1)
+    valid_dir = norms > 1e-9
+    directions = offsets[valid_dir] / norms[valid_dir, None]
+
+    origins_updated = np.tile(updated_origin, (directions.shape[0], 1))
+    origins_base = np.tile(base_origin, (directions.shape[0], 1))
+
+    rays_updated = o3d.core.Tensor(
+        np.concatenate([origins_updated, directions], axis=1).astype(np.float32)
+    )
+    rays_base = o3d.core.Tensor(
+        np.concatenate([origins_base, directions], axis=1).astype(np.float32)
+    )
+
+    t_updated = scene_updated.cast_rays(rays_updated)["t_hit"].numpy()
+    t_base = scene_base.cast_rays(rays_base)["t_hit"].numpy()
+
+    valid_hit = np.isfinite(t_updated) & np.isfinite(t_base)
+    distances = t_base[valid_hit] - t_updated[valid_hit]
+    hit_points = origins_updated[valid_hit] + directions[valid_hit] * t_updated[valid_hit, None]
+    return distances, hit_points
+
+
+def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPipelineResult:
+    """
+    Flujo experimental alternativo a run_pipeline: en vez de Cloud-to-Cloud
+    (vecino mas cercano), reconstruye una malla de cada nube y mide el
+    espesor por raycasting desde el origen del sensor (ver
+    raycast_thickness). Necesita el sidecar de pose (posicion del sensor)
+    guardado en AMBAS capturas, no solo en la base.
+    """
+    params.output_dir.mkdir(parents=True, exist_ok=True)
+
+    if params.base_origin is not None:
+        base_origin = np.asarray(params.base_origin, dtype=np.float64)
+        log(f"Origen del sensor (base) fijado a mano: {base_origin.tolist()}")
+    else:
+        base_pose = load_reference_pose(params.base_path)
+        if base_pose is None:
+            raise ValueError(
+                "No hay sidecar de pose ('_pose.npz') para la nube base y no se dio "
+                "un origen manual. Vuelve a capturar con el sensor conectado, o "
+                "completa el origen manual en la pestaña 'Raycasting (prueba)'."
+            )
+        base_origin = np.asarray(base_pose[0], dtype=np.float64)
+
+    if params.updated_origin is not None:
+        updated_origin = np.asarray(params.updated_origin, dtype=np.float64)
+        log(f"Origen del sensor (actualizada) fijado a mano: {updated_origin.tolist()}")
+    else:
+        updated_pose = load_reference_pose(params.updated_path)
+        if updated_pose is None:
+            raise ValueError(
+                "No hay sidecar de pose ('_pose.npz') para la nube actualizada y no "
+                "se dio un origen manual. Vuelve a capturar con el sensor conectado, "
+                "o completa el origen manual en la pestaña 'Raycasting (prueba)'."
+            )
+        updated_origin = np.asarray(updated_pose[0], dtype=np.float64)
+    origin_gap_cm = float(np.linalg.norm(updated_origin - base_origin)) * 100
+    if origin_gap_cm > 2.0:
+        log(
+            f"Aviso: el sensor se movio {origin_gap_cm:.1f} cm entre capturas segun "
+            "la pose guardada. El metodo de raycasting asume que el sensor no se "
+            "movio (o volvio a la misma posicion via 'Alineacion IMU'); el "
+            "resultado puede no ser fisicamente valido."
+        )
+
+    log("Cargando nubes de puntos...")
+    base_cloud = load_point_cloud(params.base_path)
+    updated_cloud = load_point_cloud(params.updated_path)
+    log(f"  Base       : {len(base_cloud.points)} puntos")
+    log(f"  Actualizada: {len(updated_cloud.points)} puntos")
+
+    log("Reconstruyendo malla (Poisson) de la nube base...")
+    base_mesh = mesh_from_point_cloud(base_cloud, params.poisson_depth, params.density_trim_quantile)
+    log(f"  Malla base: {len(base_mesh.vertices)} vertices, {len(base_mesh.triangles)} triangulos")
+
+    log("Reconstruyendo malla (Poisson) de la nube actualizada...")
+    updated_mesh = mesh_from_point_cloud(updated_cloud, params.poisson_depth, params.density_trim_quantile)
+    log(f"  Malla actualizada: {len(updated_mesh.vertices)} vertices, {len(updated_mesh.triangles)} triangulos")
+
+    log("Tirando rayos desde el origen del sensor hacia ambas mallas...")
+    distances, hit_points = raycast_thickness(base_mesh, updated_mesh, base_origin, updated_origin)
+    if distances.size == 0:
+        raise ValueError(
+            "Ningun rayo impacto ambas mallas. Revisa que las dos capturas cubran "
+            "la misma zona del tunel."
+        )
+    stats = summarize(distances)
+    log("")
+    log("Resultados (raycasting):")
+    log(str(stats))
+
+    csv_path = params.output_dir / "thickness_raycast_per_point.csv"
+    save_distances_csv(csv_path, hit_points, distances)
+    log(f"CSV guardado en: {csv_path}")
+
+    histogram_path = params.output_dir / "thickness_raycast_histogram.png"
+    save_histogram(histogram_path, distances)
+    log(f"Histograma guardado en: {histogram_path}")
+
+    hit_cloud = o3d.geometry.PointCloud()
+    hit_cloud.points = o3d.utility.Vector3dVector(hit_points)
+    heatmap_cloud = build_heatmap_cloud(hit_cloud, distances, params.max_distance)
+    heatmap_path = params.output_dir / "thickness_raycast_heatmap.ply"
+    o3d.io.write_point_cloud(str(heatmap_path), heatmap_cloud)
+    log(f"Heatmap guardado en: {heatmap_path}")
+
+    return RaycastPipelineResult(
+        stats=stats,
+        distances=distances,
+        hit_points=hit_points,
+        base_mesh=base_mesh,
+        updated_mesh=updated_mesh,
+        heatmap_cloud=heatmap_cloud,
+        csv_path=csv_path,
+        histogram_path=histogram_path,
+        heatmap_path=heatmap_path,
+    )
 
 
 def save_distances_csv(path: Path, points: np.ndarray, distances: np.ndarray) -> None:

@@ -31,8 +31,10 @@ import aurora_sensor  # noqa: E402
 from embedded_viewer import EmbeddedComparisonViewer  # noqa: E402
 from live_stream_server import make_qr_image  # noqa: E402
 from live_viewer import LiveViewer  # noqa: E402
+from pose_alignment_viewer import PoseAlignmentViewer  # noqa: E402
 from pointcloud_core import (  # noqa: E402
     PipelineParams,
+    RaycastPipelineParams,
     SIX_BAND_COLORS,
     SIX_BAND_LABELS,
     apply_rigid_transform,
@@ -40,9 +42,11 @@ from pointcloud_core import (  # noqa: E402
     compute_c2c_distance,
     compute_rigid_transform,
     crop_cloud_by_quad_box,
+    direction_word_pairs_for_axes,
     load_point_cloud,
     load_reference_photo,
     load_reference_photo_file,
+    load_reference_pose,
     pick_crop_bounds,
     pick_landmark_points,
     pick_landmark_points_from_photo,
@@ -50,7 +54,9 @@ from pointcloud_core import (  # noqa: E402
     render_reference_photo_from_cloud,
     rigid_transform_rms_error,
     run_pipeline,
+    run_raycast_pipeline,
     save_reference_photo,
+    save_reference_pose,
     show_point_cloud,
     show_quad_box_preview,
 )
@@ -76,6 +82,12 @@ def _latest_capture_path(prefix: str) -> str:
 COLOR_OK = "#34C759"
 COLOR_ERROR = "#FF3B30"
 COLOR_WARN = "#FFCC00"
+
+# Un color por eje (cian/magenta/amarillo) para la guia de alineacion IMU —
+# deben coincidir con AXIS_COLORS en pose_alignment_viewer.py, asi el
+# tramo de flecha en la vista 3D se puede relacionar de un vistazo con su
+# numero correspondiente en el panel/HUD.
+AXIS_HUD_COLORS = {"x": "#22D3EE", "y": "#E879F9", "z": "#FACC15"}
 
 # Paleta base del tema.
 COLOR_BG = "#0F1115"
@@ -312,8 +324,13 @@ class AuroraGUI:
         self.last_base_capture_path: str | None = None
         self.last_updated_capture_path: str | None = None
         self.result = None
+        self.raycast_result = None
         self.alignment_applied = False
         self.viewer: LiveViewer | None = None
+        self.pose_viewer: PoseAlignmentViewer | None = None
+        self.imu_hud_window: Gtk.Window | None = None
+        self.imu_hud_labels: dict[str, Gtk.Label] | None = None
+        self.imu_hud_status_label: Gtk.Label | None = None
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.worker_thread: threading.Thread | None = None
 
@@ -359,12 +376,14 @@ class AuroraGUI:
         self.stack.set_transition_duration(150)
 
         self.stack.add_titled(self._build_capture_page(), "captura", "Captura")
+        self.stack.add_titled(self._build_imu_alignment_page(), "alineacion_imu", "Alineacion IMU")
         self.stack.add_titled(self._build_comparison_page(), "comparacion", "Comparacion")
         self.stack.add_titled(self._build_alignment_page(), "alineacion", "Alineacion")
         self.stack.add_titled(self._build_segmentation_page(), "segmentacion", "Segmentacion")
         self.stack.add_titled(self._build_processing_page(), "procesamiento", "Ajustes de analisis")
         self.stack.add_titled(self._build_visualization_page(), "visualizacion", "Visualizacion 3D")
         self.stack.add_titled(self._build_embedded_test_page(), "prueba_embebida", "Comparacion (prueba)")
+        self.stack.add_titled(self._build_raycast_test_page(), "prueba_raycasting", "Raycasting (prueba)")
 
         sidebar = self._build_sidebar()
         content_box.pack_start(sidebar, False, False, 0)
@@ -455,6 +474,7 @@ class AuroraGUI:
 
         add_header("Flujo de trabajo")
         add_page("Captura", "captura")
+        add_page("Alineacion IMU (reposicionar sensor)", "alineacion_imu")
         add_page("Comparacion", "comparacion")
         add_page("Alineacion (opcional)", "alineacion")
         add_page("Segmentacion (opcional)", "segmentacion")
@@ -465,6 +485,7 @@ class AuroraGUI:
 
         add_header("Experimental")
         add_page("Comparacion (prueba)", "prueba_embebida")
+        add_page("Raycasting (prueba)", "prueba_raycasting")
 
         def on_row_selected(_listbox, row) -> None:
             if row is not None and getattr(row, "stack_name", None):
@@ -478,6 +499,17 @@ class AuroraGUI:
             row = self._sidebar_rows.get(name)
             if row is not None and listbox.get_selected_row() is not row:
                 listbox.select_row(row)
+            if name == "alineacion_imu":
+                self._refresh_imu_reference()
+                self._start_imu_poll()
+            else:
+                self._stop_imu_poll()
+            if name == "prueba_raycasting":
+                self._set_path_label(self.raycast_base_path_label, self.base_path)
+                self._set_path_label(self.raycast_updated_path_label, self.updated_path)
+            if name == "comparacion":
+                self._set_path_label(self.base_path_label, self.base_path)
+                self._set_path_label(self.updated_path_label, self.updated_path)
 
         self.stack.connect("notify::visible-child-name", on_stack_page_changed)
 
@@ -679,6 +711,336 @@ class AuroraGUI:
 
         page.pack_start(sensor_frame, False, True, 0)
         return self._scrolled(page)
+
+    # -- Pagina: Alineacion IMU ----------------------------------------------------
+
+    IMU_POSITION_TOLERANCE_CM = 0.5
+    IMU_ROTATION_TOLERANCE_DEG = 3.0
+
+    def _build_imu_alignment_page(self) -> Gtk.Widget:
+        page = self._new_page()
+
+        self.imu_reference_pose: tuple[np.ndarray, np.ndarray] | None = None
+        self.imu_reference_source_path: str | None = None
+        self.imu_direction_words: dict[str, tuple[str, str]] | None = None
+        self.imu_poll_source_id: int | None = None
+
+        info_frame, info_box = self._section("Reposicionar el sensor (IMU/SLAM)")
+        note = Gtk.Label(
+            label=(
+                "El sensor Aurora sigue su propia posicion (tracking visual-inercial) "
+                "mientras queda encendido. Al capturar el 'Tunel original' se guarda esa "
+                "posicion como referencia. Podes mover el sensor libremente para aplicar "
+                "el shotcrete; antes de capturar el 'Tunel con shotcrete', usa esta "
+                "pagina para devolverlo a la misma posicion fisica siguiendo la guia de "
+                "abajo (no apagues el sensor entre medio o pierde el tracking).\n\n"
+                "La guia indica hacia donde mover con palabras (adelante/atras, "
+                "izquierda/derecha, arriba/abajo) calculadas a partir de hacia donde "
+                "miraba el sensor al capturar el 'Tunel original' — 'adelante' es la cara "
+                "con las camaras en ese momento. Adelante/atras ya se valido contra el "
+                "sensor real; izquierda/derecha y arriba/abajo son la mejor aproximacion "
+                "disponible pero todavia no se confirmaron — si notas que no coinciden con "
+                "el movimiento real, confia en el numero (cm) y el color en vez de la "
+                "palabra."
+            ),
+            xalign=0,
+        )
+        note.set_line_wrap(True)
+        info_box.pack_start(note, False, False, 0)
+        page.pack_start(info_frame, False, True, 0)
+
+        ref_frame, ref_box = self._section("Posicion de referencia")
+        row = self._row(ref_box)
+        self.imu_reference_label = Gtk.Label(label="(sin capturar todavia)", xalign=0)
+        row.pack_start(self.imu_reference_label, False, False, 0)
+        refresh_button = Gtk.Button(label="Actualizar")
+        refresh_button.set_tooltip_text(
+            "Vuelve a buscar la pose de referencia guardada junto al 'Tunel original' actual."
+        )
+        refresh_button.connect("clicked", lambda _b: self._refresh_imu_reference())
+        row.pack_start(refresh_button, False, False, 0)
+        page.pack_start(ref_frame, False, True, 0)
+
+        guide_frame, guide_box = self._section("Guia en vivo")
+        self.imu_guide_status_label = Gtk.Label(label="", xalign=0)
+        guide_box.pack_start(self.imu_guide_status_label, False, False, 0)
+
+        grid = Gtk.Grid(column_spacing=16, row_spacing=6)
+        guide_box.pack_start(grid, False, False, 0)
+
+        def add_axis_row(row_idx: int, title: str, swatch_color: str | None = None) -> Gtk.Label:
+            title_label = Gtk.Label(xalign=0)
+            swatch = f'<span foreground="{swatch_color}">■</span> ' if swatch_color else ""
+            title_label.set_markup(f"{swatch}{GLib.markup_escape_text(title)}")
+            grid.attach(title_label, 0, row_idx, 1, 1)
+            value_label = Gtk.Label(label="—", xalign=0)
+            grid.attach(value_label, 1, row_idx, 1, 1)
+            return value_label
+
+        self.imu_axis_labels = {
+            "x": add_axis_row(0, "Eje X:", AXIS_HUD_COLORS["x"]),
+            "y": add_axis_row(1, "Eje Y:", AXIS_HUD_COLORS["y"]),
+            "z": add_axis_row(2, "Eje Z:", AXIS_HUD_COLORS["z"]),
+            "roll": add_axis_row(3, "Rotacion (roll):"),
+            "pitch": add_axis_row(4, "Rotacion (pitch):"),
+            "yaw": add_axis_row(5, "Rotacion (yaw):"),
+        }
+
+        row = self._row(guide_box)
+        row.pack_start(Gtk.Label(label="Distancia total:"), False, False, 0)
+        self.imu_total_distance_label = Gtk.Label(label="—")
+        row.pack_start(self.imu_total_distance_label, False, False, 0)
+
+        page.pack_start(guide_frame, False, True, 0)
+
+        viewer_frame, viewer_box = self._section("Ver posiciones en 3D")
+        viewer_note = Gtk.Label(
+            label=(
+                "Abre una ventana 3D aparte, simple (sin la nube completa): una esfera "
+                "que pasa de ROJO a AMBAR a VERDE marca al sensor segun que tan cerca "
+                "esta del objetivo. En la esquina superior izquierda de esa ventana hay "
+                "una flecha fija que indica hacia donde mover, un eje a la vez (cian=X, "
+                "despues magenta=Y, despues amarillo=Z); se convierte en un punto verde "
+                "cuando ya estan los tres alineados. Junto a la ventana 3D se abre "
+                "tambien un panel flotante con los mismos numeros en grande, para "
+                "poder leerlos sin tener que mirar esta pestana mientras movés el "
+                "sensor."
+            ),
+            xalign=0,
+        )
+        viewer_note.set_line_wrap(True)
+        viewer_box.pack_start(viewer_note, False, False, 0)
+        row = self._row(viewer_box)
+        self.open_imu_viewer_button = Gtk.Button(label="Abrir vista 3D")
+        self.open_imu_viewer_button.connect("clicked", lambda _b: self._open_imu_pose_viewer())
+        row.pack_start(self.open_imu_viewer_button, False, False, 0)
+        self.close_imu_viewer_button = Gtk.Button(label="Cerrar vista 3D")
+        self.close_imu_viewer_button.set_sensitive(False)
+        self.close_imu_viewer_button.connect("clicked", lambda _b: self._close_imu_pose_viewer())
+        row.pack_start(self.close_imu_viewer_button, False, False, 0)
+        page.pack_start(viewer_frame, False, True, 0)
+
+        return self._scrolled(page)
+
+    def _open_imu_pose_viewer(self) -> None:
+        if self.imu_reference_pose is None:
+            self._show_warning(
+                "Sin posicion de referencia",
+                "No hay una posicion de referencia cargada (ver 'Posicion de referencia' arriba).",
+            )
+            return
+        if self.pose_viewer is not None and self.pose_viewer.is_running():
+            self._show_info("Vista 3D", "La vista 3D de alineacion IMU ya esta abierta.")
+            return
+
+        reference_position, _reference_rpy_deg = self.imu_reference_pose
+        self.pose_viewer = PoseAlignmentViewer(
+            reference_position, self.IMU_POSITION_TOLERANCE_CM / 100.0, log=self._log
+        )
+        self.pose_viewer.start()
+        self.close_imu_viewer_button.set_sensitive(True)
+        self._open_imu_hud_window()
+
+    def _close_imu_pose_viewer(self) -> None:
+        if self.pose_viewer is not None:
+            self.pose_viewer.stop()
+            self.pose_viewer = None
+        self.close_imu_viewer_button.set_sensitive(False)
+        self._close_imu_hud_window()
+
+    def _build_imu_hud_window(self) -> Gtk.Window:
+        """Ventana flotante, siempre encima, con los mismos numeros que la
+        pestana 'Alineacion IMU' pero en letra grande — para poder leerlos
+        de un vistazo junto a la vista 3D mientras se mueve el sensor con
+        las dos manos, sin tener que volver a mirar la pestana."""
+        window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        window.set_title("Aurora - Metricas de alineacion")
+        window.set_default_size(300, -1)
+        window.set_keep_above(True)
+        window.set_resizable(False)
+        window.connect("delete-event", lambda *_a: self._close_imu_hud_window() or True)
+        window.move(20, 20)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+        box.set_margin_top(14)
+        box.set_margin_bottom(14)
+        window.add(box)
+
+        status_label = Gtk.Label(xalign=0)
+        status_label.set_line_wrap(True)
+        box.pack_start(status_label, False, False, 0)
+        self.imu_hud_status_label = status_label
+
+        grid = Gtk.Grid(column_spacing=14, row_spacing=8)
+        box.pack_start(grid, False, False, 0)
+
+        def add_row(row_idx: int, title: str, swatch_color: str | None = None) -> Gtk.Label:
+            title_label = Gtk.Label(xalign=0)
+            swatch = f'<span foreground="{swatch_color}">■</span> ' if swatch_color else ""
+            title_label.set_markup(f"<span size='large'>{swatch}{GLib.markup_escape_text(title)}</span>")
+            grid.attach(title_label, 0, row_idx, 1, 1)
+            value_label = Gtk.Label(label="—", xalign=0)
+            grid.attach(value_label, 1, row_idx, 1, 1)
+            return value_label
+
+        self.imu_hud_labels = {
+            "x": add_row(0, "X:", AXIS_HUD_COLORS["x"]),
+            "y": add_row(1, "Y:", AXIS_HUD_COLORS["y"]),
+            "z": add_row(2, "Z:", AXIS_HUD_COLORS["z"]),
+            "roll": add_row(3, "Roll:"),
+            "pitch": add_row(4, "Pitch:"),
+            "yaw": add_row(5, "Yaw:"),
+        }
+
+        separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        box.pack_start(separator, False, False, 0)
+
+        total_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        total_row.pack_start(Gtk.Label(label="Distancia total:"), False, False, 0)
+        total_label = Gtk.Label(label="—")
+        total_row.pack_start(total_label, False, False, 0)
+        box.pack_start(total_row, False, False, 0)
+        self.imu_hud_total_distance_label = total_label
+
+        return window
+
+    def _open_imu_hud_window(self) -> None:
+        if self.imu_hud_window is None:
+            self.imu_hud_window = self._build_imu_hud_window()
+        self.imu_hud_window.show_all()
+        self.imu_hud_window.present()
+
+    def _close_imu_hud_window(self) -> None:
+        if self.imu_hud_window is not None:
+            self.imu_hud_window.hide()
+
+    def _refresh_imu_reference(self) -> None:
+        self._close_imu_pose_viewer()
+        self.imu_reference_pose = None
+        self.imu_reference_source_path = None
+        base_path = getattr(self, "base_path", None)
+        if not base_path or not Path(base_path).exists():
+            self.imu_reference_label.set_text("(sin capturar todavia)")
+            self._set_imu_guide_disabled("Todavia no hay un 'Tunel original' cargado.")
+            return
+
+        pose = load_reference_pose(Path(base_path))
+        if pose is None:
+            self.imu_reference_label.set_text(f"No hay pose guardada para: {Path(base_path).name}")
+            self._set_imu_guide_disabled(
+                "Esta captura no tiene posicion de referencia (se hizo sin sensor conectado, o "
+                "es anterior a esta funcion). Volve a capturar el 'Tunel original' con el "
+                "sensor conectado."
+            )
+            return
+
+        self.imu_reference_pose = pose
+        self.imu_reference_source_path = base_path
+        self.imu_direction_words = direction_word_pairs_for_axes(pose[1])
+        self.imu_reference_label.set_text(f"Guardada desde: {Path(base_path).name}")
+        self.imu_guide_status_label.set_text("Conecta el sensor para ver la guia en vivo.")
+
+    def _set_imu_guide_disabled(self, message: str) -> None:
+        self.imu_guide_status_label.set_text(message)
+        for label in self.imu_axis_labels.values():
+            label.set_text("—")
+        self.imu_total_distance_label.set_text("—")
+        if self.imu_hud_labels is not None:
+            self.imu_hud_status_label.set_text(message)
+            for label in self.imu_hud_labels.values():
+                label.set_text("—")
+            self.imu_hud_total_distance_label.set_text("—")
+
+    def _start_imu_poll(self) -> None:
+        if self.imu_poll_source_id is not None:
+            return
+        self.imu_poll_source_id = GLib.timeout_add(300, self._imu_poll_tick)
+
+    def _stop_imu_poll(self) -> None:
+        source_id = getattr(self, "imu_poll_source_id", None)
+        if source_id is not None:
+            GLib.source_remove(source_id)
+            self.imu_poll_source_id = None
+
+    def _imu_poll_tick(self) -> bool:
+        if self.stack.get_visible_child_name() != "alineacion_imu":
+            self.imu_poll_source_id = None
+            return False
+
+        if self.sensor_connection is None:
+            self._set_imu_guide_disabled("Conecta el sensor en la pestana 'Captura' para ver la guia en vivo.")
+            return True
+
+        if self.imu_reference_pose is None:
+            self._set_imu_guide_disabled("No hay posicion de referencia cargada (ver arriba).")
+            return True
+
+        try:
+            pose = aurora_sensor.get_current_pose(self.sensor_connection)
+        except Exception as exc:
+            self._set_imu_guide_disabled(f"No se pudo leer la posicion del sensor: {exc}")
+            return True
+
+        ref_position, ref_rpy_deg = self.imu_reference_pose
+        position_error_m = ref_position - pose.position
+        rotation_error_deg = ((ref_rpy_deg - pose.rpy_deg + 180.0) % 360.0) - 180.0
+
+        label_sets = [self.imu_axis_labels]
+        if self.imu_hud_labels is not None:
+            label_sets.append(self.imu_hud_labels)
+
+        position_ok = True
+        pending_move: tuple[str, float] | None = None  # (palabra, cm) del primer eje sin corregir
+        for axis, value_m in zip(("x", "y", "z"), position_error_m):
+            value_cm = value_m * 100.0
+            positive_word, negative_word = self.imu_direction_words[axis]
+            word = positive_word if value_cm >= 0 else negative_word
+            within = abs(value_cm) <= self.IMU_POSITION_TOLERANCE_CM
+            position_ok = position_ok and within
+            if not within and pending_move is None:
+                pending_move = (word, abs(value_cm))
+            color = COLOR_OK if within else COLOR_WARN
+            markup = f'<span foreground="{color}">mover hacia {word.upper()}: {abs(value_cm):.1f} cm</span>'
+            for labels in label_sets:
+                labels[axis].set_markup(markup)
+
+        rotation_ok = True
+        for axis, value_deg in zip(("roll", "pitch", "yaw"), rotation_error_deg):
+            direction = "+" if value_deg >= 0 else "-"
+            within = abs(value_deg) <= self.IMU_ROTATION_TOLERANCE_DEG
+            rotation_ok = rotation_ok and within
+            color = COLOR_OK if within else COLOR_WARN
+            markup = f'<span foreground="{color}">girar {direction}: {abs(value_deg):.1f}°</span>'
+            for labels in label_sets:
+                labels[axis].set_markup(markup)
+
+        total_distance_cm = float(np.linalg.norm(position_error_m)) * 100.0
+        self.imu_total_distance_label.set_text(f"{total_distance_cm:.1f} cm")
+        if self.imu_hud_labels is not None:
+            self.imu_hud_total_distance_label.set_text(f"{total_distance_cm:.1f} cm")
+
+        if self.pose_viewer is not None and self.pose_viewer.is_running():
+            self.pose_viewer.update_current_pose(pose.position)
+
+        if pending_move is not None:
+            word, value_cm = pending_move
+            status_markup = (
+                f'<span foreground="{COLOR_WARN}" size="large" weight="bold">'
+                f"Mover hacia {word.upper()}: {value_cm:.1f} cm</span>"
+            )
+        elif not rotation_ok:
+            status_markup = (
+                f'<span foreground="{COLOR_WARN}">Posicion correcta — ajusta la rotacion (ver abajo)</span>'
+            )
+        else:
+            status_markup = f'<span foreground="{COLOR_OK}">✓ Sensor en posicion, listo para capturar</span>'
+        self.imu_guide_status_label.set_markup(status_markup)
+        if self.imu_hud_status_label is not None:
+            self.imu_hud_status_label.set_markup(status_markup)
+
+        return True
 
     # -- Pagina: Comparacion ------------------------------------------------------
 
@@ -1607,6 +1969,203 @@ class AuroraGUI:
         self.embedded_status_label.set_text("Error al cargar")
         self._show_error("Error", message)
 
+    # -- Pagina: Raycasting (prueba) --------------------------------------------
+
+    def _build_raycast_test_page(self) -> Gtk.Widget:
+        page = self._new_page()
+
+        note_frame, note_box = self._section("Seccion experimental")
+        note = Gtk.Label(
+            label=(
+                "Prueba: en vez de Cloud-to-Cloud (vecino mas cercano), reconstruye una "
+                "malla (Poisson) de cada nube y mide el espesor por raycasting: tira un "
+                "rayo desde la posicion del sensor hacia cada punto de la malla con "
+                "shotcrete, y el mismo rayo hacia la malla original — el espesor es la "
+                "resta de las dos distancias de impacto. Los archivos se comparten con la "
+                "pestaña 'Comparacion' (elegirlos aca o alla es lo mismo). Lo ideal es que "
+                "AMBAS capturas se hayan hecho con el sensor conectado (para tener la "
+                "posicion del sensor guardada en el sidecar '_pose.npz' de cada .ply) y que "
+                "el sensor no se haya movido entre una captura y la otra (o que se haya "
+                "devuelto a la misma posicion via 'Alineacion IMU'); si no hay sidecar (p. "
+                "ej. para probar el flujo sin sensor) se usa el origen manual de abajo. "
+                "Todavia no esta decidido si esto reemplaza al metodo Cloud-to-Cloud actual."
+            ),
+            xalign=0,
+        )
+        note.set_line_wrap(True)
+        note_box.pack_start(note, False, False, 0)
+        page.pack_start(note_frame, False, True, 0)
+
+        files_frame, files_box = self._section("Archivos")
+        self.raycast_base_path_label = self._file_row(
+            files_box,
+            self.base_path,
+            lambda p: self._set_base_path(p),
+            info_text="Tunel original (antes del shotcrete). Comparte archivo con la "
+            "pestaña 'Comparacion' — elegirlo aca tambien lo actualiza alla.",
+        )
+        self.raycast_updated_path_label = self._file_row(
+            files_box,
+            self.updated_path,
+            lambda p: self._set_updated_path(p),
+            info_text="Tunel con shotcrete (despues). Comparte archivo con la pestaña "
+            "'Comparacion' — elegirlo aca tambien lo actualiza alla.",
+        )
+        page.pack_start(files_frame, False, True, 0)
+
+        origin_frame, origin_box = self._section("Origen del sensor (si el .ply no tiene sidecar de pose)")
+        origin_note = Gtk.Label(
+            label=(
+                "Se usa el sidecar '_pose.npz' guardado junto al .ply si existe. Si no "
+                "existe (nube cargada a mano, sin sensor conectado), se usa el origen "
+                "manual de aca abajo — por defecto (0,0,0), es decir la nube ya esta en "
+                "el sistema de coordenadas del sensor."
+            ),
+            xalign=0,
+        )
+        origin_note.set_line_wrap(True)
+        origin_box.pack_start(origin_note, False, False, 0)
+
+        row = self._row(origin_box)
+        row.pack_start(Gtk.Label(label="Origen base (x y z, m):"), False, False, 0)
+        self.raycast_base_origin_entry = Gtk.Entry()
+        self.raycast_base_origin_entry.set_text("0 0 0")
+        self.raycast_base_origin_entry.set_width_chars(18)
+        row.pack_start(self.raycast_base_origin_entry, False, False, 0)
+
+        row = self._row(origin_box)
+        row.pack_start(Gtk.Label(label="Origen actualizada (x y z, m):"), False, False, 0)
+        self.raycast_updated_origin_entry = Gtk.Entry()
+        self.raycast_updated_origin_entry.set_text("0 0 0")
+        self.raycast_updated_origin_entry.set_width_chars(18)
+        row.pack_start(self.raycast_updated_origin_entry, False, False, 0)
+        page.pack_start(origin_frame, False, True, 0)
+
+        action_frame, action_box = self._section("Calcular")
+        row = self._row(action_box)
+        self.raycast_run_button = Gtk.Button(label="Calcular espesor (raycasting)")
+        self.raycast_run_button.connect("clicked", lambda _b: self._run_raycast_clicked())
+        row.pack_start(self.raycast_run_button, False, False, 0)
+        self.raycast_view_button = Gtk.Button(label="Ver resultado en 3D")
+        self.raycast_view_button.set_sensitive(False)
+        self.raycast_view_button.connect("clicked", lambda _b: self._view_raycast_result())
+        row.pack_start(self.raycast_view_button, False, False, 0)
+        self.raycast_status_label = Gtk.Label(label="(nada calculado todavia)")
+        row.pack_start(self.raycast_status_label, False, False, 0)
+        page.pack_start(action_frame, False, True, 0)
+
+        results_frame, results_box = self._section("Resultado")
+        self.raycast_cards_row = self._row(results_box)
+        self.raycast_cards_row.set_homogeneous(True)
+        card, self.raycast_stat_points = self._stat_card("Puntos analizados")
+        self.raycast_cards_row.pack_start(card, True, True, 0)
+        card, self.raycast_stat_mean = self._stat_card("Espesor medio")
+        self.raycast_cards_row.pack_start(card, True, True, 0)
+        card, self.raycast_stat_median = self._stat_card("Espesor mediano")
+        self.raycast_cards_row.pack_start(card, True, True, 0)
+        card, self.raycast_stat_p95 = self._stat_card("Percentil 95")
+        self.raycast_cards_row.pack_start(card, True, True, 0)
+        self.raycast_cards_row.set_no_show_all(True)
+        page.pack_start(results_frame, False, True, 0)
+
+        self.raycast_log_buffer = Gtk.TextBuffer()
+        log_view = Gtk.TextView(buffer=self.raycast_log_buffer)
+        log_view.set_editable(False)
+        log_view.set_monospace(True)
+        log_scroller = self._scrolled(log_view)
+        log_scroller.set_size_request(-1, 160)
+        log_frame, log_box = self._section("Registro")
+        log_box.pack_start(log_scroller, True, True, 0)
+        page.pack_start(log_frame, False, True, 0)
+
+        return self._scrolled(page)
+
+    def _raycast_log(self, message: str) -> None:
+        def append():
+            end_iter = self.raycast_log_buffer.get_end_iter()
+            self.raycast_log_buffer.insert(end_iter, message + "\n")
+
+        self._ui(append)
+
+    def _run_raycast_clicked(self) -> None:
+        if self.worker_thread and self.worker_thread.is_alive():
+            self._show_warning("En progreso", "Ya hay un analisis en ejecucion.")
+            return
+
+        base_file = Path(self.base_path)
+        updated_file = Path(self.updated_path)
+        if not base_file.exists() or not updated_file.exists():
+            self._show_error(
+                "Error", "Elige ambos archivos (arriba, o en la pestaña 'Comparacion') antes de calcular."
+            )
+            return
+
+        try:
+            base_origin = self._parse_xyz(self.raycast_base_origin_entry.get_text(), "Origen base")
+            updated_origin = self._parse_xyz(
+                self.raycast_updated_origin_entry.get_text(), "Origen actualizada"
+            )
+        except ValueError as exc:
+            self._show_error("Parametros invalidos", str(exc))
+            return
+
+        # Si el .ply tiene sidecar de pose (captura real con sensor), usarlo
+        # tiene prioridad sobre el origen manual del formulario; el manual es
+        # solo un respaldo para probar el flujo sin sensor conectado.
+        params = RaycastPipelineParams(
+            base_path=base_file,
+            updated_path=updated_file,
+            output_dir=Path(self.output_dir),
+            base_origin=None if load_reference_pose(base_file) is not None else base_origin,
+            updated_origin=None if load_reference_pose(updated_file) is not None else updated_origin,
+        )
+
+        self.raycast_log_buffer.set_text("")
+        self.raycast_run_button.set_sensitive(False)
+        self.raycast_view_button.set_sensitive(False)
+        self.raycast_status_label.set_text("Calculando...")
+
+        self.worker_thread = threading.Thread(
+            target=self._run_raycast_worker, args=(params,), daemon=True
+        )
+        self.worker_thread.start()
+
+    def _run_raycast_worker(self, params: RaycastPipelineParams) -> None:
+        try:
+            self.raycast_result = run_raycast_pipeline(params, log=self._raycast_log)
+            self._raycast_log("\nListo.")
+            self._ui(self._on_raycast_success)
+        except Exception as exc:
+            self._raycast_log(f"\nERROR: {exc}")
+            self._ui(self._on_raycast_failure, str(exc))
+            self._ui(self._show_error, "Error durante el analisis por raycasting", str(exc))
+        finally:
+            self._ui(self.raycast_run_button.set_sensitive, True)
+
+    def _on_raycast_success(self) -> None:
+        stats = self.raycast_result.stats
+        self._set_stat(self.raycast_stat_points, f"{stats.n_points:,}")
+        self._set_stat(self.raycast_stat_mean, f"{stats.mean * 100:.2f} cm")
+        self._set_stat(self.raycast_stat_median, f"{stats.median * 100:.2f} cm")
+        self._set_stat(self.raycast_stat_p95, f"{stats.p95 * 100:.2f} cm")
+        self.raycast_cards_row.set_no_show_all(False)
+        self.raycast_cards_row.show_all()
+        self.raycast_status_label.set_text(f"Listo — espesor promedio {stats.mean * 100:.2f} cm")
+        self.raycast_view_button.set_sensitive(True)
+
+    def _on_raycast_failure(self, message: str) -> None:
+        self.raycast_status_label.set_text("Error al calcular")
+
+    def _view_raycast_result(self) -> None:
+        if not self.raycast_result:
+            return
+        import open3d as o3d
+
+        o3d.visualization.draw_geometries(
+            [self.raycast_result.heatmap_cloud],
+            window_name="Aurora - Raycasting (prueba): heatmap de espesor",
+        )
+
     # -- Helpers de layout -----------------------------------------------------
 
     def _new_page(self) -> Gtk.Box:
@@ -1914,7 +2473,11 @@ class AuroraGUI:
                     )
                 except Exception:
                     ref_image, ref_point_grid = None, None
-                self._ui(self._on_capture_done, target, cloud, ref_image, ref_point_grid)
+                try:
+                    ref_pose = aurora_sensor.get_current_pose(self.sensor_connection)
+                except Exception:
+                    ref_pose = None
+                self._ui(self._on_capture_done, target, cloud, ref_image, ref_point_grid, ref_pose)
             except Exception as exc:
                 self._ui(self._on_capture_failed, exc)
 
@@ -1927,7 +2490,7 @@ class AuroraGUI:
             self.capture_status_label.set_text("Deteniendo captura...")
             self._log("Captura detenida manualmente, procesando frames acumulados hasta ahora...")
 
-    def _on_capture_done(self, target: str, cloud, ref_image=None, ref_point_grid=None) -> None:
+    def _on_capture_done(self, target: str, cloud, ref_image=None, ref_point_grid=None, ref_pose=None) -> None:
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
         self.stop_capture_button.set_sensitive(False)
@@ -1967,6 +2530,28 @@ class AuroraGUI:
         else:
             self._log("Sin foto de referencia disponible para esta captura (se podra alinear igual con la nube 3D).")
 
+        if ref_pose is not None:
+            try:
+                save_reference_pose(Path(path), ref_pose.position, ref_pose.rpy_deg)
+                if target == "base":
+                    self._log(
+                        "Posicion del sensor (IMU/SLAM) guardada junto a la nube — "
+                        "usa la pestana 'Alineacion IMU' para volver a ella antes de capturar el shotcrete, "
+                        "o la pestana 'Raycasting (prueba)' para medir espesor por raycasting."
+                    )
+                else:
+                    self._log(
+                        "Posicion del sensor (IMU/SLAM) guardada junto a la nube — "
+                        "necesaria para la pestana 'Raycasting (prueba)'."
+                    )
+            except Exception as exc:
+                self._log(f"No se pudo guardar la posicion de referencia del sensor: {exc}")
+        else:
+            self._log(
+                "No se pudo leer la posicion del sensor para esta captura; la guia de "
+                "'Alineacion IMU' y el metodo de raycasting no van a estar disponibles para esta nube."
+            )
+
         self.alignment_applied = False
         if target == "base":
             self.base_path = path
@@ -1974,6 +2559,7 @@ class AuroraGUI:
             self.last_base_capture_path = path
             self.view_base_capture_button.set_sensitive(True)
             self.capture_status_label.set_text("Tunel original capturado")
+            self._refresh_imu_reference()
         else:
             self.updated_path = path
             self._set_path_label(self.updated_path_label, path)
@@ -2598,6 +3184,7 @@ class AuroraGUI:
 
     def _on_close(self, *_args) -> None:
         self._close_viewer()
+        self._close_imu_pose_viewer()
         if self.sensor_connection is not None:
             try:
                 aurora_sensor.disconnect(self.sensor_connection)
