@@ -202,7 +202,7 @@ flujo:
 - **Configuracion**: Ajustes de analisis, Visualizacion 3D — no son pasos,
   ajustan como se calcula o se ve el resultado, se puede llegar a
   "Calcular espesor" sin pasar por ahi.
-- **Experimental**: Comparacion (prueba).
+- **Experimental**: Comparacion (prueba), Raycasting (prueba).
 
 Sincroniza en ambos sentidos con `self.stack` (click en la sidebar cambia de
 pagina; un salto de pagina programatico, ej. tras calcular, resalta la fila
@@ -405,6 +405,55 @@ Cada pestaña tiene su `_build_*_page()`:
    zoom). Usa la API "clasica" de Open3D (`Visualizer`, `visible=False`) en
    vez de `OffscreenRenderer`, porque este ultimo no soporta headless en
    Windows.
+
+9. **Raycasting (prueba)** (`_build_raycast_test_page`, L1975; pipeline en
+   `pointcloud_core.run_raycast_pipeline`) — Seccion **experimental**, no
+   decidido si reemplaza a Cloud-to-Cloud (vecino mas cercano). En vez de
+   medir distancia euclidiana al vecino mas cercano, reconstruye una
+   **malla** de cada nube y mide el espesor por **raycasting**. Comparte
+   archivos con "Comparacion". Dos variables independientes, cada una con
+   su propio selector:
+   - **Malla**: `mesh_from_point_cloud` (**Poisson**, requiere normales
+     orientadas, pensada para una superficie cerrada — nube completa) o
+     `mesh_from_point_cloud_delaunay` (**Delaunay 2.5D**: ajusta un plano
+     via PCA/SVD a la nube — `fit_plane` — y triangula la proyeccion (u, v)
+     de cada punto sobre ese plano con `scipy.spatial.Delaunay`, usando la
+     posicion 3D real para los vertices; descarta triangulos con algun lado
+     mas largo que `delaunay_max_edge_trim_factor` veces la mediana de
+     longitud de arista, para no puentear huecos/bordes concavos con
+     triangulos largos y finos — artefacto tipico de triangular el casco
+     convexo completo de la proyeccion). Delaunay esta pensada para un
+     recorte ya casi-plano (pestaña "Segmentacion"), no para una nube
+     completa con curvatura fuerte.
+   - **Rayos**: `raycast_thickness` (**desde el origen del sensor**: tira un
+     rayo desde la pose guardada del sensor — sidecar `_pose.npz`, o el
+     origen manual del formulario si no existe — hacia cada vertice de la
+     malla actualizada, y el mismo rayo contra la malla base; el espesor es
+     la resta de las dos distancias de impacto. Asume que el sensor no se
+     movio entre capturas, o que volvio a la misma posicion via "Alineacion
+     IMU") o `raycast_thickness_along_normal` (**a lo largo de la normal
+     del plano**: ajusta un plano a los vertices de la malla base —
+     `fit_plane`, orientado automaticamente hacia el centroide de la malla
+     actualizada — y tira un rayo por vertice en esa UNICA direccion, no la
+     normal local de cada triangulo, que seria ruidosa en una malla
+     Delaunay. No necesita la pose del sensor, pero a cambio no tiene forma
+     de detectar un desplazamiento del sensor entre capturas — exige que
+     las dos nubes ya compartan sistema de coordenadas, por eso el boton
+     dispara el mismo aviso de "Alineacion" que el pipeline principal
+     (`_confirm_missing_alignment`) si `self.alignment_applied` es `False`).
+
+   `raycast_thickness` (origen) y `raycast_thickness_along_normal` (plano)
+   son alternativas, no building blocks uno del otro — comparten la idea de
+   "un rayo por vertice contra una `o3d.t.geometry.RaycastingScene`" pero
+   difieren en que direccion usan y que asumen sobre la pose del sensor.
+
+   Dos botones de visualizacion tras calcular: **"Ver resultado en 3D"**
+   (`_view_raycast_result`) abre el heatmap de espesor (puntos de impacto
+   coloreados), y **"Ver mallas en 3D"** (`_view_raycast_meshes`) abre las
+   dos mallas reconstruidas superpuestas, pintadas solidas (gris = original,
+   naranja = con shotcrete) para inspeccionar la reconstruccion en si —
+   huecos de Poisson, triangulos largos sin recortar de Delaunay en los
+   bordes, etc. — sin el ruido visual del heatmap.
 
 **Pipeline** (`_run_pipeline_clicked` L2036, `_build_params` L2060,
 `_run_pipeline_worker` L2086) — el boton "Calcular espesor" arma un

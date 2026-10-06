@@ -1979,23 +1979,65 @@ class AuroraGUI:
         note = Gtk.Label(
             label=(
                 "Prueba: en vez de Cloud-to-Cloud (vecino mas cercano), reconstruye una "
-                "malla (Poisson) de cada nube y mide el espesor por raycasting: tira un "
-                "rayo desde la posicion del sensor hacia cada punto de la malla con "
-                "shotcrete, y el mismo rayo hacia la malla original — el espesor es la "
-                "resta de las dos distancias de impacto. Los archivos se comparten con la "
-                "pestaña 'Comparacion' (elegirlos aca o alla es lo mismo). Lo ideal es que "
-                "AMBAS capturas se hayan hecho con el sensor conectado (para tener la "
-                "posicion del sensor guardada en el sidecar '_pose.npz' de cada .ply) y que "
-                "el sensor no se haya movido entre una captura y la otra (o que se haya "
-                "devuelto a la misma posicion via 'Alineacion IMU'); si no hay sidecar (p. "
-                "ej. para probar el flujo sin sensor) se usa el origen manual de abajo. "
-                "Todavia no esta decidido si esto reemplaza al metodo Cloud-to-Cloud actual."
+                "malla de cada nube y mide el espesor por raycasting en vez de por "
+                "distancia euclidiana al vecino mas cercano. Los archivos se comparten "
+                "con la pestaña 'Comparacion' (elegirlos aca o alla es lo mismo). "
+                "Todavia no esta decidido si esto reemplaza al metodo Cloud-to-Cloud "
+                "actual."
             ),
             xalign=0,
         )
         note.set_line_wrap(True)
         note_box.pack_start(note, False, False, 0)
         page.pack_start(note_frame, False, True, 0)
+
+        method_frame, method_box = self._section("Metodo")
+        row = self._row(method_box)
+        row.pack_start(Gtk.Label(label="Malla:"), False, False, 0)
+        self.raycast_mesh_poisson_rb = Gtk.RadioButton.new_with_label_from_widget(None, "Poisson")
+        row.pack_start(self.raycast_mesh_poisson_rb, False, False, 0)
+        self.raycast_mesh_delaunay_rb = Gtk.RadioButton.new_with_label_from_widget(
+            self.raycast_mesh_poisson_rb, "Delaunay"
+        )
+        row.pack_start(self.raycast_mesh_delaunay_rb, False, False, 0)
+        mesh_note = Gtk.Label(
+            label=(
+                "Poisson reconstruye una superficie cerrada, pensado para una nube "
+                "completa. Delaunay triangula la proyeccion sobre el plano que mejor "
+                "ajusta la nube — pensado para un recorte casi-plano (pestaña "
+                "'Segmentacion'), no genera artefactos en los bordes abiertos."
+            ),
+            xalign=0,
+        )
+        mesh_note.set_line_wrap(True)
+        method_box.pack_start(mesh_note, False, False, 0)
+
+        row = self._row(method_box)
+        row.pack_start(Gtk.Label(label="Rayos:"), False, False, 0)
+        self.raycast_ray_origin_rb = Gtk.RadioButton.new_with_label_from_widget(
+            None, "Desde el origen del sensor"
+        )
+        row.pack_start(self.raycast_ray_origin_rb, False, False, 0)
+        self.raycast_ray_normal_rb = Gtk.RadioButton.new_with_label_from_widget(
+            self.raycast_ray_origin_rb, "A lo largo de la normal del plano"
+        )
+        row.pack_start(self.raycast_ray_normal_rb, False, False, 0)
+        ray_note = Gtk.Label(
+            label=(
+                "'Desde el origen del sensor' asume que el sensor no se movio entre "
+                "capturas (o que volvio a la misma posicion via 'Alineacion IMU') y usa "
+                "el sidecar '_pose.npz' de cada .ply (o el origen manual de abajo si no "
+                "existe). 'A lo largo de la normal del plano' no necesita la pose del "
+                "sensor, pero requiere que las dos nubes ya esten alineadas (pestaña "
+                "'Alineacion' o 'Alineacion IMU') — mide el espesor perpendicular a la "
+                "pared original en vez de a lo largo de un rayo desde el sensor."
+            ),
+            xalign=0,
+        )
+        ray_note.set_line_wrap(True)
+        method_box.pack_start(ray_note, False, False, 0)
+        self.raycast_ray_origin_rb.connect("toggled", lambda _b: self._on_raycast_ray_method_toggled())
+        page.pack_start(method_frame, False, True, 0)
 
         files_frame, files_box = self._section("Archivos")
         self.raycast_base_path_label = self._file_row(
@@ -2041,6 +2083,7 @@ class AuroraGUI:
         self.raycast_updated_origin_entry.set_width_chars(18)
         row.pack_start(self.raycast_updated_origin_entry, False, False, 0)
         page.pack_start(origin_frame, False, True, 0)
+        self.raycast_origin_frame = origin_frame
 
         action_frame, action_box = self._section("Calcular")
         row = self._row(action_box)
@@ -2051,6 +2094,10 @@ class AuroraGUI:
         self.raycast_view_button.set_sensitive(False)
         self.raycast_view_button.connect("clicked", lambda _b: self._view_raycast_result())
         row.pack_start(self.raycast_view_button, False, False, 0)
+        self.raycast_view_meshes_button = Gtk.Button(label="Ver mallas en 3D")
+        self.raycast_view_meshes_button.set_sensitive(False)
+        self.raycast_view_meshes_button.connect("clicked", lambda _b: self._view_raycast_meshes())
+        row.pack_start(self.raycast_view_meshes_button, False, False, 0)
         self.raycast_status_label = Gtk.Label(label="(nada calculado todavia)")
         row.pack_start(self.raycast_status_label, False, False, 0)
         page.pack_start(action_frame, False, True, 0)
@@ -2079,7 +2126,11 @@ class AuroraGUI:
         log_box.pack_start(log_scroller, True, True, 0)
         page.pack_start(log_frame, False, True, 0)
 
+        self._on_raycast_ray_method_toggled()
         return self._scrolled(page)
+
+    def _on_raycast_ray_method_toggled(self) -> None:
+        self.raycast_origin_frame.set_sensitive(self.raycast_ray_origin_rb.get_active())
 
     def _raycast_log(self, message: str) -> None:
         def append():
@@ -2101,24 +2152,37 @@ class AuroraGUI:
             )
             return
 
-        try:
-            base_origin = self._parse_xyz(self.raycast_base_origin_entry.get_text(), "Origen base")
-            updated_origin = self._parse_xyz(
-                self.raycast_updated_origin_entry.get_text(), "Origen actualizada"
-            )
-        except ValueError as exc:
-            self._show_error("Parametros invalidos", str(exc))
-            return
+        ray_method = "origin" if self.raycast_ray_origin_rb.get_active() else "normal"
+        mesh_method = "poisson" if self.raycast_mesh_poisson_rb.get_active() else "delaunay"
 
-        # Si el .ply tiene sidecar de pose (captura real con sensor), usarlo
-        # tiene prioridad sobre el origen manual del formulario; el manual es
-        # solo un respaldo para probar el flujo sin sensor conectado.
+        if ray_method == "normal" and not self.alignment_applied:
+            if not self._confirm_missing_alignment():
+                return
+
+        base_origin = updated_origin = None
+        if ray_method == "origin":
+            try:
+                base_origin = self._parse_xyz(self.raycast_base_origin_entry.get_text(), "Origen base")
+                updated_origin = self._parse_xyz(
+                    self.raycast_updated_origin_entry.get_text(), "Origen actualizada"
+                )
+            except ValueError as exc:
+                self._show_error("Parametros invalidos", str(exc))
+                return
+            # Si el .ply tiene sidecar de pose (captura real con sensor), usarlo
+            # tiene prioridad sobre el origen manual del formulario; el manual es
+            # solo un respaldo para probar el flujo sin sensor conectado.
+            base_origin = None if load_reference_pose(base_file) is not None else base_origin
+            updated_origin = None if load_reference_pose(updated_file) is not None else updated_origin
+
         params = RaycastPipelineParams(
             base_path=base_file,
             updated_path=updated_file,
             output_dir=Path(self.output_dir),
-            base_origin=None if load_reference_pose(base_file) is not None else base_origin,
-            updated_origin=None if load_reference_pose(updated_file) is not None else updated_origin,
+            base_origin=base_origin,
+            updated_origin=updated_origin,
+            mesh_method=mesh_method,
+            ray_method=ray_method,
         )
 
         self.raycast_log_buffer.set_text("")
@@ -2153,6 +2217,7 @@ class AuroraGUI:
         self.raycast_cards_row.show_all()
         self.raycast_status_label.set_text(f"Listo — espesor promedio {stats.mean * 100:.2f} cm")
         self.raycast_view_button.set_sensitive(True)
+        self.raycast_view_meshes_button.set_sensitive(True)
 
     def _on_raycast_failure(self, message: str) -> None:
         self.raycast_status_label.set_text("Error al calcular")
@@ -2165,6 +2230,29 @@ class AuroraGUI:
         o3d.visualization.draw_geometries(
             [self.raycast_result.heatmap_cloud],
             window_name="Aurora - Raycasting (prueba): heatmap de espesor",
+        )
+
+    def _view_raycast_meshes(self) -> None:
+        if not self.raycast_result:
+            return
+        import open3d as o3d
+
+        # Copias pintadas de un color solido para distinguir las dos mallas
+        # superpuestas (a diferencia del heatmap, aca no interesa el
+        # espesor sino inspeccionar la reconstruccion en si: huecos de
+        # Poisson, triangulos largos sin recortar de Delaunay, etc.).
+        base_mesh = o3d.geometry.TriangleMesh(self.raycast_result.base_mesh)
+        updated_mesh = o3d.geometry.TriangleMesh(self.raycast_result.updated_mesh)
+        base_mesh.paint_uniform_color((0.55, 0.6, 0.65))
+        updated_mesh.paint_uniform_color((1.0, 0.549, 0.0))
+        base_mesh.compute_vertex_normals()
+        updated_mesh.compute_vertex_normals()
+
+        o3d.visualization.draw_geometries(
+            [base_mesh, updated_mesh],
+            window_name="Aurora - Raycasting (prueba): mallas reconstruidas "
+            "(gris = original, naranja = con shotcrete)",
+            mesh_show_back_face=True,
         )
 
     # -- Helpers de layout -----------------------------------------------------

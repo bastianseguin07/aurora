@@ -789,9 +789,24 @@ class RaycastPipelineParams:
     max_distance: float | None = None
     # Origen del sensor a usar si el .ply no tiene sidecar de pose (p. ej.
     # nubes cargadas a mano, sin sensor conectado, para probar el flujo).
-    # Si es None se exige el sidecar (ver run_raycast_pipeline).
+    # Si es None se exige el sidecar (ver run_raycast_pipeline). Solo se usa
+    # si ray_method == "origin".
     base_origin: Vec3 | None = None
     updated_origin: Vec3 | None = None
+    # "poisson" (mesh_from_point_cloud, pensado para nubes completas) o
+    # "delaunay" (mesh_from_point_cloud_delaunay, pensado para un recorte
+    # casi-plano, ver pestaña 'Segmentacion').
+    mesh_method: str = "poisson"
+    # "origin": raycast_thickness, un rayo por cada vertice desde la pose
+    # guardada del sensor (ver base_origin/updated_origin arriba) — asume
+    # que el sensor no se movio entre capturas.
+    # "normal": raycast_thickness_along_normal, un rayo por cada vertice de
+    # la malla base a lo largo de la normal del plano que mejor la ajusta
+    # — no necesita la pose del sensor, pero SI necesita que las dos nubes
+    # ya compartan sistema de coordenadas (alineacion IMU o por puntos de
+    # referencia aplicada de antemano).
+    ray_method: str = "origin"
+    delaunay_max_edge_trim_factor: float = 4.0
 
 
 @dataclass
@@ -835,6 +850,119 @@ def mesh_from_point_cloud(
     mesh.remove_degenerate_triangles()
     mesh.remove_unreferenced_vertices()
     return mesh
+
+
+def fit_plane(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Centroide y ejes (u, v, normal) del plano que mejor ajusta 'points' via
+    PCA/SVD. A diferencia de '_quad_box_axes' (que fuerza la normal al eje
+    global mas cercano para armar un box de recorte recto), aca se usa la
+    normal cruda del ajuste — la mejor aproximacion al plano real, sin
+    importar su orientacion respecto a los ejes del mundo. El signo de la
+    normal es arbitrario; quien llama decide hacia donde orientarla.
+    """
+    points = np.asarray(points, dtype=np.float64)
+    centroid = points.mean(axis=0)
+    _, _, vt = np.linalg.svd(points - centroid, full_matrices=False)
+    u_axis, v_axis, normal = vt[0], vt[1], vt[2]
+    return centroid, u_axis, v_axis, normal
+
+
+def mesh_from_point_cloud_delaunay(
+    cloud: o3d.geometry.PointCloud,
+    max_edge_trim_factor: float = 4.0,
+) -> o3d.geometry.TriangleMesh:
+    """
+    Reconstruye una malla triangulada a partir de una nube CASI PLANA via
+    triangulacion de Delaunay 2D: ajusta un plano (fit_plane) y triangula
+    la proyeccion (u, v) de cada punto sobre ese plano con
+    'scipy.spatial.Delaunay', usando la posicion 3D real de cada punto para
+    los vertices de la malla resultante. Pensada para un tramo de pared de
+    tunel ya recortado (pestaña 'Segmentacion'), no para una nube completa
+    con curvatura fuerte — a diferencia de Poisson (mesh_from_point_cloud),
+    no necesita una superficie cerrada/watertight ni normales orientadas,
+    por lo que no genera artefactos en los bordes abiertos de un recorte.
+
+    Delaunay 2D triangula todo el casco convexo de la proyeccion, lo que
+    puede crear triangulos largos y finos puenteando huecos o bordes
+    concavos de la nube; se descartan los triangulos con algun lado mas
+    largo que 'max_edge_trim_factor' veces la mediana de longitud de lado
+    de toda la triangulacion (mismo espiritu que 'density_trim_quantile' en
+    Poisson, pero basado en longitud de arista en vez de densidad).
+    """
+    from scipy.spatial import Delaunay
+
+    points = np.asarray(cloud.points, dtype=np.float64)
+    if points.shape[0] < 3:
+        raise ValueError("Se necesitan al menos 3 puntos para triangular (Delaunay).")
+
+    centroid, u_axis, v_axis, _ = fit_plane(points)
+    rel = points - centroid
+    points_2d = np.column_stack([rel @ u_axis, rel @ v_axis])
+
+    triangles = Delaunay(points_2d).simplices
+
+    edge_ab = np.linalg.norm(points[triangles[:, 0]] - points[triangles[:, 1]], axis=1)
+    edge_bc = np.linalg.norm(points[triangles[:, 1]] - points[triangles[:, 2]], axis=1)
+    edge_ca = np.linalg.norm(points[triangles[:, 2]] - points[triangles[:, 0]], axis=1)
+    max_edge = np.maximum(np.maximum(edge_ab, edge_bc), edge_ca)
+    median_edge = float(np.median(np.concatenate([edge_ab, edge_bc, edge_ca])))
+    triangles = triangles[max_edge <= max_edge_trim_factor * median_edge]
+
+    mesh = o3d.geometry.TriangleMesh()
+    mesh.vertices = o3d.utility.Vector3dVector(points)
+    mesh.triangles = o3d.utility.Vector3iVector(triangles)
+    mesh.remove_unreferenced_vertices()
+    mesh.remove_degenerate_triangles()
+    mesh.compute_vertex_normals()
+    return mesh
+
+
+def raycast_thickness_along_normal(
+    base_mesh: o3d.geometry.TriangleMesh,
+    updated_mesh: o3d.geometry.TriangleMesh,
+    max_distance: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Alternativa a 'raycast_thickness' que no depende de la pose del sensor:
+    ajusta un plano a los vertices de 'base_mesh' (fit_plane) y tira, desde
+    cada vertice, UN rayo en la direccion de la normal de ESE plano — la
+    misma direccion para todos los vertices, no la normal local de cada
+    triangulo (que seria ruidosa en una malla Delaunay por bordes
+    irregulares) — hacia 'updated_mesh'. La normal se orienta
+    automaticamente hacia el centroide de 'updated_mesh', para que el rayo
+    viaje del lado donde se aplico el shotcrete.
+
+    Requiere que ambas mallas YA COMPARTAN sistema de coordenadas
+    (alineacion IMU o por puntos de referencia, pestaña 'Alineacion',
+    aplicada de antemano) — a diferencia de 'raycast_thickness', este
+    metodo no tiene forma de detectar ni corregir un desplazamiento del
+    sensor entre capturas, lo mediria como si fuera espesor real.
+
+    Devuelve (distancias, puntos de impacto sobre 'updated_mesh') solo para
+    los rayos que impactaron.
+    """
+    base_vertices = np.asarray(base_mesh.vertices)
+    centroid, _, _, normal = fit_plane(base_vertices)
+    updated_centroid = np.asarray(updated_mesh.vertices).mean(axis=0)
+    if np.dot(normal, updated_centroid - centroid) < 0:
+        normal = -normal
+
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(updated_mesh))
+
+    directions = np.tile(normal, (base_vertices.shape[0], 1))
+    rays = o3d.core.Tensor(
+        np.concatenate([base_vertices, directions], axis=1).astype(np.float32)
+    )
+    t_hit = scene.cast_rays(rays)["t_hit"].numpy()
+
+    valid = np.isfinite(t_hit)
+    if max_distance is not None:
+        valid &= t_hit <= max_distance
+    distances = t_hit[valid].astype(np.float64)
+    hit_points = base_vertices[valid] + normal * distances[:, None]
+    return distances, hit_points
 
 
 def raycast_thickness(
@@ -899,46 +1027,58 @@ def raycast_thickness(
 def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPipelineResult:
     """
     Flujo experimental alternativo a run_pipeline: en vez de Cloud-to-Cloud
-    (vecino mas cercano), reconstruye una malla de cada nube y mide el
-    espesor por raycasting desde el origen del sensor (ver
-    raycast_thickness). Necesita el sidecar de pose (posicion del sensor)
-    guardado en AMBAS capturas, no solo en la base.
+    (vecino mas cercano), reconstruye una malla de cada nube
+    (mesh_from_point_cloud via Poisson, o mesh_from_point_cloud_delaunay) y
+    mide el espesor por raycasting, con uno de dos metodos
+    (params.ray_method):
+
+    - "origin": un rayo por vertice desde la pose guardada del sensor (ver
+      raycast_thickness). Necesita el sidecar de pose ('_pose.npz') en
+      AMBAS capturas, o un origen manual; asume que el sensor no se movio
+      entre capturas.
+    - "normal": un rayo por vertice de la malla base a lo largo de la
+      normal del plano que mejor la ajusta (ver
+      raycast_thickness_along_normal). No necesita pose del sensor, pero
+      exige que las dos nubes ya compartan sistema de coordenadas
+      (alineacion aplicada de antemano) — responsabilidad de quien llama.
     """
     params.output_dir.mkdir(parents=True, exist_ok=True)
 
-    if params.base_origin is not None:
-        base_origin = np.asarray(params.base_origin, dtype=np.float64)
-        log(f"Origen del sensor (base) fijado a mano: {base_origin.tolist()}")
-    else:
-        base_pose = load_reference_pose(params.base_path)
-        if base_pose is None:
-            raise ValueError(
-                "No hay sidecar de pose ('_pose.npz') para la nube base y no se dio "
-                "un origen manual. Vuelve a capturar con el sensor conectado, o "
-                "completa el origen manual en la pestaña 'Raycasting (prueba)'."
-            )
-        base_origin = np.asarray(base_pose[0], dtype=np.float64)
+    base_origin = updated_origin = None
+    if params.ray_method == "origin":
+        if params.base_origin is not None:
+            base_origin = np.asarray(params.base_origin, dtype=np.float64)
+            log(f"Origen del sensor (base) fijado a mano: {base_origin.tolist()}")
+        else:
+            base_pose = load_reference_pose(params.base_path)
+            if base_pose is None:
+                raise ValueError(
+                    "No hay sidecar de pose ('_pose.npz') para la nube base y no se dio "
+                    "un origen manual. Vuelve a capturar con el sensor conectado, o "
+                    "completa el origen manual en la pestaña 'Raycasting (prueba)'."
+                )
+            base_origin = np.asarray(base_pose[0], dtype=np.float64)
 
-    if params.updated_origin is not None:
-        updated_origin = np.asarray(params.updated_origin, dtype=np.float64)
-        log(f"Origen del sensor (actualizada) fijado a mano: {updated_origin.tolist()}")
-    else:
-        updated_pose = load_reference_pose(params.updated_path)
-        if updated_pose is None:
-            raise ValueError(
-                "No hay sidecar de pose ('_pose.npz') para la nube actualizada y no "
-                "se dio un origen manual. Vuelve a capturar con el sensor conectado, "
-                "o completa el origen manual en la pestaña 'Raycasting (prueba)'."
+        if params.updated_origin is not None:
+            updated_origin = np.asarray(params.updated_origin, dtype=np.float64)
+            log(f"Origen del sensor (actualizada) fijado a mano: {updated_origin.tolist()}")
+        else:
+            updated_pose = load_reference_pose(params.updated_path)
+            if updated_pose is None:
+                raise ValueError(
+                    "No hay sidecar de pose ('_pose.npz') para la nube actualizada y no "
+                    "se dio un origen manual. Vuelve a capturar con el sensor conectado, "
+                    "o completa el origen manual en la pestaña 'Raycasting (prueba)'."
+                )
+            updated_origin = np.asarray(updated_pose[0], dtype=np.float64)
+        origin_gap_cm = float(np.linalg.norm(updated_origin - base_origin)) * 100
+        if origin_gap_cm > 2.0:
+            log(
+                f"Aviso: el sensor se movio {origin_gap_cm:.1f} cm entre capturas segun "
+                "la pose guardada. El metodo de raycasting asume que el sensor no se "
+                "movio (o volvio a la misma posicion via 'Alineacion IMU'); el "
+                "resultado puede no ser fisicamente valido."
             )
-        updated_origin = np.asarray(updated_pose[0], dtype=np.float64)
-    origin_gap_cm = float(np.linalg.norm(updated_origin - base_origin)) * 100
-    if origin_gap_cm > 2.0:
-        log(
-            f"Aviso: el sensor se movio {origin_gap_cm:.1f} cm entre capturas segun "
-            "la pose guardada. El metodo de raycasting asume que el sensor no se "
-            "movio (o volvio a la misma posicion via 'Alineacion IMU'); el "
-            "resultado puede no ser fisicamente valido."
-        )
 
     log("Cargando nubes de puntos...")
     base_cloud = load_point_cloud(params.base_path)
@@ -946,16 +1086,27 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
     log(f"  Base       : {len(base_cloud.points)} puntos")
     log(f"  Actualizada: {len(updated_cloud.points)} puntos")
 
-    log("Reconstruyendo malla (Poisson) de la nube base...")
-    base_mesh = mesh_from_point_cloud(base_cloud, params.poisson_depth, params.density_trim_quantile)
+    mesh_label = "Poisson" if params.mesh_method == "poisson" else "Delaunay"
+    log(f"Reconstruyendo malla ({mesh_label}) de la nube base...")
+    if params.mesh_method == "delaunay":
+        base_mesh = mesh_from_point_cloud_delaunay(base_cloud, params.delaunay_max_edge_trim_factor)
+    else:
+        base_mesh = mesh_from_point_cloud(base_cloud, params.poisson_depth, params.density_trim_quantile)
     log(f"  Malla base: {len(base_mesh.vertices)} vertices, {len(base_mesh.triangles)} triangulos")
 
-    log("Reconstruyendo malla (Poisson) de la nube actualizada...")
-    updated_mesh = mesh_from_point_cloud(updated_cloud, params.poisson_depth, params.density_trim_quantile)
+    log(f"Reconstruyendo malla ({mesh_label}) de la nube actualizada...")
+    if params.mesh_method == "delaunay":
+        updated_mesh = mesh_from_point_cloud_delaunay(updated_cloud, params.delaunay_max_edge_trim_factor)
+    else:
+        updated_mesh = mesh_from_point_cloud(updated_cloud, params.poisson_depth, params.density_trim_quantile)
     log(f"  Malla actualizada: {len(updated_mesh.vertices)} vertices, {len(updated_mesh.triangles)} triangulos")
 
-    log("Tirando rayos desde el origen del sensor hacia ambas mallas...")
-    distances, hit_points = raycast_thickness(base_mesh, updated_mesh, base_origin, updated_origin)
+    if params.ray_method == "normal":
+        log("Tirando rayos a lo largo de la normal de la malla base hacia la malla actualizada...")
+        distances, hit_points = raycast_thickness_along_normal(base_mesh, updated_mesh, params.max_distance)
+    else:
+        log("Tirando rayos desde el origen del sensor hacia ambas mallas...")
+        distances, hit_points = raycast_thickness(base_mesh, updated_mesh, base_origin, updated_origin)
     if distances.size == 0:
         raise ValueError(
             "Ningun rayo impacto ambas mallas. Revisa que las dos capturas cubran "
