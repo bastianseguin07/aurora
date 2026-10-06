@@ -22,6 +22,7 @@ from pathlib import Path
 
 import gi
 
+gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
 
@@ -2186,6 +2187,10 @@ class AuroraGUI:
         frame = Gtk.Frame()
         label = Gtk.Label()
         label.set_markup(f"<b>{title}</b>")
+        label.set_margin_start(8)
+        label.set_margin_end(8)
+        label.set_margin_top(4)
+        label.set_margin_bottom(4)
         frame.set_label_widget(label)
         frame.set_shadow_type(Gtk.ShadowType.ETCHED_IN)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)

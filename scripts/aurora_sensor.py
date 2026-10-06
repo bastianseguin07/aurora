@@ -39,11 +39,25 @@ def _import_sdk():
             DEPTHCAM_FRAME_TYPE_POINT3D,
         )
         from slamtec_aurora_sdk.exceptions import AuroraSDKError
-    except ImportError as exc:
-        raise AuroraNotAvailable(
-            "No se encontro el SDK de Slamtec Aurora (paquete 'slamtec_aurora_sdk'). "
-            "Revisa la seccion de instalacion del sensor en el README."
-        ) from exc
+    except ImportError:
+        import sys
+        from pathlib import Path
+        root_dir = Path(__file__).resolve().parent.parent
+        bindings_dir = root_dir / "python_bindings"
+        if str(bindings_dir) not in sys.path:
+            sys.path.insert(0, str(bindings_dir))
+        try:
+            from slamtec_aurora_sdk import (
+                AuroraSDK,
+                ENHANCED_IMAGE_TYPE_DEPTH,
+                DEPTHCAM_FRAME_TYPE_POINT3D,
+            )
+            from slamtec_aurora_sdk.exceptions import AuroraSDKError
+        except ImportError as exc:
+            raise AuroraNotAvailable(
+                "No se encontro el SDK de Slamtec Aurora (paquete 'slamtec_aurora_sdk'). "
+                "Revisa la seccion de instalacion del sensor en el README."
+            ) from exc
     return AuroraSDK, ENHANCED_IMAGE_TYPE_DEPTH, DEPTHCAM_FRAME_TYPE_POINT3D, AuroraSDKError
 
 
