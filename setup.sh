@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 OS_NAME="$(uname -s)"
 
 if [ "$OS_NAME" = "Linux" ]; then
-    REQUIRED_PKGS="python3-venv python3-tk libgl1-mesa-glx libgomp1 python3-gi python3-cairo gir1.2-gtk-3.0"
+    REQUIRED_PKGS="python3-venv python3-tk libgl1-mesa-glx libgomp1 python3-gi python3-cairo gir1.2-gtk-3.0 fonts-lato"
     missing=0
     for pkg in $REQUIRED_PKGS; do
         dpkg -s "$pkg" >/dev/null 2>&1 || missing=1
