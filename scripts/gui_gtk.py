@@ -101,9 +101,9 @@ COLOR_TEXT_MUTED = "#96A3B3"
 
 CSS = f"""
 * {{
-    font-family: "Lato", "Roboto", "Arial", sans-serif;
+    font-family: "Cascadia Code", monospace;
     font-size: 10.5pt;
-    font-weight: 500;
+    font-weight: 600;
 }}
 
 window, .background {{
