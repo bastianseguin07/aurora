@@ -299,15 +299,7 @@ checkbutton, radiobutton {{
 }}
 
 checkbutton check, radiobutton radio {{
-    min-width: 20px;
-    min-height: 20px;
-    border: 1px solid {COLOR_BORDER};
-    background-color: #0D131B;
-}}
-
-checkbutton check:checked, radiobutton radio:checked {{
-    background-color: {COLOR_ACCENT};
-    border-color: {COLOR_ACCENT};
+    transition: none;
 }}
 
 expander title {{
