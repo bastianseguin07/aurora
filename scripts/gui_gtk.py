@@ -103,7 +103,7 @@ CSS = f"""
 * {{
     font-family: "Cascadia Code", monospace;
     font-size: 10.5pt;
-    font-weight: 600;
+    font-weight: 400;
 }}
 
 window, .background {{
@@ -123,7 +123,7 @@ headerbar {{
 
 headerbar .title {{
     color: {COLOR_TEXT};
-    font-weight: 700;
+    font-weight: 400;
 }}
 
 headerbar .subtitle {{
@@ -160,7 +160,7 @@ stacksidebar {{
     background-image: none;
     border: 1px solid rgba(255, 159, 67, 0.28);
     color: {COLOR_TEXT};
-    font-weight: 600;
+    font-weight: 400;
 }}
 
 .sidebar row:hover {{
@@ -171,14 +171,14 @@ stacksidebar {{
 .sidebar-heading {{
     color: {COLOR_TEXT_MUTED};
     font-size: 0.82em;
-    font-weight: 700;
+    font-weight: 400;
     letter-spacing: 0.08em;
 }}
 
 .brand-title {{
     color: {COLOR_TEXT};
     font-size: 1.35em;
-    font-weight: 800;
+    font-weight: 400;
 }}
 
 .brand-subtitle {{
@@ -189,7 +189,7 @@ stacksidebar {{
 .section-title {{
     color: {COLOR_TEXT};
     font-size: 1.02em;
-    font-weight: 700;
+    font-weight: 400;
 }}
 
 stacksidebar row {{
@@ -202,7 +202,7 @@ stacksidebar row:selected {{
     background-color: rgba(255, 159, 67, 0.13);
     border-left: 3px solid {COLOR_ACCENT};
     color: {COLOR_TEXT};
-    font-weight: 600;
+    font-weight: 400;
 }}
 
 stacksidebar row:hover {{
@@ -264,7 +264,7 @@ button.suggested-action {{
     background-image: none;
     color: #11161D;
     border: 1px solid {COLOR_ACCENT};
-    font-weight: 700;
+    font-weight: 400;
 }}
 
 button.suggested-action:hover {{
@@ -312,7 +312,7 @@ checkbutton check:checked, radiobutton radio:checked {{
 
 expander title {{
     color: {COLOR_TEXT};
-    font-weight: 600;
+    font-weight: 400;
 }}
 
 textview, textview text {{
@@ -1112,7 +1112,7 @@ class AuroraGUI:
         if pending_move is not None:
             word, value_cm = pending_move
             status_markup = (
-                f'<span foreground="{COLOR_WARN}" size="large" weight="bold">'
+                f'<span foreground="{COLOR_WARN}" size="large" weight="normal">'
                 f"Mover hacia {word.upper()}: {value_cm:.1f} cm</span>"
             )
         elif not rotation_ok:
@@ -2358,7 +2358,7 @@ class AuroraGUI:
         frame = Gtk.Frame()
         frame.set_shadow_type(Gtk.ShadowType.NONE)
         label = Gtk.Label()
-        label.set_markup(f"<b>{title}</b>")
+        label.set_text(title)
         label.get_style_context().add_class("section-title")
 
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -2388,13 +2388,13 @@ class AuroraGUI:
         box.pack_start(title_label, False, False, 0)
         value_label = Gtk.Label()
         value_label.get_style_context().add_class("kpi-value")
-        value_label.set_markup(f"<span size='xx-large' weight='bold' foreground='{COLOR_ACCENT}'>—</span>")
+        value_label.set_markup(f"<span size='xx-large' weight='normal' foreground='{COLOR_ACCENT}'>—</span>")
         box.pack_start(value_label, False, False, 0)
         return box, value_label
 
     def _set_stat(self, label: Gtk.Label, text: str) -> None:
         label.set_markup(
-            f"<span size='xx-large' weight='bold' foreground='{COLOR_ACCENT}'>"
+            f"<span size='xx-large' weight='normal' foreground='{COLOR_ACCENT}'>"
             f"{GLib.markup_escape_text(text)}</span>"
         )
 
