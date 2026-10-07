@@ -1,7 +1,7 @@
 """
 Logica central para comparar dos nubes de puntos .ply y estimar el espesor
 de shotcrete (distancia Cloud-to-Cloud). La usan tanto la CLI
-(compare_point_clouds.py) como la GUI (gui.py).
+(compare_point_clouds.py) como la GUI GTK (gui_gtk.py).
 """
 
 from __future__ import annotations
@@ -152,6 +152,8 @@ def compute_rigid_transform(base_points: np.ndarray, moving_points: np.ndarray) 
     moving_centroid = moving_points.mean(axis=0)
     base_centered = base_points - base_centroid
     moving_centered = moving_points - moving_centroid
+    if np.linalg.matrix_rank(base_centered) < 2 or np.linalg.matrix_rank(moving_centered) < 2:
+        raise ValueError("Los puntos de referencia deben incluir al menos 3 puntos no colineales en cada nube.")
 
     h = moving_centered.T @ base_centered
     u, _, vt = np.linalg.svd(h)
