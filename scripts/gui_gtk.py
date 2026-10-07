@@ -404,8 +404,8 @@ class AuroraGUI:
     def _build_layout(self) -> None:
         header_bar = Gtk.HeaderBar()
         header_bar.set_show_close_button(True)
-        header_bar.set_title("Aurora")
-        header_bar.set_subtitle("Medicion de espesor de shotcrete")
+        header_bar.set_title("")
+        header_bar.set_subtitle("")
         self.window.set_titlebar(header_bar)
 
         self.run_button = Gtk.Button(label="▶  Calcular espesor")
