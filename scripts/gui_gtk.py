@@ -24,7 +24,7 @@ import gi
 
 gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango  # noqa: E402
 
 import numpy as np  # noqa: E402
 
@@ -376,9 +376,13 @@ class AuroraGUI:
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         self.stack.set_transition_duration(150)
 
-        self.stack.add_titled(self._build_capture_page(), "captura", "Captura")
-        self.stack.add_titled(self._build_imu_alignment_page(), "alineacion_imu", "Alineacion IMU")
-        self.stack.add_titled(self._build_comparison_page(), "comparacion", "Comparacion")
+        capture_page = self._build_capture_page()
+        imu_alignment_page = self._build_imu_alignment_page()
+        comparison_page = self._build_comparison_page()
+        self.stack.add_titled(self._build_simple_workflow_page(), "rapido", "Medicion rapida")
+        self.stack.add_titled(capture_page, "captura", "Captura")
+        self.stack.add_titled(imu_alignment_page, "alineacion_imu", "Alineacion IMU")
+        self.stack.add_titled(comparison_page, "comparacion", "Comparacion")
         self.stack.add_titled(self._build_alignment_page(), "alineacion", "Alineacion")
         self.stack.add_titled(self._build_segmentation_page(), "segmentacion", "Segmentacion")
         self.stack.add_titled(self._build_processing_page(), "procesamiento", "Ajustes de analisis")
@@ -473,6 +477,9 @@ class AuroraGUI:
             listbox.add(row)
             self._sidebar_rows[stack_name] = row
 
+        add_header("Inicio")
+        add_page("Medicion rapida", "rapido")
+
         add_header("Flujo de trabajo")
         add_page("Captura", "captura")
         add_page("Alineacion IMU (reposicionar sensor)", "alineacion_imu")
@@ -493,7 +500,7 @@ class AuroraGUI:
                 self.stack.set_visible_child_name(row.stack_name)
 
         listbox.connect("row-selected", on_row_selected)
-        listbox.select_row(self._sidebar_rows["captura"])
+        listbox.select_row(self._sidebar_rows["rapido"])
 
         def on_stack_page_changed(stack: Gtk.Stack, _pspec) -> None:
             name = stack.get_visible_child_name()
@@ -711,6 +718,104 @@ class AuroraGUI:
         row.pack_start(qr_side_box, False, False, 0)
 
         page.pack_start(sensor_frame, False, True, 0)
+        return self._scrolled(page)
+
+    def _build_simple_workflow_page(self) -> Gtk.Widget:
+        page = self._new_page()
+
+        intro = Gtk.Label(
+            label=(
+                "Conecta el sensor, captura el tunel antes y despues del shotcrete, "
+                "y compara el espesor. Las capturas se guardan automaticamente."
+            ),
+            xalign=0,
+        )
+        intro.set_line_wrap(True)
+        intro.set_max_width_chars(100)
+        page.pack_start(intro, False, False, 4)
+
+        connection_frame, connection_box = self._section("1. Conectar")
+        connection_row = self._row(connection_box)
+        connection_row.pack_start(Gtk.Label(label="IP del sensor:"), False, False, 0)
+        self.quick_sensor_address_entry = Gtk.Entry()
+        self.quick_sensor_address_entry.set_text(self.sensor_address_entry.get_text() or "192.168.11.1")
+        self.quick_sensor_address_entry.set_width_chars(18)
+        connection_row.pack_start(self.quick_sensor_address_entry, False, False, 0)
+        self.quick_connect_button = Gtk.Button(label="Conectar")
+        self.quick_connect_button.connect("clicked", lambda _b: self._quick_connect_clicked())
+        connection_row.pack_start(self.quick_connect_button, False, False, 0)
+        self.quick_sensor_status_label = Gtk.Label(label="Desconectado", xalign=0)
+        connection_row.pack_start(self.quick_sensor_status_label, False, False, 0)
+        page.pack_start(connection_frame, False, True, 0)
+
+        capture_frame, capture_box = self._section("2. Leer las capturas")
+        capture_note = Gtk.Label(
+            label=(
+                "Captura la BASE antes de aplicar shotcrete. Despues, vuelve el sensor "
+                "al mismo lugar y orientacion y captura el DESPUES."
+            ),
+            xalign=0,
+        )
+        capture_note.set_line_wrap(True)
+        capture_box.pack_start(capture_note, False, False, 0)
+
+        capture_row = self._row(capture_box)
+        self.quick_capture_base_button = Gtk.Button(label="Leer BASE (antes)")
+        self.quick_capture_base_button.set_sensitive(False)
+        self.quick_capture_base_button.connect("clicked", lambda _b: self._capture_clicked("base", quick=True))
+        capture_row.pack_start(self.quick_capture_base_button, False, False, 0)
+        self.quick_base_path_label = Gtk.Label(label="Sin captura BASE", xalign=0)
+        self.quick_base_path_label.set_ellipsize(Pango.EllipsizeMode.END)
+        capture_row.pack_start(self.quick_base_path_label, True, True, 8)
+
+        capture_row = self._row(capture_box)
+        self.quick_capture_updated_button = Gtk.Button(label="Leer DESPUES (shotcrete)")
+        self.quick_capture_updated_button.set_sensitive(False)
+        self.quick_capture_updated_button.connect(
+            "clicked", lambda _b: self._capture_clicked("updated", quick=True)
+        )
+        capture_row.pack_start(self.quick_capture_updated_button, False, False, 0)
+        self.quick_updated_path_label = Gtk.Label(label="Sin captura DESPUES", xalign=0)
+        self.quick_updated_path_label.set_ellipsize(Pango.EllipsizeMode.END)
+        capture_row.pack_start(self.quick_updated_path_label, True, True, 8)
+
+        stop_row = self._row(capture_box)
+        self.quick_stop_capture_button = Gtk.Button(label="Detener lectura")
+        self.quick_stop_capture_button.set_sensitive(False)
+        self.quick_stop_capture_button.connect("clicked", lambda _b: self._stop_capture_clicked())
+        stop_row.pack_start(self.quick_stop_capture_button, False, False, 0)
+        self.quick_capture_status_label = Gtk.Label(label="", xalign=0)
+        stop_row.pack_start(self.quick_capture_status_label, True, True, 0)
+
+        defaults_note = Gtk.Label(
+            label="Valores automaticos: 15 s, persistencia 0, campo de vision completo, eje Z.",
+            xalign=0,
+        )
+        defaults_note.get_style_context().add_class("dim-label")
+        capture_box.pack_start(defaults_note, False, False, 0)
+        page.pack_start(capture_frame, False, True, 0)
+
+        compare_frame, compare_box = self._section("3. Comparar espesor")
+        compare_note = Gtk.Label(
+            label=(
+                "La comparacion rapida asume que el sensor quedo en la misma posicion "
+                "y orientacion en ambas capturas."
+            ),
+            xalign=0,
+        )
+        compare_note.set_line_wrap(True)
+        compare_box.pack_start(compare_note, False, False, 0)
+        self.quick_compare_button = Gtk.Button(label="Comparar BASE con DESPUES")
+        self.quick_compare_button.get_style_context().add_class("suggested-action")
+        self.quick_compare_button.set_sensitive(False)
+        self.quick_compare_button.connect("clicked", lambda _b: self._quick_compare_clicked())
+        compare_box.pack_start(self.quick_compare_button, False, False, 0)
+        self.quick_result_label = Gtk.Label(label="Primero captura la BASE y el DESPUES.", xalign=0)
+        self.quick_result_label.set_line_wrap(True)
+        compare_box.pack_start(self.quick_result_label, False, False, 0)
+        page.pack_start(compare_frame, False, True, 0)
+
+        self._refresh_quick_workflow_state()
         return self._scrolled(page)
 
     # -- Pagina: Alineacion IMU ----------------------------------------------------
@@ -2453,14 +2558,69 @@ class AuroraGUI:
 
     # ------------------------------------------------------------ Sensor
 
+    def _set_sensor_status(self, text: str, color: str) -> None:
+        markup = f'<span foreground="{color}">●</span>  {GLib.markup_escape_text(text)}'
+        for name in ("sensor_status_label", "quick_sensor_status_label"):
+            label = getattr(self, name, None)
+            if label is not None:
+                label.set_markup(markup)
+
+    def _set_connect_buttons(self, text: str, sensitive: bool) -> None:
+        for name in ("connect_button", "quick_connect_button"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.set_label(text)
+                button.set_sensitive(sensitive)
+
+    def _set_capture_buttons_sensitive(self, sensitive: bool) -> None:
+        can_capture = sensitive and self.sensor_connection is not None
+        for name in (
+            "capture_base_button",
+            "capture_updated_button",
+            "quick_capture_base_button",
+            "quick_capture_updated_button",
+        ):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.set_sensitive(can_capture)
+
+    def _quick_connect_clicked(self) -> None:
+        address = self.quick_sensor_address_entry.get_text().strip()
+        if not address:
+            self._show_error("IP invalida", "Escribe la direccion IP del sensor Aurora.")
+            return
+        self.sensor_address_entry.set_text(address)
+        self._toggle_sensor_connection()
+
+    def _refresh_quick_workflow_state(self) -> None:
+        if not hasattr(self, "quick_compare_button"):
+            return
+        base = Path(self.base_path)
+        updated = Path(self.updated_path)
+        self.quick_base_path_label.set_text(base.name if base.is_file() else "Sin captura BASE")
+        self.quick_updated_path_label.set_text(updated.name if updated.is_file() else "Sin captura DESPUES")
+        worker_running = bool(self.worker_thread and self.worker_thread.is_alive())
+        capturing = self.capture_stop_event is not None
+        self.quick_compare_button.set_sensitive(base.is_file() and updated.is_file() and not worker_running and not capturing)
+
+    def _quick_compare_clicked(self) -> None:
+        if not Path(self.base_path).is_file() or not Path(self.updated_path).is_file():
+            self._show_warning("Faltan capturas", "Captura BASE y DESPUES antes de comparar.")
+            return
+        self.quick_result_label.set_text("Comparando capturas...")
+        self._run_pipeline_clicked(quick=True)
+
     def _toggle_sensor_connection(self) -> None:
         if self.sensor_connection is not None:
             self._disconnect_sensor()
             return
 
         address = self.sensor_address_entry.get_text().strip()
-        self.connect_button.set_sensitive(False)
-        self.sensor_status_label.set_markup(f'<span foreground="{COLOR_WARN}">●</span>  Conectando...')
+        if not address:
+            self._show_warning("Direccion requerida", "Escribe la IP del sensor Aurora.")
+            return
+        self._set_connect_buttons("Conectando...", False)
+        self._set_sensor_status("Conectando...", COLOR_WARN)
 
         def worker():
             try:
@@ -2473,11 +2633,10 @@ class AuroraGUI:
 
     def _on_sensor_connected(self, connection) -> None:
         self.sensor_connection = connection
-        self.connect_button.set_label("Desconectar")
-        self.connect_button.set_sensitive(True)
-        self.sensor_status_label.set_markup(f'<span foreground="{COLOR_OK}">●</span>  Conectado')
-        self.capture_base_button.set_sensitive(True)
-        self.capture_updated_button.set_sensitive(True)
+        self._set_connect_buttons("Desconectar", True)
+        self._set_sensor_status("Conectado", COLOR_OK)
+        self.quick_sensor_address_entry.set_text(self.sensor_address_entry.get_text())
+        self._set_capture_buttons_sensitive(True)
         self.start_live_capture_button.set_sensitive(True)
         self.capture_live_baseline_button.set_sensitive(True)
         self.clear_live_baseline_button.set_sensitive(True)
@@ -2486,10 +2645,11 @@ class AuroraGUI:
             self.viewer.set_live_sensor(connection)
             self._apply_viewer_settings()
         self._log(f"Conectado al sensor Aurora en {self.sensor_address_entry.get_text()}.")
+        self._refresh_quick_workflow_state()
 
     def _on_sensor_connect_failed(self, exc: Exception) -> None:
-        self.connect_button.set_sensitive(True)
-        self.sensor_status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  Desconectado')
+        self._set_connect_buttons("Conectar", True)
+        self._set_sensor_status("Desconectado", COLOR_ERROR)
         self._show_error("Error de conexion", str(exc))
 
     def _disconnect_sensor(self) -> None:
@@ -2500,51 +2660,52 @@ class AuroraGUI:
         except Exception as exc:
             self._log(f"Aviso al desconectar: {exc}")
         self.sensor_connection = None
-        self.connect_button.set_label("Conectar")
-        self.sensor_status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  Desconectado')
-        self.capture_base_button.set_sensitive(False)
-        self.capture_updated_button.set_sensitive(False)
+        self._set_connect_buttons("Conectar", True)
+        self._set_sensor_status("Desconectado", COLOR_ERROR)
+        self._set_capture_buttons_sensitive(False)
         self.stop_capture_button.set_sensitive(False)
+        self.quick_stop_capture_button.set_sensitive(False)
         self.start_live_capture_button.set_sensitive(False)
         self.capture_live_baseline_button.set_sensitive(False)
         self.clear_live_baseline_button.set_sensitive(False)
         self.save_live_clouds_button.set_sensitive(False)
+        self._refresh_quick_workflow_state()
 
-    def _capture_clicked(self, target: str) -> None:
+    def _capture_clicked(self, target: str, quick: bool = False) -> None:
         if self.sensor_connection is None:
             self._show_warning("Sensor no conectado", "Conecta el sensor antes de capturar.")
             return
 
-        try:
-            duration_s = float(self.capture_duration_entry.get_text() or 15.0)
-            persistence_ratio = float(self.capture_persistence_entry.get_text() or 0.0)
-        except ValueError:
-            self._show_error("Parametros invalidos", "Duracion y persistencia deben ser numeros.")
-            return
+        if quick:
+            duration_s, persistence_ratio = 15.0, 0.0
+            cone_angle_deg, max_distance_m, forward_axis = None, None, "z"
+        else:
+            try:
+                duration_s = float(self.capture_duration_entry.get_text() or 15.0)
+                persistence_ratio = float(self.capture_persistence_entry.get_text() or 0.0)
+                cone_angle_deg = None
+                max_distance_m = None
+                if self.capture_limit_fov_check.get_active():
+                    cone_text = self.capture_cone_angle_entry.get_text().strip()
+                    if cone_text:
+                        cone_angle_deg = float(cone_text)
+                        if cone_angle_deg <= 0 or cone_angle_deg > 180:
+                            raise ValueError("El cono debe estar entre 0 y 180 grados.")
+                dist_text = self.capture_max_distance_entry.get_text().strip()
+                if dist_text:
+                    max_distance_m = float(dist_text)
+            except ValueError as exc:
+                self._show_error("Parametros invalidos", str(exc) or "Parametros de captura invalidos.")
+                return
+            forward_axis = self.capture_forward_axis_combo.get_active_text() or "z"
 
-        cone_angle_deg = None
-        max_distance_m = None
-        try:
-            if self.capture_limit_fov_check.get_active():
-                cone_text = self.capture_cone_angle_entry.get_text().strip()
-                if cone_text:
-                    cone_angle_deg = float(cone_text)
-                    if cone_angle_deg <= 0 or cone_angle_deg > 180:
-                        raise ValueError("El cono debe estar entre 0 y 180 grados.")
-            dist_text = self.capture_max_distance_entry.get_text().strip()
-            if dist_text:
-                max_distance_m = float(dist_text)
-        except ValueError as exc:
-            self._show_error("Parametros invalidos", str(exc) or "Cono y distancia maxima deben ser numeros.")
-            return
-        forward_axis = self.capture_forward_axis_combo.get_active_text() or "z"
-
-        self.capture_base_button.set_sensitive(False)
-        self.capture_updated_button.set_sensitive(False)
+        self._set_capture_buttons_sensitive(False)
         self.stop_capture_button.set_sensitive(True)
+        self.quick_stop_capture_button.set_sensitive(True)
         self.capture_stop_event = threading.Event()
         label = "tunel original" if target == "base" else "tunel con shotcrete"
         self.capture_status_label.set_text(f"Capturando {label} durante {duration_s:.0f} s...")
+        self.quick_capture_status_label.set_text(f"Leyendo {label} ({duration_s:.0f} s)...")
         self._log(f"Capturando nube ({label}) durante {duration_s:.0f} s, persistencia >= {persistence_ratio:.2f}...")
 
         stop_event = self.capture_stop_event
@@ -2570,9 +2731,9 @@ class AuroraGUI:
                     ref_pose = aurora_sensor.get_current_pose(self.sensor_connection)
                 except Exception:
                     ref_pose = None
-                self._ui(self._on_capture_done, target, cloud, ref_image, ref_point_grid, ref_pose)
+                self._ui(self._on_capture_done, target, cloud, ref_image, ref_point_grid, ref_pose, quick)
             except Exception as exc:
-                self._ui(self._on_capture_failed, exc)
+                self._ui(self._on_capture_failed, exc, quick)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2580,13 +2741,15 @@ class AuroraGUI:
         if self.capture_stop_event is not None:
             self.capture_stop_event.set()
             self.stop_capture_button.set_sensitive(False)
+            self.quick_stop_capture_button.set_sensitive(False)
             self.capture_status_label.set_text("Deteniendo captura...")
+            self.quick_capture_status_label.set_text("Deteniendo lectura...")
             self._log("Captura detenida manualmente, procesando frames acumulados hasta ahora...")
 
-    def _on_capture_done(self, target: str, cloud, ref_image=None, ref_point_grid=None, ref_pose=None) -> None:
-        self.capture_base_button.set_sensitive(True)
-        self.capture_updated_button.set_sensitive(True)
+    def _on_capture_done(self, target: str, cloud, ref_image=None, ref_point_grid=None, ref_pose=None, quick=False) -> None:
+        self._set_capture_buttons_sensitive(True)
         self.stop_capture_button.set_sensitive(False)
+        self.quick_stop_capture_button.set_sensitive(False)
         self.capture_stop_event = None
 
         import datetime
@@ -2595,11 +2758,16 @@ class AuroraGUI:
         default_name = f"base_capturada_{timestamp}.ply" if target == "base" else f"updated_capturada_{timestamp}.ply"
         default_dir = PROJECT_ROOT / "data"
         default_dir.mkdir(parents=True, exist_ok=True)
-        path = self._save_file_dialog("Guardar captura como", default_dir, default_name)
+        path = str(default_dir / default_name) if quick else self._save_file_dialog("Guardar captura como", default_dir, default_name)
         if not path:
             self.capture_status_label.set_text("Captura descartada (no se eligio archivo de destino).")
             self._log("Captura descartada (no se eligio archivo de destino).")
             return
+
+        if quick and target == "base":
+            self.updated_path = ""
+            self.last_updated_capture_path = None
+            self.updated_path_label.set_text("Sin captura DESPUES")
 
         import open3d as o3d
 
@@ -2659,6 +2827,8 @@ class AuroraGUI:
             self.last_updated_capture_path = path
             self.view_updated_capture_button.set_sensitive(True)
             self.capture_status_label.set_text("Tunel con shotcrete capturado")
+        self.quick_capture_status_label.set_text(f"Lectura guardada: {Path(path).name}")
+        self._refresh_quick_workflow_state()
 
     def _view_last_capture(self, target: str) -> None:
         path = self.last_base_capture_path if target == "base" else self.last_updated_capture_path
@@ -2677,12 +2847,14 @@ class AuroraGUI:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_capture_failed(self, exc: Exception) -> None:
-        self.capture_base_button.set_sensitive(True)
-        self.capture_updated_button.set_sensitive(True)
+    def _on_capture_failed(self, exc: Exception, quick=False) -> None:
+        self._set_capture_buttons_sensitive(True)
         self.stop_capture_button.set_sensitive(False)
+        self.quick_stop_capture_button.set_sensitive(False)
         self.capture_stop_event = None
         self.capture_status_label.set_text("")
+        self.quick_capture_status_label.set_text("La lectura fallo.")
+        self._refresh_quick_workflow_state()
         self._show_error("Error de captura", str(exc))
 
     # ------------------------------------------------------- Captura en vivo (MVP)
@@ -2831,18 +3003,18 @@ class AuroraGUI:
         self.stack.set_visible_child_name("alineacion")
         return False
 
-    def _run_pipeline_clicked(self) -> None:
+    def _run_pipeline_clicked(self, quick: bool = False) -> None:
         if self.worker_thread and self.worker_thread.is_alive():
             self._show_warning("En progreso", "Ya hay un analisis en ejecucion.")
             return
 
         try:
-            params = self._build_params()
+            params = self._build_params(quick=quick)
         except Exception as exc:
             self._show_error("Parametros invalidos", str(exc))
             return
 
-        if not self.alignment_applied and not params.use_icp:
+        if not quick and not self.alignment_applied and not params.use_icp:
             if not self._confirm_missing_alignment():
                 return
 
@@ -2851,14 +3023,31 @@ class AuroraGUI:
         self.status_spinner.start()
         self.status_spinner.set_visible(True)
         self.status_label.set_markup("Calculando el espesor...")
+        if quick:
+            self.quick_compare_button.set_sensitive(False)
+            self.quick_result_label.set_text("Comparando; se asume el sensor en la misma posicion y orientacion.")
 
         self.worker_thread = threading.Thread(target=self._run_pipeline_worker, args=(params,), daemon=True)
         self.worker_thread.start()
 
-    def _build_params(self) -> PipelineParams:
+    def _build_params(self, quick: bool = False) -> PipelineParams:
         base_path = Path(self.base_path)
         updated_path = Path(self.updated_path)
         output_dir = Path(self.output_dir)
+
+        if quick:
+            return PipelineParams(
+                base_path=base_path,
+                updated_path=updated_path,
+                output_dir=output_dir,
+                voxel_size=0.0,
+                remove_outliers=False,
+                use_icp=False,
+                icp_threshold=0.05,
+                crop_min=None,
+                crop_max=None,
+                max_distance=None,
+            )
 
         crop_min = crop_max = None
         if self.use_crop_check.get_active():
@@ -2895,6 +3084,7 @@ class AuroraGUI:
             self._ui(self.run_button.set_sensitive, True)
             self._ui(self.status_spinner.stop)
             self._ui(self.status_spinner.set_visible, False)
+            self._ui(self._refresh_quick_workflow_state)
 
     def _on_pipeline_success(self) -> None:
         stats = self.result.stats
@@ -2912,8 +3102,15 @@ class AuroraGUI:
         )
         self.generate_report_button.set_sensitive(True)
         self._generate_alerts()
+        self.quick_result_label.set_text(
+            f"Comparacion lista. Espesor medio: {stats.mean * 100:.2f} cm; "
+            f"mediana: {stats.median * 100:.2f} cm."
+        )
+        self._refresh_quick_workflow_state()
 
     def _on_pipeline_failure(self, message: str) -> None:
+        self.quick_result_label.set_text(f"La comparacion fallo: {message}")
+        self._refresh_quick_workflow_state()
         self.status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  El analisis fallo')
 
     # ------------------------------------------------------- Alertas e informe
