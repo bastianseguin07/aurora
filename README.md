@@ -225,7 +225,7 @@ La pestaña inicial **Medicion rapida** guia una sesion nueva:
 2. Mantén el sensor encendido durante la aplicacion. Usa **Ayuda para volver a la posicion BASE** para seguir la guia IMU antes de cada lectura posterior.
 3. Captura **DESPUES** y pulsa **Comparar**. Puedes repetir captura y comparacion despues de cada capa; cada lectura se mide de forma acumulada contra la misma BASE.
 
-La comparacion rapida no mezcla capturas de sesiones anteriores. Comprueba que las poses guardadas esten a no mas de 0.5 cm y 3 grados; si no, solicita volver a la posicion BASE y repetir la lectura. Las capturas usan 15 segundos, persistencia 0, campo visual completo y eje Z. Cada etapa guarda sus resultados en `output/etapas/<captura>/`. La lista de resultados se mantiene mientras la GUI esta abierta; los archivos por etapa quedan guardados.
+La comparacion rapida no mezcla capturas de sesiones anteriores. Comprueba que las poses guardadas esten a no mas de 0.5 cm y 3 grados; si no, solicita volver a la posicion BASE y repetir la lectura. Las capturas usan 15 segundos, persistencia 0, campo visual completo y eje Z. Cada etapa guarda sus resultados en `output/etapas/<captura>/`; el resumen acumulativo de la sesion queda en `output/etapas/sesion_<base>/resumen_etapas.csv`.
 
 Este flujo requiere capturar con el sensor Aurora conectado para guardar las poses IMU. La prueba de captura y el control de posicion deben validarse con el sensor fisico antes de usarlo como medicion de produccion.
 

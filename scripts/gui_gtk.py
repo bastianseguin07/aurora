@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import queue
 import threading
+import csv
 from pathlib import Path
 
 import gi
@@ -322,8 +323,9 @@ class AuroraGUI:
         # otra fecha aunque existan nubes anteriores en data/.
         self.quick_base_path: str | None = None
         self.quick_updated_path: str | None = None
-        self.quick_stage_results: list[tuple[str, float, float]] = []
+        self.quick_stage_results: list[tuple[str, float, float, float, int, str]] = []
         self.quick_pending_stage: str | None = None
+        self.quick_session_summary_path: Path | None = None
         self.output_dir = str(PROJECT_ROOT / "output")
 
         self.sensor_connection = None
@@ -2818,6 +2820,9 @@ class AuroraGUI:
             self.quick_updated_path = None
             self.quick_stage_results.clear()
             self.quick_pending_stage = None
+            self.quick_session_summary_path = (
+                Path(self.output_dir) / "etapas" / f"sesion_{Path(path).stem}" / "resumen_etapas.csv"
+            )
 
         import open3d as o3d
 
@@ -3162,11 +3167,23 @@ class AuroraGUI:
         if self.quick_pending_stage:
             stage = self.quick_pending_stage
             self.quick_stage_results = [row for row in self.quick_stage_results if row[0] != stage]
-            self.quick_stage_results.append((stage, stats.mean * 100.0, stats.median * 100.0))
+            self.quick_stage_results.append(
+                (
+                    stage,
+                    stats.mean * 100.0,
+                    stats.median * 100.0,
+                    stats.p95 * 100.0,
+                    stats.n_points,
+                    str(self.result.csv_path.parent),
+                )
+            )
             lines = ["Espesor acumulado respecto de BASE:"]
-            for index, (path, mean_cm, median_cm) in enumerate(self.quick_stage_results, start=1):
+            for index, (path, mean_cm, median_cm, _p95_cm, _n_points, _output_dir) in enumerate(
+                self.quick_stage_results, start=1
+            ):
                 lines.append(f"{index}. {Path(path).name}: media {mean_cm:.2f} cm; mediana {median_cm:.2f} cm")
             self.quick_result_label.set_text("\n".join(lines))
+            self._save_quick_session_summary()
             self.quick_pending_stage = None
         else:
             self.quick_result_label.set_text(
@@ -3174,6 +3191,31 @@ class AuroraGUI:
                 f"mediana: {stats.median * 100:.2f} cm."
             )
         self._refresh_quick_workflow_state()
+
+    def _save_quick_session_summary(self) -> None:
+        if self.quick_session_summary_path is None:
+            return
+        summary_path = self.quick_session_summary_path
+        temp_path = summary_path.with_suffix(".tmp")
+        try:
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            with temp_path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(
+                    ["etapa", "captura_despues", "espesor_medio_cm", "espesor_mediano_cm", "percentil_95_cm", "puntos", "directorio_resultados"]
+                )
+                for index, (capture_path, mean_cm, median_cm, p95_cm, n_points, output_dir) in enumerate(
+                    self.quick_stage_results, start=1
+                ):
+                    writer.writerow(
+                        [index, capture_path, f"{mean_cm:.4f}", f"{median_cm:.4f}", f"{p95_cm:.4f}", n_points, output_dir]
+                    )
+            temp_path.replace(summary_path)
+            self._log(f"Resumen de etapas guardado en: {summary_path}")
+        except OSError as exc:
+            self._log(f"No se pudo guardar el resumen de etapas: {exc}")
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def _on_pipeline_failure(self, message: str) -> None:
         self.quick_result_label.set_text(f"La comparacion fallo: {message}")
