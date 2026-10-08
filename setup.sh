@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 OS_NAME="$(uname -s)"
 
 if [ "$OS_NAME" = "Linux" ]; then
-    REQUIRED_PKGS="python3-venv python3-tk libgl1-mesa-glx libgomp1 python3-gi python3-cairo gir1.2-gtk-3.0 fonts-cascadia-code"
+    REQUIRED_PKGS="python3-venv python3-tk libgl1-mesa-glx libgomp1 python3-gi gir1.2-gtk-3.0"
     missing=0
     for pkg in $REQUIRED_PKGS; do
         dpkg -s "$pkg" >/dev/null 2>&1 || missing=1
@@ -36,7 +36,7 @@ elif [ "$OS_NAME" = "Darwin" ]; then
 
 else
     echo "Sistema operativo no reconocido ($OS_NAME). Este script soporta Linux y macOS."
-    echo "Esta rama solo incluye la GUI GTK. En Windows, usa Linux/WSL con soporte grafico y valida Open3D y el sensor en ese entorno."
+    echo "Para Windows, usa setup.ps1 (PowerShell) o setup.bat (CMD) en su lugar."
     exit 1
 fi
 

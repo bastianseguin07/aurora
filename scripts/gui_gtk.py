@@ -91,19 +91,17 @@ COLOR_WARN = "#FFCC00"
 AXIS_HUD_COLORS = {"x": "#22D3EE", "y": "#E879F9", "z": "#FACC15"}
 
 # Paleta base del tema.
-COLOR_BG = "#0B0F14"
-COLOR_CARD = "#131A23"
-COLOR_BORDER = "#273342"
-COLOR_ACCENT = "#FF9F43"
-COLOR_ACCENT_DARK = "#E88424"
-COLOR_TEXT = "#F3F6FA"
-COLOR_TEXT_MUTED = "#96A3B3"
+COLOR_BG = "#0F1115"
+COLOR_CARD = "#1A1D24"
+COLOR_BORDER = "#2E3440"
+COLOR_ACCENT = "#FF8C00"
+COLOR_ACCENT_DARK = "#CC7000"
+COLOR_TEXT = "#F8F9FA"
+COLOR_TEXT_MUTED = "#8E95A5"
 
 CSS = f"""
 * {{
-    font-family: "Cascadia Code", monospace;
-    font-size: 9.5pt;
-    font-weight: 400;
+    font-family: "Inter", "Roboto", "Segoe UI", sans-serif;
 }}
 
 window, .background {{
@@ -117,79 +115,22 @@ headerbar {{
     color: {COLOR_TEXT};
     border-bottom: 1px solid {COLOR_BORDER};
     box-shadow: none;
-    min-height: 48px;
-    padding: 5px 14px;
+    padding: 4px 8px;
 }}
 
 headerbar .title {{
     color: {COLOR_TEXT};
-    font-weight: 400;
+    font-weight: 700;
 }}
 
 headerbar .subtitle {{
     color: {COLOR_TEXT_MUTED};
-    font-size: 0.9em;
 }}
 
 stacksidebar {{
     background-color: {COLOR_CARD};
     border-right: 1px solid {COLOR_BORDER};
     font-size: 1.02em;
-}}
-
-/* El menu lateral se construye con Gtk.ListBox (no Gtk.StackSidebar).
-   Definir su fondo evita que el tema GTK de Ubuntu le aplique gris claro. */
-.sidebar, list.sidebar {{
-    background-color: {COLOR_CARD};
-    color: {COLOR_TEXT};
-    padding: 8px 6px;
-}}
-
-.sidebar row {{
-    background-color: {COLOR_CARD};
-    background-image: none;
-    color: {COLOR_TEXT_MUTED};
-    border: 1px solid transparent;
-    border-radius: 8px;
-    margin: 2px 4px;
-    min-height: 34px;
-}}
-
-.sidebar row:selected {{
-    background-color: rgba(255, 159, 67, 0.13);
-    background-image: none;
-    border: 1px solid rgba(255, 159, 67, 0.28);
-    color: {COLOR_TEXT};
-    font-weight: 400;
-}}
-
-.sidebar row:hover {{
-    background-color: rgba(255, 255, 255, 0.055);
-    background-image: none;
-}}
-
-.sidebar-heading {{
-    color: {COLOR_TEXT_MUTED};
-    font-size: 0.82em;
-    font-weight: 400;
-    letter-spacing: 0.08em;
-}}
-
-.brand-title {{
-    color: {COLOR_TEXT};
-    font-size: 1.35em;
-    font-weight: 400;
-}}
-
-.brand-subtitle {{
-    color: {COLOR_TEXT_MUTED};
-    font-size: 0.78em;
-}}
-
-.section-title {{
-    color: {COLOR_TEXT};
-    font-size: 1.02em;
-    font-weight: 400;
 }}
 
 stacksidebar row {{
@@ -199,10 +140,10 @@ stacksidebar row {{
 }}
 
 stacksidebar row:selected {{
-    background-color: rgba(255, 159, 67, 0.13);
+    background-color: rgba(255, 140, 0, 0.16);
     border-left: 3px solid {COLOR_ACCENT};
     color: {COLOR_TEXT};
-    font-weight: 400;
+    font-weight: 600;
 }}
 
 stacksidebar row:hover {{
@@ -210,10 +151,10 @@ stacksidebar row:hover {{
 }}
 
 frame {{
-    margin: 7px 2px;
+    margin: 6px 2px;
     background-color: {COLOR_CARD};
     border: 1px solid {COLOR_BORDER};
-    border-radius: 10px;
+    border-radius: 6px;
 }}
 
 frame > label {{
@@ -234,18 +175,18 @@ label.dim-label {{
 }}
 
 button {{
-    background-color: #1C2632;
+    background-color: #22252D;
     background-image: none;
     color: {COLOR_TEXT};
     border: 1px solid {COLOR_BORDER};
-    border-radius: 8px;
-    padding: 8px 13px;
-    min-height: 26px;
+    border-radius: 4px;
+    padding: 10px 16px;
+    min-height: 28px;
     transition: background-color 100ms ease;
 }}
 
 button:hover {{
-    background-color: #263444;
+    background-color: #2A2E38;
     border-color: {COLOR_ACCENT};
 }}
 
@@ -256,19 +197,19 @@ button:active, button:checked {{
 button:disabled {{
     color: {COLOR_TEXT_MUTED};
     border-color: {COLOR_BORDER};
-    background-color: #151D27;
+    background-color: #1A1D24;
 }}
 
 button.suggested-action {{
     background-color: {COLOR_ACCENT};
     background-image: none;
-    color: #11161D;
+    color: #0F1115;
     border: 1px solid {COLOR_ACCENT};
-    font-weight: 400;
+    font-weight: 700;
 }}
 
 button.suggested-action:hover {{
-    background-color: #FFB061;
+    background-color: #FFA033;
 }}
 
 button.suggested-action:active {{
@@ -276,21 +217,18 @@ button.suggested-action:active {{
 }}
 
 entry {{
-    background-color: #0D131B;
+    background-color: #14161B;
     background-image: none;
     color: {COLOR_TEXT};
     border: 1px solid {COLOR_BORDER};
-    border-radius: 7px;
-    padding: 7px 10px;
-    min-height: 26px;
+    border-radius: 4px;
+    padding: 8px 10px;
+    min-height: 24px;
+    font-family: "Consolas", "DejaVu Sans Mono", monospace;
 }}
 
 entry:focus {{
     border-color: {COLOR_ACCENT};
-}}
-
-combobox button, spinbutton {{
-    border-radius: 7px;
 }}
 
 checkbutton, radiobutton {{
@@ -299,17 +237,26 @@ checkbutton, radiobutton {{
 }}
 
 checkbutton check, radiobutton radio {{
-    transition: none;
+    min-width: 20px;
+    min-height: 20px;
+    border: 1px solid {COLOR_BORDER};
+    background-color: #14161B;
+}}
+
+checkbutton check:checked, radiobutton radio:checked {{
+    background-color: {COLOR_ACCENT};
+    border-color: {COLOR_ACCENT};
 }}
 
 expander title {{
     color: {COLOR_TEXT};
-    font-weight: 400;
+    font-weight: 600;
 }}
 
 textview, textview text {{
     background-color: #0B0C0F;
     color: {COLOR_TEXT};
+    font-family: "Consolas", "DejaVu Sans Mono", monospace;
 }}
 
 scrolledwindow, viewport {{
@@ -340,20 +287,20 @@ popover contents {{
 }}
 
 .kpi-card {{
-    background-color: #0F151D;
+    background-color: #14161B;
     border: 1px solid {COLOR_BORDER};
-    border-radius: 10px;
-    padding: 12px 16px;
-    min-width: 116px;
+    border-radius: 6px;
+    padding: 12px 18px;
+    min-width: 120px;
+}}
+
+.kpi-value {{
+    font-family: "Consolas", "DejaVu Sans Mono", monospace;
 }}
 
 .status-bar {{
-    background-color: #101720;
-    border-color: {COLOR_BORDER};
-}}
-
-separator {{
-    background-color: {COLOR_BORDER};
+    background-color: #14161B;
+    border-top: 1px solid {COLOR_BORDER};
 }}
 """.encode("utf-8")
 
@@ -361,8 +308,8 @@ separator {{
 class AuroraGUI:
     def __init__(self, window: Gtk.Window) -> None:
         self.window = window
-        self.window.set_default_size(1120, 800)
-        self.window.set_size_request(900, 640)
+        self.window.set_default_size(1050, 820)
+        self.window.set_size_request(880, 660)
         self.window.connect("destroy", self._on_close)
 
         # El "antes" queda fijo en esta captura de referencia (pedido del
@@ -396,8 +343,8 @@ class AuroraGUI:
     def _build_layout(self) -> None:
         header_bar = Gtk.HeaderBar()
         header_bar.set_show_close_button(True)
-        header_bar.set_title("")
-        header_bar.set_subtitle("")
+        header_bar.set_title("Aurora")
+        header_bar.set_subtitle("Medicion de espesor de shotcrete")
         self.window.set_titlebar(header_bar)
 
         self.run_button = Gtk.Button(label="▶  Calcular espesor")
@@ -481,6 +428,7 @@ class AuroraGUI:
         log_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.log_view = Gtk.TextView()
         self.log_view.set_editable(False)
+        self.log_view.set_monospace(True)
         self.log_view.set_left_margin(6)
         self.log_view.set_top_margin(6)
         self.log_buffer = self.log_view.get_buffer()
@@ -495,28 +443,6 @@ class AuroraGUI:
         pestanas por proposito: flujo de trabajo (pasos secuenciales, algunos
         opcionales) vs. configuracion (no son pasos, ajustan como se calcula/ve el
         resultado) vs. experimental."""
-        sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        sidebar.get_style_context().add_class("sidebar")
-        sidebar.set_size_request(236, -1)
-
-        brand = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
-        brand.set_margin_start(18)
-        brand.set_margin_end(12)
-        brand.set_margin_top(20)
-        brand.set_margin_bottom(14)
-        brand_title = Gtk.Label(label="AURORA", xalign=0)
-        brand_title.get_style_context().add_class("brand-title")
-        brand_subtitle = Gtk.Label(label="CONTROL DE ESPESOR", xalign=0)
-        brand_subtitle.get_style_context().add_class("brand-subtitle")
-        brand.pack_start(brand_title, False, False, 0)
-        brand.pack_start(brand_subtitle, False, False, 0)
-        sidebar.pack_start(brand, False, False, 0)
-
-        separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        separator.set_margin_start(14)
-        separator.set_margin_end(14)
-        sidebar.pack_start(separator, False, False, 0)
-
         listbox = Gtk.ListBox()
         listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
         listbox.get_style_context().add_class("sidebar")
@@ -526,10 +452,9 @@ class AuroraGUI:
             row = Gtk.ListBoxRow()
             row.set_selectable(False)
             row.set_activatable(False)
-            row.get_style_context().add_class("sidebar-heading-row")
             label = Gtk.Label(xalign=0)
-            label.set_text(text.upper())
-            label.get_style_context().add_class("sidebar-heading")
+            label.set_markup(f'<small><b>{GLib.markup_escape_text(text)}</b></small>')
+            label.get_style_context().add_class("dim-label")
             label.set_margin_start(12)
             label.set_margin_top(12)
             label.set_margin_bottom(2)
@@ -591,10 +516,9 @@ class AuroraGUI:
 
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_vexpand(True)
+        scroller.set_size_request(200, -1)
         scroller.add(listbox)
-        sidebar.pack_start(scroller, True, True, 0)
-        return sidebar
+        return scroller
 
     # -- Pagina: Captura ---------------------------------------------------------
 
@@ -1104,7 +1028,7 @@ class AuroraGUI:
         if pending_move is not None:
             word, value_cm = pending_move
             status_markup = (
-                f'<span foreground="{COLOR_WARN}" size="large" weight="normal">'
+                f'<span foreground="{COLOR_WARN}" size="large" weight="bold">'
                 f"Mover hacia {word.upper()}: {value_cm:.1f} cm</span>"
             )
         elif not rotation_ok:
@@ -2195,6 +2119,7 @@ class AuroraGUI:
         self.raycast_log_buffer = Gtk.TextBuffer()
         log_view = Gtk.TextView(buffer=self.raycast_log_buffer)
         log_view.set_editable(False)
+        log_view.set_monospace(True)
         log_scroller = self._scrolled(log_view)
         log_scroller.set_size_request(-1, 160)
         log_frame, log_box = self._section("Registro")
@@ -2333,11 +2258,11 @@ class AuroraGUI:
     # -- Helpers de layout -----------------------------------------------------
 
     def _new_page(self) -> Gtk.Box:
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        page.set_margin_start(18)
-        page.set_margin_end(18)
-        page.set_margin_top(14)
-        page.set_margin_bottom(14)
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        page.set_margin_start(12)
+        page.set_margin_end(12)
+        page.set_margin_top(10)
+        page.set_margin_bottom(10)
         return page
 
     def _scrolled(self, widget: Gtk.Widget) -> Gtk.Widget:
@@ -2348,22 +2273,20 @@ class AuroraGUI:
 
     def _section(self, title: str) -> tuple[Gtk.Frame, Gtk.Box]:
         frame = Gtk.Frame()
-        frame.set_shadow_type(Gtk.ShadowType.NONE)
         label = Gtk.Label()
-        label.set_text(title)
-        label.get_style_context().add_class("section-title")
-
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        card.set_margin_start(16)
-        card.set_margin_end(16)
-        card.set_margin_top(14)
-        card.set_margin_bottom(16)
-        label.set_xalign(0)
-        card.pack_start(label, False, False, 0)
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        card.pack_start(box, False, False, 0)
-        frame.add(card)
+        label.set_markup(f"<b>{title}</b>")
+        label.set_margin_start(8)
+        label.set_margin_end(8)
+        label.set_margin_top(4)
+        label.set_margin_bottom(4)
+        frame.set_label_widget(label)
+        frame.set_shadow_type(Gtk.ShadowType.ETCHED_IN)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_margin_top(10)
+        box.set_margin_bottom(12)
+        frame.add(box)
         return frame, box
 
     def _row(self, parent_box: Gtk.Box) -> Gtk.Box:
@@ -2380,13 +2303,13 @@ class AuroraGUI:
         box.pack_start(title_label, False, False, 0)
         value_label = Gtk.Label()
         value_label.get_style_context().add_class("kpi-value")
-        value_label.set_markup(f"<span size='xx-large' weight='normal' foreground='{COLOR_ACCENT}'>—</span>")
+        value_label.set_markup(f"<span size='xx-large' weight='bold' foreground='{COLOR_ACCENT}'>—</span>")
         box.pack_start(value_label, False, False, 0)
         return box, value_label
 
     def _set_stat(self, label: Gtk.Label, text: str) -> None:
         label.set_markup(
-            f"<span size='xx-large' weight='normal' foreground='{COLOR_ACCENT}'>"
+            f"<span size='xx-large' weight='bold' foreground='{COLOR_ACCENT}'>"
             f"{GLib.markup_escape_text(text)}</span>"
         )
 

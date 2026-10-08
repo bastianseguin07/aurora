@@ -16,7 +16,7 @@ region a analizar (en metros, mismo sistema de referencia que el .ply):
         --crop-min -0.3 -0.3 0.5 --crop-max 0.3 0.3 1.5
 
 Para elegir el recorte visualmente en vez de escribir coordenadas, usar la GUI
-(gui_gtk.py), que incluye selectores interactivos en 3D.
+(gui.py), que incluye un selector interactivo en 3D.
 
 Ver `python compare_point_clouds.py --help` para todas las opciones.
 """

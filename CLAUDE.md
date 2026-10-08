@@ -13,8 +13,15 @@ euclidiana no dirigida es la estimacion de espesor. Las nubes pueden venir de
 archivos `.ply` existentes o capturarse en vivo con un sensor **Slamtec
 Aurora** (LIDAR/SLAM) por WiFi.
 
-La única GUI de esta rama es `scripts/gui_gtk.py` (GTK3). La geometría y el
-pipeline viven en `scripts/pointcloud_core.py`, compartido con el CLI.
+Hay dos GUIs de escritorio equivalentes porque GTK3 + Open3D no conviven en
+Windows (no hay wheel de GTK3 para pip en Windows y el Python de MSYS2 que si
+tiene GTK3 no puede instalar Open3D):
+
+- **Linux/macOS** -> `scripts/gui_gtk.py` (GTK3, interfaz recomendada/demo a clientes).
+- **Windows** -> `scripts/gui.py` (CustomTkinter, misma logica, otro toolkit).
+
+Ambas GUIs son solo la capa de interfaz; toda la geometria/pipeline vive en
+`scripts/pointcloud_core.py`, compartido tambien por el CLI.
 
 ## Comandos
 
@@ -23,9 +30,11 @@ No hay tests, linter ni build configurados en el repo.
 ```bash
 # Setup (crea venv + instala dependencias; Linux/macOS instala tambien GTK3 via apt/brew)
 ./setup.sh          # Linux/macOS
+./setup.ps1          # Windows PowerShell
 
 # Correr la GUI
 ./venv/bin/python3 scripts/gui_gtk.py     # Linux/macOS
+.\venv\Scripts\python.exe scripts\gui.py   # Windows
 
 # CLI sin GUI (mismo pipeline, run_pipeline())
 python scripts/compare_point_clouds.py --base data/base.ply --updated data/updated.ply --visualize
@@ -34,7 +43,7 @@ python scripts/compare_point_clouds.py --base data/base.ply --updated data/updat
 ```
 
 `requirements.txt`: `open3d`, `numpy<2.0`, `scipy`, `matplotlib`,
-`reportlab` (informe PDF), `websockets`
+`customtkinter` (solo `gui.py`), `reportlab` (informe PDF), `websockets`
 (transmision en vivo), `qrcode[pil]` (QR de la transmision). Los bindings
 GTK3 (`gi`/PyGObject) NO estan en requirements.txt — vienen del sistema
 (`apt`/`brew`); el venv los hereda solo si se creo con `--system-site-packages`.
@@ -42,10 +51,11 @@ GTK3 (`gi`/PyGObject) NO estan en requirements.txt — vienen del sistema
 ## Arquitectura
 
 ```
-scripts/pointcloud_core.py   <- TODA la logica geometrica (sin GUI), usada por CLI y GUI GTK
+scripts/pointcloud_core.py   <- TODA la logica geometrica (sin GUI), usada por CLI y ambas GUIs
 scripts/aurora_sensor.py     <- wrapper del SDK del sensor Slamtec Aurora
 scripts/compare_point_clouds.py  <- CLI
 scripts/gui_gtk.py           <- GUI GTK3 (clase AuroraGUI, ~3000 lineas)
+scripts/gui.py               <- GUI CustomTkinter (equivalente para Windows)
 scripts/live_viewer.py       <- ventana Open3D aparte (vista 3D estatica o en vivo)
 scripts/pose_alignment_viewer.py <- ventana Open3D "gizmo" para reposicionar el sensor via IMU/SLAM
 scripts/embedded_viewer.py   <- visor 3D embebido en la ventana GTK (Gtk.DrawingArea), experimental
@@ -491,8 +501,14 @@ que traiga el `.ply`); ya no se fuerza `paint_uniform_color`.
   captura en particular no lo necesito (sensor sin cortes de tracking) — no
   es una señal para eliminar o deprecar la pestaña "Alineacion", que sigue
   siendo necesaria como respaldo.
-- Esta rama mantiene una sola GUI: `gui_gtk.py`. No agregar una GUI
-  alternativa; las funciones nuevas de interfaz pertenecen a GTK.
+- `gui.py` (Windows/CustomTkinter) y `gui_gtk.py` (Linux-macOS/GTK3) deben
+  mantenerse funcionalmente equivalentes: un cambio de comportamiento en el
+  pipeline o en una pestaña generalmente aplica a ambas GUIs. Excepcion
+  actual conocida: `gui.py` todavia no tiene las pestañas "Alineacion" ni
+  "Alineacion IMU" (solo el checkbox de ICP), asi que el picking sobre foto
+  de referencia y todo el flujo de reposicionamiento por IMU/SLAM (ver
+  secciones `gui_gtk.py` arriba) solo existen en `gui_gtk.py` por ahora —
+  no es una regresion, es un gap de paridad preexistente.
 - El repo es autocontenido: venv, scripts y `.ply` viven todos dentro de esta
   carpeta `Aurora`. Al capturar con el sensor conectado, cada `.ply` puede
   venir acompañado de un sidecar `<nombre>_ref.npz` (foto de referencia +
