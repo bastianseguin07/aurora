@@ -231,6 +231,8 @@ Este flujo requiere capturar con el sensor Aurora conectado para guardar las pos
 
 Para validar la interfaz y el analisis sin sensor, ejecuta `python3 scripts/smoke_test_quick_workflow.py` desde una sesion grafica de Ubuntu. El test usa nubes sinteticas y guarda sus resultados en una carpeta temporal.
 
+En Windows, `scripts/gui.py` ofrece el mismo flujo en la pestaña inicial **Medicion rapida** y muestra las diferencias IMU X/Y/Z y de orientación con **Ver distancia a BASE**. Con las dependencias de `requirements.txt` instaladas, valida esa interfaz con `python scripts/smoke_test_quick_workflow_tk.py` desde una sesion de escritorio.
+
 La seccion **Flujo tipico (un solo click)** de abajo describe el modo de comparacion avanzado con archivos `.ply`.
 
 ```bash
