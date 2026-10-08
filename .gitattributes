@@ -1,0 +1,2 @@
+# Keep Unix launch/install scripts runnable after a Windows checkout.
+*.sh text eol=lf

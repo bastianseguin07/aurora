@@ -105,15 +105,16 @@ def disconnect(connection: AuroraConnection) -> None:
 
 @dataclass
 class SensorPose:
-    position: np.ndarray  # (x, y, z) en metros, mismo frame que las nubes crudas
+    position: np.ndarray  # (x, y, z) en metros, marco SLAM; nubes crudas en marco de camara
     rpy_deg: np.ndarray  # (roll, pitch, yaw) en grados
     timestamp_ns: int
 
 
 def get_current_pose(connection: AuroraConnection) -> SensorPose:
     """Pose actual del sensor (posicion + orientacion) segun el tracking
-    visual-inercial (SLAM+IMU) del Aurora, en el mismo sistema de coordenadas
-    que las nubes crudas que devuelve read_frame_points. Se usa para guiar al
+    visual-inercial (SLAM+IMU) del Aurora. La nube cruda de profundidad usa
+    coordenadas locales de camara: no se aplica aqui la extrinseca ni la pose.
+    Esta pose sirve como guia auxiliar; no verifica registro ni continuidad del mapa. Se usa para guiar al
     usuario a devolver el sensor a la posicion donde capturo la nube base
     (pestana 'Alineacion IMU'), sin necesidad de recorrer toda la nube."""
     try:

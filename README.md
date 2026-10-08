@@ -1,7 +1,20 @@
-# Aurora — Medicion de espesor de shotcrete a partir de nubes de puntos
+# Aurora — comparaciones por sector para evaluar shotcrete
+
+La GUI GTK ahora inicia en **Sesión por sector**: BASE fija, varias etapas DESPUÉS, guardado automático, reapertura, referencias estables, zona común y resultados exploratorios. Consulta el [flujo actual del operador](docs/FLUJO_SECTOR.md) y la [auditoría completa](docs/AUDITORIA_AURORA.md), que contrasta las funciones con `plan.txt` e incluye los resultados de las cajas de `pcd`.
+
+El cálculo existente es distancia C2C sin signo; todavía no certifica espesor normal ni precisión en mina. La GUI Windows `scripts/gui.py` se conserva como alternativa anterior y **no tiene paridad** con las sesiones retomables GTK. Las secciones posteriores describen instalación y herramientas avanzadas heredadas; el flujo del operador vigente está en el documento enlazado.
+
+Verificación reproducible en Ubuntu con GTK3, Open3D y PyGObject:
+
+```bash
+python3 scripts/test_measurement_session.py
+python3 scripts/smoke_test_quick_workflow.py
+GDK_BACKEND=x11 python3 scripts/verify_gui_pages.py
+python3 scripts/audit_project.py
+```
 
 Proyecto autocontenido: todo (entorno virtual, scripts y archivos `.ply`) vive
-dentro de esta carpeta `Aurora`. Esta branch (`gui_GTK`) agrega la interfaz
+dentro de esta carpeta `Aurora`. La interfaz
 grafica GTK3, pensada para mostrar la app a clientes con un aspecto nativo de
 escritorio Linux/Mac.
 
@@ -18,9 +31,7 @@ bindings de GTK3 para Python en cada sistema:
 | **macOS** | `scripts/gui_gtk.py` | Debería funcionar via Homebrew (`brew install gtk+3 pygobject3`), siguiendo el mismo patron que Linux. Instrucciones basadas en la practica estandar documentada de PyGObject/Homebrew — **no se pudo probar en una Mac real** (no hay una disponible en el entorno de desarrollo). |
 | **Windows** | `scripts/gui.py` (CustomTkinter) | GTK3 **no tiene un camino simple** en Windows: no existe un wheel de pip que lo instale, la unica forma es MSYS2 (un Python separado del de Windows) o compilar GTK desde cero con `gvsbuild` (un proceso de horas, no apto para un setup de "un comando"). Se probo exhaustivamente en este desarrollo: **MSYS2 permite correr GTK3, pero ese mismo Python no puede instalar Open3D** (no hay wheel compatible). Por eso, en Windows se recomienda usar `gui.py`, una interfaz equivalente hecha con CustomTkinter que instala con un simple `pip install` y funciona con Open3D sin problemas. |
 
-Todo lo demas (CLI, `pointcloud_core.py`, captura por sensor, alineacion,
-crop, etc.) funciona igual sin importar que GUI uses — la unica diferencia es
-la interfaz grafica en si.
+El pipeline geométrico y el wrapper de sensor se comparten, pero las interfaces difieren en funcionalidades. GTK es el frontend principal; la alternativa Tk no incluye el modelo de sesión por sector.
 
 ## Inicio rapido
 

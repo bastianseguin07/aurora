@@ -1,4 +1,8 @@
-# Manual de uso — Aurora (medicion de espesor de shotcrete)
+# Manual de uso — Aurora
+
+El flujo actual del operador está en [Sesión por sector](docs/FLUJO_SECTOR.md): crear/abrir sesión, BASE fija, varias etapas, referencias estables, zona común, comparar y exportar. El resto de este archivo se conserva como referencia de herramientas avanzadas previas, no como flujo principal.
+
+Los resultados actuales son distancias exploratorias C2C, no espesores certificados. Las menciones heredadas a falta/exceso, puntos tapados, AR o equivalencia GTK/Windows deben interpretarse con las correcciones y límites de la [auditoría](docs/AUDITORIA_AURORA.md). Un visor móvil 3D no es AR registrada; una foto anterior no recupera un punto físico cubierto.
 
 Guia de uso de cada seccion de la aplicacion, pensada para el operador que va
 a usar la GUI en terreno o en oficina. Para instalacion y setup, ver

@@ -1,0 +1,27 @@
+CORFO Eureka
+Proyecto: CORFO Eureka
+Código: 24CVEK264744
+Empresa: Tensor SPA – Jorge Cáceres Doerner
+Universidad Adolfo Ibáñez (UAI), Pía Larrondo
+Director del proyecto: Miguel Carrasco miguel.carrasco@mail.udp.cl
+Objetivo general
+Desarrollar una herramienta que permita monitorear el espesor del shotcrete en túneles mineros utilizando LiDAR para medir el espesor, visualizar en tiempo real los puntos donde falta aplicar shotcrete y donde se ha superado el espesor necesario, y usar inteligencia artificial para reconocer características específicas del túnel.
+Objetivos específicos
+OE1. Analizar un conjunto de datos de un sensor Láser con tecnología LiDAR en tiempo real.
+OE2. Generación de mapa 3D en tiempo real proveniente de un sensor, de modo de medir y predecir posibles diferencias entre dos momentos temporales ex ante y ex post en la aplicación del estudio (aplicación de shotcrete).
+OE3. Diseño de una interfaz de realidad aumentada que permita su aplicación con los datos del sensor mediante puntos de referencia.
+OE4. Integración de nube de puntos con aplicación de realidad aumentada (AR) que permita su uso en tiempo real en un túnel minero.
+Requerimientos Funcionales (RF)
+RF1. Medición precisa del espesor de shotcrete utilizando LiDAR.
+RF2. Visualización en tiempo real del espesor con un mapa de colores.
+RF3. Integración de Realidad Aumentada (AR) para superponer datos sobre la visualización del túnel.
+RF4. Reconocimiento de características del túnel (ej. puntos de control, punteros láser, pernos de anclaje).
+RF5. Alerta automática cuando el espesor está fuera de los parámetros establecidos (falta o exceso).
+RF6. Interfaz de usuario intuitiva para operadores, con capacidad para generar informes.
+Hito crítico: Etapa 1
+Haber analizado la fuente de datos LiDAR. Esto implica la comprensión de la información proveniente desde los sensores LiDAR, posibilitando su interpretación para poder adaptarla a los formatos de procesamiento de datos en términos de distribución geográfica en el espacio.
+Haber diseñado una Interfaz de Realidad Aumentada (RA). Se trata de una primera interfaz de usuario para emplear la nube de puntos bajo un modelo de Realidad Aumentada. En este sentido, la solución deberá incorporar un analizador de puntos de referencia que posibilite el movimiento del dispositivo de visualización y la adaptación de la misma a la nube de puntos en distintos ángulos.
+Haber generado un mapa 3D de la fuente de datos. Esto, a partir de una primera aproximación de mapas 3D obtenidos desde los puntos LiDAR. La data debería desplegarse a través de una interfaz gráfica inicial, que permita su manejo y visualización en un dispositivo tipo tablet.
+
+
+Cumplir con la mayoria de puntos con un sensor Aurora Slamtec, descartar lentes en trabajador ya que no es legal que tenga algo en los ojos que pueda distraerlo por seguridad.

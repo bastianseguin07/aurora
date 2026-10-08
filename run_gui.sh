@@ -10,8 +10,11 @@ if [ ! -x "./venv/bin/python3" ]; then
     exit 1
 fi
 
-./venv/bin/python3 scripts/gui_gtk.py
-status=$?
+if ./venv/bin/python3 scripts/gui_gtk.py; then
+    exit 0
+else
+    status=$?
+fi
 
 if [ $status -ne 0 ]; then
     echo ""

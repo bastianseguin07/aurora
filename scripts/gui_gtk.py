@@ -15,10 +15,10 @@ Ejecutar con:
 
 from __future__ import annotations
 
-import csv
 import os
 import queue
 import threading
+import cairo
 from pathlib import Path
 
 import gi
@@ -34,6 +34,7 @@ from embedded_viewer import EmbeddedComparisonViewer  # noqa: E402
 from live_stream_server import make_qr_image  # noqa: E402
 from live_viewer import LiveViewer  # noqa: E402
 from pose_alignment_viewer import PoseAlignmentViewer  # noqa: E402
+from sector_workflow import SectorWorkflowMixin
 from pointcloud_core import (  # noqa: E402
     PipelineParams,
     RaycastPipelineParams,
@@ -95,8 +96,8 @@ AXIS_HUD_COLORS = {"x": "#22D3EE", "y": "#E879F9", "z": "#FACC15"}
 COLOR_BG = "#0F1115"
 COLOR_CARD = "#1A1D24"
 COLOR_BORDER = "#2E3440"
-COLOR_ACCENT = "#FF8C00"
-COLOR_ACCENT_DARK = "#CC7000"
+COLOR_ACCENT = "#56B4C5"
+COLOR_ACCENT_DARK = "#3B91A1"
 COLOR_TEXT = "#F8F9FA"
 COLOR_TEXT_MUTED = "#8E95A5"
 
@@ -108,6 +109,27 @@ CSS = f"""
 window, .background {{
     background-color: {COLOR_BG};
     color: {COLOR_TEXT};
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+}}
+
+window.csd,
+window.background.csd,
+window.csd decoration,
+window.background.csd decoration,
+decoration {{
+    border: none;
+    box-shadow: none;
+    border-radius: 18px;
+    padding: 0;
+    margin: 0;
+    background-image: none;
+}}
+
+decoration {{
+    background-color: transparent;
 }}
 
 headerbar {{
@@ -115,6 +137,7 @@ headerbar {{
     background-image: none;
     color: {COLOR_TEXT};
     border-bottom: 1px solid {COLOR_BORDER};
+    border-radius: 18px 18px 0 0;
     box-shadow: none;
     padding: 4px 8px;
 }}
@@ -128,8 +151,54 @@ headerbar .subtitle {{
     color: {COLOR_TEXT_MUTED};
 }}
 
+/* Un único foco visible para todos los controles interactivos. */
+*:focus {{
+    outline-color: rgba(86, 180, 197, 0.78);
+    outline-style: solid;
+    outline-width: 1px;
+    outline-offset: 1px;
+    box-shadow: none;
+}}
+
+list, listbox {{
+    background-color: {COLOR_BG};
+    color: {COLOR_TEXT};
+}}
+
+list row {{
+    background-color: transparent;
+    color: {COLOR_TEXT_MUTED};
+    border: none;
+    border-radius: 6px;
+    margin: 2px 8px;
+}}
+
+list row:hover {{
+    background-color: #1B2028;
+    color: {COLOR_TEXT};
+}}
+
+list row.sidebar-heading,
+list row.sidebar-heading:hover,
+list row.sidebar-heading:selected {{
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    color: {COLOR_TEXT_MUTED};
+}}
+
+list row:selected {{
+    background-color: rgba(86, 180, 197, 0.16);
+    color: {COLOR_TEXT};
+    box-shadow: inset 3px 0 0 {COLOR_ACCENT};
+}}
+
+list row:selected:focus {{
+    outline: none;
+}}
+
 stacksidebar {{
-    background-color: {COLOR_CARD};
+    background-color: {COLOR_BG};
     border-right: 1px solid {COLOR_BORDER};
     font-size: 1.02em;
 }}
@@ -183,7 +252,9 @@ button {{
     border-radius: 4px;
     padding: 10px 16px;
     min-height: 28px;
-    transition: background-color 100ms ease;
+    box-shadow: none;
+    text-shadow: none;
+    transition: none;
 }}
 
 button:hover {{
@@ -201,16 +272,30 @@ button:disabled {{
     background-color: #1A1D24;
 }}
 
+button:disabled label, checkbutton:disabled label, radiobutton:disabled label {{
+    color: {COLOR_TEXT_MUTED};
+}}
+
 button.suggested-action {{
     background-color: {COLOR_ACCENT};
     background-image: none;
-    color: #0F1115;
+    color: {COLOR_TEXT};
     border: 1px solid {COLOR_ACCENT};
     font-weight: 700;
+    opacity: 1;
 }}
 
 button.suggested-action:hover {{
-    background-color: #FFA033;
+    background-color: #73C8D6;
+    background-image: none;
+    color: {COLOR_TEXT};
+    border-color: #73C8D6;
+}}
+
+button.suggested-action:disabled,
+button.suggested-action:disabled label {{
+    color: {COLOR_TEXT};
+    opacity: 1;
 }}
 
 button.suggested-action:active {{
@@ -220,6 +305,7 @@ button.suggested-action:active {{
 entry {{
     background-color: #14161B;
     background-image: none;
+    box-shadow: none;
     color: {COLOR_TEXT};
     border: 1px solid {COLOR_BORDER};
     border-radius: 4px;
@@ -234,19 +320,50 @@ entry:focus {{
 
 checkbutton, radiobutton {{
     color: {COLOR_TEXT};
-    min-height: 30px;
+    min-height: 32px;
 }}
 
 checkbutton check, radiobutton radio {{
-    min-width: 20px;
-    min-height: 20px;
-    border: 1px solid {COLOR_BORDER};
-    background-color: #14161B;
+    min-width: 16px;
+    min-height: 16px;
+    margin: 2px 8px 2px 2px;
+    border: 1px solid #596271;
+    background-color: #171B22;
+    background-image: none;
+    box-shadow: none;
+    -gtk-icon-shadow: none;
+    -gtk-icon-transform: none;
+    transition: none;
+}}
+
+checkbutton check {{
+    border-radius: 4px;
+}}
+
+radiobutton radio {{
+    border-radius: 50%;
 }}
 
 checkbutton check:checked, radiobutton radio:checked {{
     background-color: {COLOR_ACCENT};
     border-color: {COLOR_ACCENT};
+    color: #FFFFFF;
+}}
+
+checkbutton check:hover, radiobutton radio:hover {{
+    border-color: {COLOR_ACCENT};
+}}
+
+checkbutton check:disabled, radiobutton radio:disabled {{
+    background-color: #20242B;
+    border-color: #373D48;
+}}
+
+checkbutton check:focus, radiobutton radio:focus {{
+    outline-color: rgba(86, 180, 197, 0.78);
+    outline-style: solid;
+    outline-width: 1px;
+    outline-offset: 2px;
 }}
 
 expander title {{
@@ -303,29 +420,39 @@ popover contents {{
     background-color: #14161B;
     border-top: 1px solid {COLOR_BORDER};
 }}
+
+.sector-flow button {{
+    min-height: 22px;
+    padding: 6px 12px;
+}}
+
+.sector-flow checkbutton {{
+    min-height: 24px;
+}}
 """.encode("utf-8")
 
 
-class AuroraGUI:
+class AuroraGUI(SectorWorkflowMixin):
     def __init__(self, window: Gtk.Window) -> None:
         self.window = window
+        rgba_visual = Gdk.Screen.get_default().get_rgba_visual()
+        if rgba_visual is not None:
+            self.window.set_visual(rgba_visual)
         self.window.set_default_size(1050, 820)
         self.window.set_size_request(880, 660)
+        self._rounded_shape_size = None
+        self.window.connect("realize", self._apply_rounded_corners)
+        self.window.connect("size-allocate", self._apply_rounded_corners)
         self.window.connect("destroy", self._on_close)
+        self.window.connect("delete-event", self._on_delete)
+        self._sensor_connecting = False
 
-        # El "antes" queda fijo en esta captura de referencia (pedido del
-        # usuario); el "despues" siempre sigue a la captura mas reciente en
-        # data/, ya que ese es el que va cambiando con cada captura nueva.
-        _fixed_base = Path("/home/miguel/Desktop/gui_gtkV2/thickness_20260702_150301.ply")
-        self.base_path = str(_fixed_base) if _fixed_base.exists() else _latest_capture_path("base")
+        self.base_path = _latest_capture_path("base")
         self.updated_path = _latest_capture_path("updated")
         # Una sesion rapida siempre parte de cero: no se mezclan capturas de
         # otra fecha aunque existan nubes anteriores en data/.
         self.quick_base_path: str | None = None
         self.quick_updated_path: str | None = None
-        self.quick_stage_results: list[tuple[str, float, float, float, int, str]] = []
-        self.quick_pending_stage: str | None = None
-        self.quick_session_summary_path: Path | None = None
         self.output_dir = str(PROJECT_ROOT / "output")
 
         self.sensor_connection = None
@@ -348,14 +475,40 @@ class AuroraGUI:
 
     # ------------------------------------------------------------------ UI
 
+    def _apply_rounded_corners(self, *_args) -> None:
+        """Clip the X11 client surface so the GTK window has visible rounded corners."""
+        native = self.window.get_window()
+        if native is None:
+            return
+        width, height = native.get_width(), native.get_height()
+        if width <= 0 or height <= 0 or self._rounded_shape_size == (width, height):
+            return
+        radius = min(18, width // 2, height // 2)
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+        ctx = cairo.Context(surface)
+        ctx.set_source_rgba(1, 1, 1, 1)
+        ctx.move_to(radius, 0)
+        ctx.line_to(width - radius, 0)
+        ctx.arc(width - radius, radius, radius, -1.5707963267948966, 0)
+        ctx.line_to(width, height - radius)
+        ctx.arc(width - radius, height - radius, radius, 0, 1.5707963267948966)
+        ctx.line_to(radius, height)
+        ctx.arc(radius, height - radius, radius, 1.5707963267948966, 3.141592653589793)
+        ctx.line_to(0, radius)
+        ctx.arc(radius, radius, radius, 3.141592653589793, 4.71238898038469)
+        ctx.close_path()
+        ctx.fill()
+        native.shape_combine_region(Gdk.cairo_region_create_from_surface(surface), 0, 0)
+        self._rounded_shape_size = (width, height)
+
     def _build_layout(self) -> None:
         header_bar = Gtk.HeaderBar()
         header_bar.set_show_close_button(True)
-        header_bar.set_title("Aurora")
-        header_bar.set_subtitle("Medicion de espesor de shotcrete")
+        header_bar.set_title("")
+        header_bar.set_subtitle("")
         self.window.set_titlebar(header_bar)
 
-        self.run_button = Gtk.Button(label="▶  Calcular espesor")
+        self.run_button = Gtk.Button(label="Calcular distancia (avanzado)")
         self.run_button.set_tooltip_text(
             "Compara las dos nubes de puntos y calcula el espesor de shotcrete. "
             "El resultado se muestra automaticamente en 3D."
@@ -366,7 +519,7 @@ class AuroraGUI:
 
         self.generate_report_button = Gtk.Button(label="Generar informe")
         self.generate_report_button.set_tooltip_text(
-            "Exporta un informe en Markdown con las estadisticas y el estado (dentro/fuera de "
+            "Exporta un informe PDF exploratorio con las estadisticas y el estado (dentro/fuera de "
             "los umbrales configurados en Visualizacion 3D)."
         )
         self.generate_report_button.set_sensitive(False)
@@ -381,13 +534,15 @@ class AuroraGUI:
         root_box.pack_start(content_box, True, True, 0)
 
         self.stack = Gtk.Stack()
+        self.stack.set_hhomogeneous(False)
+        self.stack.set_vhomogeneous(False)
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        self.stack.set_transition_duration(150)
+        self.stack.set_transition_duration(0)
 
         capture_page = self._build_capture_page()
         imu_alignment_page = self._build_imu_alignment_page()
         comparison_page = self._build_comparison_page()
-        self.stack.add_titled(self._build_simple_workflow_page(), "rapido", "Medicion rapida")
+        self.stack.add_titled(self._build_simple_workflow_page(), "rapido", "Antes y despues")
         self.stack.add_titled(capture_page, "captura", "Captura")
         self.stack.add_titled(imu_alignment_page, "alineacion_imu", "Alineacion IMU")
         self.stack.add_titled(comparison_page, "comparacion", "Comparacion")
@@ -448,6 +603,7 @@ class AuroraGUI:
         log_expander.add(log_scroller)
         result_box.pack_start(log_expander, False, True, 6)
 
+        self.results_frame = result_frame
         root_box.pack_start(result_frame, False, True, 8)
 
     def _build_sidebar(self) -> Gtk.Widget:
@@ -464,6 +620,8 @@ class AuroraGUI:
             row = Gtk.ListBoxRow()
             row.set_selectable(False)
             row.set_activatable(False)
+            row.set_can_focus(False)
+            row.get_style_context().add_class("sidebar-heading")
             label = Gtk.Label(xalign=0)
             label.set_markup(f'<small><b>{GLib.markup_escape_text(text)}</b></small>')
             label.get_style_context().add_class("dim-label")
@@ -486,7 +644,7 @@ class AuroraGUI:
             self._sidebar_rows[stack_name] = row
 
         add_header("Inicio")
-        add_page("Medicion rapida", "rapido")
+        add_page("Antes y despues", "rapido")
 
         add_header("Flujo de trabajo")
         add_page("Captura", "captura")
@@ -727,114 +885,6 @@ class AuroraGUI:
 
         page.pack_start(sensor_frame, False, True, 0)
         return self._scrolled(page)
-
-    def _build_simple_workflow_page(self) -> Gtk.Widget:
-        page = self._new_page()
-
-        intro = Gtk.Label(
-            label=(
-                "Conecta el sensor, captura el tunel antes y despues del shotcrete, "
-                "y compara el espesor. Las capturas se guardan automaticamente."
-            ),
-            xalign=0,
-        )
-        intro.set_line_wrap(True)
-        intro.set_max_width_chars(100)
-        page.pack_start(intro, False, False, 4)
-
-        connection_frame, connection_box = self._section("1. Conectar")
-        connection_row = self._row(connection_box)
-        connection_row.pack_start(Gtk.Label(label="IP del sensor:"), False, False, 0)
-        self.quick_sensor_address_entry = Gtk.Entry()
-        self.quick_sensor_address_entry.set_text(self.sensor_address_entry.get_text() or "192.168.11.1")
-        self.quick_sensor_address_entry.set_width_chars(18)
-        connection_row.pack_start(self.quick_sensor_address_entry, False, False, 0)
-        self.quick_connect_button = Gtk.Button(label="Conectar")
-        self.quick_connect_button.connect("clicked", lambda _b: self._quick_connect_clicked())
-        connection_row.pack_start(self.quick_connect_button, False, False, 0)
-        self.quick_sensor_status_label = Gtk.Label(label="Desconectado", xalign=0)
-        connection_row.pack_start(self.quick_sensor_status_label, False, False, 0)
-        page.pack_start(connection_frame, False, True, 0)
-
-        capture_frame, capture_box = self._section("2. Leer las capturas")
-        capture_note = Gtk.Label(
-            label=(
-                "Captura la BASE antes de aplicar shotcrete. Despues, vuelve el sensor "
-                "al mismo lugar y orientacion y captura el DESPUES."
-            ),
-            xalign=0,
-        )
-        capture_note.set_line_wrap(True)
-        capture_box.pack_start(capture_note, False, False, 0)
-        self.quick_imu_button = Gtk.Button(label="Ayuda para volver a la posicion BASE")
-        self.quick_imu_button.connect(
-            "clicked", lambda _b: self.stack.set_visible_child_name("alineacion_imu")
-        )
-        capture_box.pack_start(self.quick_imu_button, False, False, 0)
-
-        capture_row = self._row(capture_box)
-        self.quick_capture_base_button = Gtk.Button(label="Leer BASE (antes)")
-        self.quick_capture_base_button.set_sensitive(False)
-        self.quick_capture_base_button.connect("clicked", lambda _b: self._capture_clicked("base", quick=True))
-        capture_row.pack_start(self.quick_capture_base_button, False, False, 0)
-        self.quick_base_path_label = Gtk.Label(label="Sin captura BASE", xalign=0)
-        self.quick_base_path_label.set_ellipsize(Pango.EllipsizeMode.END)
-        capture_row.pack_start(self.quick_base_path_label, True, True, 8)
-
-        capture_row = self._row(capture_box)
-        self.quick_capture_updated_button = Gtk.Button(label="Leer DESPUES (shotcrete)")
-        self.quick_capture_updated_button.set_sensitive(False)
-        self.quick_capture_updated_button.connect(
-            "clicked", lambda _b: self._capture_clicked("updated", quick=True)
-        )
-        capture_row.pack_start(self.quick_capture_updated_button, False, False, 0)
-        self.quick_updated_path_label = Gtk.Label(label="Sin captura DESPUES", xalign=0)
-        self.quick_updated_path_label.set_ellipsize(Pango.EllipsizeMode.END)
-        capture_row.pack_start(self.quick_updated_path_label, True, True, 8)
-
-        stop_row = self._row(capture_box)
-        self.quick_stop_capture_button = Gtk.Button(label="Detener lectura")
-        self.quick_stop_capture_button.set_sensitive(False)
-        self.quick_stop_capture_button.connect("clicked", lambda _b: self._stop_capture_clicked())
-        stop_row.pack_start(self.quick_stop_capture_button, False, False, 0)
-        self.quick_capture_status_label = Gtk.Label(label="", xalign=0)
-        stop_row.pack_start(self.quick_capture_status_label, True, True, 0)
-
-        defaults_note = Gtk.Label(
-            label="Valores automaticos: 15 s, persistencia 0, campo de vision completo, eje Z.",
-            xalign=0,
-        )
-        defaults_note.get_style_context().add_class("dim-label")
-        capture_box.pack_start(defaults_note, False, False, 0)
-        page.pack_start(capture_frame, False, True, 0)
-
-        compare_frame, compare_box = self._section("3. Comparar espesor")
-        compare_note = Gtk.Label(
-            label=(
-                "La comparacion rapida asume que el sensor quedo en la misma posicion "
-                "y orientacion en ambas capturas."
-            ),
-            xalign=0,
-        )
-        compare_note.set_line_wrap(True)
-        compare_box.pack_start(compare_note, False, False, 0)
-        self.quick_compare_button = Gtk.Button(label="Comparar BASE con DESPUES")
-        self.quick_compare_button.get_style_context().add_class("suggested-action")
-        self.quick_compare_button.set_sensitive(False)
-        self.quick_compare_button.connect("clicked", lambda _b: self._quick_compare_clicked())
-        compare_box.pack_start(self.quick_compare_button, False, False, 0)
-        self.quick_result_label = Gtk.Label(label="Primero captura la BASE y el DESPUES.", xalign=0)
-        self.quick_result_label.set_line_wrap(True)
-        compare_box.pack_start(self.quick_result_label, False, False, 0)
-        page.pack_start(compare_frame, False, True, 0)
-
-        self._refresh_quick_workflow_state()
-        return self._scrolled(page)
-
-    # -- Pagina: Alineacion IMU ----------------------------------------------------
-
-    IMU_POSITION_TOLERANCE_CM = 0.5
-    IMU_ROTATION_TOLERANCE_DEG = 3.0
 
     def _build_imu_alignment_page(self) -> Gtk.Widget:
         page = self._new_page()
@@ -1154,7 +1204,7 @@ class AuroraGUI:
                 f'<span foreground="{COLOR_WARN}">Posicion correcta — ajusta la rotacion (ver abajo)</span>'
             )
         else:
-            status_markup = f'<span foreground="{COLOR_OK}">✓ Sensor en posicion, listo para capturar</span>'
+            status_markup = f'<span foreground="{COLOR_OK}">Pose dentro de la guia; registro sin validar</span>'
         self.imu_guide_status_label.set_markup(status_markup)
         if self.imu_hud_status_label is not None:
             self.imu_hud_status_label.set_markup(status_markup)
@@ -1212,10 +1262,7 @@ class AuroraGUI:
         self.alignment_rotation: np.ndarray | None = None
         self.alignment_translation: np.ndarray | None = None
         self._raw_updated_path: str | None = None
-        default_base_photo = "/home/miguel/Desktop/gui_gtkV2/thickness_20260702_150301_ref.npz"
-        self.landmark_base_manual_photo_path: str | None = (
-            default_base_photo if Path(default_base_photo).exists() else None
-        )
+        self.landmark_base_manual_photo_path: str | None = None
         self.landmark_updated_manual_photo_path: str | None = None
 
         info_frame, info_box = self._section("Alinear con puntos de referencia (opcional)")
@@ -1227,12 +1274,10 @@ class AuroraGUI:
                 "anclaje, marcas o esquinas rigidas. A diferencia de ICP (que ajusta toda "
                 "la superficie y puede confundir el espesor real con error de alineacion), "
                 "esto usa solo esos puntos fijos como referencia.\n\n"
-                "Si el punto de referencia queda tapado por el shotcrete (ej. solo sobresale "
-                "la punta de un perno, muy fina para que el sensor la resuelva como puntos "
-                "3D limpios), elige 'Foto de referencia' en vez de 'Nube 3D': se elige el "
-                "punto sobre la foto que el sensor capturo junto con la nube, y el sistema "
-                "busca el punto 3D correspondiente. Solo esta disponible si esa captura se "
-                "hizo con el sensor Aurora conectado."
+                "La foto de referencia ayuda a elegir referencias visibles con profundidad valida. "
+                "Una foto anterior no recupera la posicion actual de un punto tapado por shotcrete. "
+                "Si se elige un pixel vecino, puede corresponder a otra superficie. "
+                "Usa referencias protegidas y visibles en ambas capturas."
             ),
             xalign=0,
         )
@@ -1306,6 +1351,8 @@ class AuroraGUI:
 
         apply_frame, apply_box = self._section("Paso 2: calcular y aplicar")
         row = self._row(apply_box)
+        self.session_stable_anchors_check = Gtk.CheckButton(label="Las referencias no cambiaron y siguen visibles fuera del shotcrete")
+        apply_box.pack_start(self.session_stable_anchors_check, False, False, 0)
         self.apply_alignment_button = Gtk.Button(label="Calcular alineacion y aplicar")
         self.apply_alignment_button.connect("clicked", lambda _b: self._apply_alignment())
         row.pack_start(self.apply_alignment_button, False, False, 0)
@@ -1416,6 +1463,9 @@ class AuroraGUI:
             self.landmarks_updated_label.set_text(f"{len(points)} puntos elegidos ({method_label}) ✓")
 
     def _apply_alignment(self) -> None:
+        if self._session_alignment_target and not self.session_stable_anchors_check.get_active():
+            self._show_warning("Referencias sin confirmar", "Confirma referencias estables, no cubiertas, antes de alinear la etapa.")
+            return
         if self.landmarks_base is None or self.landmarks_updated is None:
             self._show_warning("Faltan puntos", "Elige los puntos de referencia en las dos nubes primero.")
             return
@@ -1443,6 +1493,9 @@ class AuroraGUI:
         self._raw_updated_path = self.updated_path
 
         self.apply_alignment_button.set_sensitive(False)
+        if self._session_alignment_target:
+            self._session_importing = True
+            self._refresh_quick_workflow_state()
         self.alignment_result_label.set_text("Aplicando...")
 
         def worker():
@@ -1462,6 +1515,13 @@ class AuroraGUI:
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_alignment_done(self, aligned_path: str, rms: float) -> None:
+        self._session_importing = False
+        try:
+            self._session_registration_done(aligned_path, rms)
+        except Exception as exc:
+            self._on_alignment_failed(str(exc))
+            return
+        self._refresh_quick_workflow_state()
         self.apply_alignment_button.set_sensitive(True)
         self.alignment_result_label.set_text(f"Error residual: {rms * 1000:.2f} mm — nube alineada guardada")
         self.alignment_applied = True
@@ -1475,6 +1535,8 @@ class AuroraGUI:
         )
 
     def _on_alignment_failed(self, message: str) -> None:
+        self._session_importing = False
+        self._refresh_quick_workflow_state()
         self.apply_alignment_button.set_sensitive(True)
         self.alignment_result_label.set_text("Error al aplicar la alineacion")
         self._show_error("Error", message)
@@ -1624,6 +1686,9 @@ class AuroraGUI:
         updated_source = Path(self._segmentation_source_updated_path)
 
         self.apply_segmentation_button.set_sensitive(False)
+        if self._session_roi_target:
+            self._session_importing = True
+            self._refresh_quick_workflow_state()
         self.segmentation_result_label.set_text("Recortando...")
 
         def worker():
@@ -1664,6 +1729,15 @@ class AuroraGUI:
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_segmentation_done(self, base_out: str, updated_out: str, n_base: int, n_updated: int) -> None:
+        self._session_importing = False
+        if self._session_roi_target:
+            try:
+                self._session_roi_target.set_roi(self.segmentation_quad, self.segmentation_width_spin.get_value() / 100.0)
+                self._session_roi_target = None
+            except Exception as exc:
+                self._on_segmentation_failed(str(exc))
+                return
+            self._refresh_quick_workflow_state()
         self.apply_segmentation_button.set_sensitive(True)
         self.segmentation_result_label.set_text(f"Recorte: {n_base} / {n_updated} puntos (original/shotcrete)")
         self.segmentation_paths_label.set_text(
@@ -1684,6 +1758,8 @@ class AuroraGUI:
         )
 
     def _on_segmentation_failed(self, message: str) -> None:
+        self._session_importing = False
+        self._refresh_quick_workflow_state()
         self.apply_segmentation_button.set_sensitive(True)
         self.segmentation_result_label.set_text("Error al recortar")
         self._show_error("Error", message)
@@ -2605,67 +2681,10 @@ class AuroraGUI:
         self.sensor_address_entry.set_text(address)
         self._toggle_sensor_connection()
 
-    def _refresh_quick_workflow_state(self) -> None:
-        if not hasattr(self, "quick_compare_button"):
-            return
-        base = Path(self.quick_base_path) if self.quick_base_path else None
-        updated = Path(self.quick_updated_path) if self.quick_updated_path else None
-        self.quick_base_path_label.set_text(base.name if base and base.is_file() else "Sin captura BASE")
-        self.quick_updated_path_label.set_text(updated.name if updated and updated.is_file() else "Sin captura DESPUES")
-        worker_running = bool(self.worker_thread and self.worker_thread.is_alive())
-        capturing = self.capture_stop_event is not None
-        self._set_capture_buttons_sensitive(self.sensor_connection is not None and not worker_running and not capturing)
-        self.quick_compare_button.set_sensitive(
-            bool(base and base.is_file() and updated and updated.is_file()) and not worker_running and not capturing
-        )
-
-    def _quick_compare_clicked(self) -> None:
-        if self.capture_stop_event is not None:
-            self._show_warning("Captura en curso", "Espera a que termine la lectura antes de comparar.")
-            return
-        if self.worker_thread and self.worker_thread.is_alive():
-            self._show_warning("Analisis en curso", "Espera a que termine la comparacion actual.")
-            return
-        if not self.quick_base_path or not self.quick_updated_path:
-            self._show_warning("Faltan capturas", "Captura una BASE nueva y al menos un DESPUES en esta sesion.")
-            return
-        if not Path(self.quick_base_path).is_file() or not Path(self.quick_updated_path).is_file():
-            self._show_warning("Faltan capturas", "Captura BASE y DESPUES antes de comparar.")
-            return
-        try:
-            base_pose = load_reference_pose(Path(self.quick_base_path))
-            updated_pose = load_reference_pose(Path(self.quick_updated_path))
-        except Exception as exc:
-            self._show_warning("Pose IMU invalida", f"No se pudieron leer las posiciones del sensor: {exc}")
-            return
-        if base_pose is None or updated_pose is None:
-            self._show_warning(
-                "No se pudo verificar la posicion",
-                "Falta la pose IMU guardada en una de las capturas. Vuelve a capturar con el sensor conectado.",
-            )
-            return
-        position_error_cm = float(np.linalg.norm(base_pose[0] - updated_pose[0]) * 100.0)
-        rotation_error = ((base_pose[1] - updated_pose[1] + 180.0) % 360.0) - 180.0
-        rotation_error_deg = float(np.max(np.abs(rotation_error)))
-        if (
-            position_error_cm > self.IMU_POSITION_TOLERANCE_CM
-            or rotation_error_deg > self.IMU_ROTATION_TOLERANCE_DEG
-        ):
-            self.quick_result_label.set_text(
-                f"No se comparo: DESPUES esta a {position_error_cm:.1f} cm y "
-                f"{rotation_error_deg:.1f} grados de la pose BASE. Usa la ayuda IMU y vuelve a leer DESPUES."
-            )
-            self._show_warning(
-                "Sensor fuera de posicion",
-                "El sensor no volvio suficientemente cerca de la pose BASE. Usa 'Ayuda para volver a la posicion BASE' y captura de nuevo el DESPUES. "
-                f"Diferencia actual: {position_error_cm:.1f} cm, {rotation_error_deg:.1f} grados.",
-            )
-            return
-        self.quick_pending_stage = self.quick_updated_path
-        self.quick_result_label.set_text("Comparando capturas...")
-        self._run_pipeline_clicked(quick=True)
-
     def _toggle_sensor_connection(self) -> None:
+        if self._session_busy():
+            self._show_warning("Trabajo en curso", "Espera a que termine el trabajo antes de cambiar la conexion.")
+            return
         if self.sensor_connection is not None:
             self._disconnect_sensor()
             return
@@ -2675,7 +2694,9 @@ class AuroraGUI:
             self._show_warning("Direccion requerida", "Escribe la IP del sensor Aurora.")
             return
         self._set_connect_buttons("Conectando...", False)
+        self._sensor_connecting = True
         self._set_sensor_status("Conectando...", COLOR_WARN)
+        self._refresh_quick_workflow_state()
 
         def worker():
             try:
@@ -2687,7 +2708,10 @@ class AuroraGUI:
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_sensor_connected(self, connection) -> None:
+        self._sensor_connecting = False
         self.sensor_connection = connection
+        import uuid
+        self.sensor_connection_id = uuid.uuid4().hex
         self._set_connect_buttons("Desconectar", True)
         self._set_sensor_status("Conectado", COLOR_OK)
         self.quick_sensor_address_entry.set_text(self.sensor_address_entry.get_text())
@@ -2703,8 +2727,10 @@ class AuroraGUI:
         self._refresh_quick_workflow_state()
 
     def _on_sensor_connect_failed(self, exc: Exception) -> None:
+        self._sensor_connecting = False
         self._set_connect_buttons("Conectar", True)
         self._set_sensor_status("Desconectado", COLOR_ERROR)
+        self._refresh_quick_workflow_state()
         self._show_error("Error de conexion", str(exc))
 
     def _disconnect_sensor(self) -> None:
@@ -2727,6 +2753,15 @@ class AuroraGUI:
         self._refresh_quick_workflow_state()
 
     def _capture_clicked(self, target: str, quick: bool = False) -> None:
+        if quick and (not self.measurement_session or self._session_busy()):
+            self._show_warning("Sesion requerida", "Crea o abre una sesion y espera a que termine el trabajo actual.")
+            return
+        if self._session_importing:
+            self._show_warning("Trabajo en curso", "Espera a que termine el guardado o registro del sector.")
+            return
+        if quick and target == "base" and self.measurement_session.data["base"]:
+            self._show_warning("BASE fija", "Crea otra sesion para cambiar la referencia.")
+            return
         if self.capture_stop_event is not None:
             self._show_warning("Captura en curso", "Espera a que termine la lectura actual.")
             return
@@ -2832,21 +2867,11 @@ class AuroraGUI:
             self._log("Captura descartada (no se eligio archivo de destino).")
             return
 
-        if quick and target == "base":
-            self.updated_path = ""
-            self.last_updated_capture_path = None
-            self.updated_path_label.set_text("Sin captura DESPUES")
-            self.quick_base_path = path
-            self.quick_updated_path = None
-            self.quick_stage_results.clear()
-            self.quick_pending_stage = None
-            self.quick_session_summary_path = (
-                Path(self.output_dir) / "etapas" / f"sesion_{Path(path).stem}" / "resumen_etapas.csv"
-            )
-
         import open3d as o3d
 
-        o3d.io.write_point_cloud(path, cloud)
+        if not o3d.io.write_point_cloud(path, cloud):
+            self._show_error("No se guardo la captura", f"No se pudo escribir {path}")
+            return
         self._log(f"Captura guardada en: {path} ({len(cloud.points)} puntos)")
 
         if ref_image is None or ref_point_grid is None:
@@ -2860,7 +2885,7 @@ class AuroraGUI:
         if ref_image is not None and ref_point_grid is not None:
             try:
                 save_reference_photo(Path(path), ref_image, ref_point_grid)
-                self._log("Foto de referencia guardada junto a la nube (util para alinear puntos tapados por shotcrete).")
+                self._log("Foto de referencia guardada; solo sirve para puntos fisicos visibles en ambas capturas.")
             except Exception as exc:
                 self._log(f"No se pudo guardar la foto de referencia: {exc}")
         else:
@@ -2887,6 +2912,10 @@ class AuroraGUI:
                 "No se pudo leer la posicion del sensor para esta captura; la guia de "
                 "'Alineacion IMU' y el metodo de raycasting no van a estar disponibles para esta nube."
             )
+
+        if quick:
+            self._session_add_source(Path(path), target, ref_pose, captured=True)
+            return
 
         self.alignment_applied = False
         if target == "base":
@@ -3087,18 +3116,21 @@ class AuroraGUI:
         self.stack.set_visible_child_name("alineacion")
         return False
 
-    def _run_pipeline_clicked(self, quick: bool = False) -> None:
+    def _run_pipeline_clicked(self) -> None:
+        if self._session_importing or self.capture_stop_event is not None:
+            self._show_warning("Trabajo en curso", "Espera a que termine la captura o el guardado del sector.")
+            return
         if self.worker_thread and self.worker_thread.is_alive():
             self._show_warning("En progreso", "Ya hay un analisis en ejecucion.")
             return
 
         try:
-            params = self._build_params(quick=quick)
+            params = self._build_params()
         except Exception as exc:
             self._show_error("Parametros invalidos", str(exc))
             return
 
-        if not quick and not self.alignment_applied and not params.use_icp:
+        if not self.alignment_applied and not params.use_icp:
             if not self._confirm_missing_alignment():
                 return
 
@@ -3108,33 +3140,14 @@ class AuroraGUI:
         self.status_spinner.set_visible(True)
         self.status_label.set_markup("Calculando el espesor...")
         self._set_capture_buttons_sensitive(False)
-        if quick:
-            self.quick_compare_button.set_sensitive(False)
-            self.quick_result_label.set_text("Comparando; se asume el sensor en la misma posicion y orientacion.")
-
         self.worker_thread = threading.Thread(target=self._run_pipeline_worker, args=(params,), daemon=True)
         self.worker_thread.start()
         self._refresh_quick_workflow_state()
 
-    def _build_params(self, quick: bool = False) -> PipelineParams:
-        base_path = Path(self.quick_base_path) if quick else Path(self.base_path)
-        updated_path = Path(self.quick_updated_path) if quick else Path(self.updated_path)
+    def _build_params(self) -> PipelineParams:
+        base_path = Path(self.base_path)
+        updated_path = Path(self.updated_path)
         output_dir = Path(self.output_dir)
-
-        if quick:
-            output_dir = output_dir / "etapas" / updated_path.stem
-            return PipelineParams(
-                base_path=base_path,
-                updated_path=updated_path,
-                output_dir=output_dir,
-                voxel_size=0.0,
-                remove_outliers=False,
-                use_icp=False,
-                icp_threshold=0.05,
-                crop_min=None,
-                crop_max=None,
-                max_distance=None,
-            )
 
         crop_min = crop_max = None
         if self.use_crop_check.get_active():
@@ -3191,65 +3204,13 @@ class AuroraGUI:
         self.cards_row.show_all()
         self.status_label.set_markup(
             f'<span foreground="{COLOR_OK}">●</span>  Analisis completo — '
-            f"espesor promedio {stats.mean * 100:.2f} cm"
+            f"distancia C2C media {stats.mean * 100:.2f} cm (exploratoria)"
         )
         self.generate_report_button.set_sensitive(True)
         self._generate_alerts()
-        if self.quick_pending_stage:
-            stage = self.quick_pending_stage
-            self.quick_stage_results = [row for row in self.quick_stage_results if row[0] != stage]
-            self.quick_stage_results.append(
-                (
-                    stage,
-                    stats.mean * 100.0,
-                    stats.median * 100.0,
-                    stats.p95 * 100.0,
-                    stats.n_points,
-                    str(self.result.csv_path.parent),
-                )
-            )
-            lines = ["Espesor acumulado respecto de BASE:"]
-            for index, (path, mean_cm, median_cm, _p95_cm, _n_points, _output_dir) in enumerate(
-                self.quick_stage_results, start=1
-            ):
-                lines.append(f"{index}. {Path(path).name}: media {mean_cm:.2f} cm; mediana {median_cm:.2f} cm")
-            self.quick_result_label.set_text("\n".join(lines))
-            self._save_quick_session_summary()
-            self.quick_pending_stage = None
-        else:
-            self.quick_result_label.set_text(
-                f"Comparacion lista. Espesor medio: {stats.mean * 100:.2f} cm; "
-                f"mediana: {stats.median * 100:.2f} cm."
-            )
         self._refresh_quick_workflow_state()
 
-    def _save_quick_session_summary(self) -> None:
-        if self.quick_session_summary_path is None:
-            return
-        summary_path = self.quick_session_summary_path
-        temp_path = summary_path.with_suffix(".tmp")
-        try:
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            with temp_path.open("w", newline="", encoding="utf-8") as stream:
-                writer = csv.writer(stream)
-                writer.writerow(
-                    ["etapa", "captura_despues", "espesor_medio_cm", "espesor_mediano_cm", "percentil_95_cm", "puntos", "directorio_resultados"]
-                )
-                for index, (capture_path, mean_cm, median_cm, p95_cm, n_points, output_dir) in enumerate(
-                    self.quick_stage_results, start=1
-                ):
-                    writer.writerow(
-                        [index, capture_path, f"{mean_cm:.4f}", f"{median_cm:.4f}", f"{p95_cm:.4f}", n_points, output_dir]
-                    )
-            temp_path.replace(summary_path)
-            self._log(f"Resumen de etapas guardado en: {summary_path}")
-        except OSError as exc:
-            self._log(f"No se pudo guardar el resumen de etapas: {exc}")
-        finally:
-            temp_path.unlink(missing_ok=True)
-
     def _on_pipeline_failure(self, message: str) -> None:
-        self.quick_result_label.set_text(f"La comparacion fallo: {message}")
         self._refresh_quick_workflow_state()
         self.status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  El analisis fallo')
 
@@ -3264,15 +3225,15 @@ class AuroraGUI:
 
         if mean_mm < low_mm:
             self._show_warning(
-                "Alerta de espesor (falta)",
-                f"El espesor medio ({mean_mm:.2f} mm) esta por debajo del umbral minimo ({low_mm} mm).\n"
-                "Falta aplicar mas shotcrete.",
+                "Distancia bajo el umbral orientativo",
+                f"La distancia C2C media ({mean_mm:.2f} mm) esta bajo {low_mm} mm.\n"
+                "Resultado exploratorio: no demuestra falta de shotcrete.",
             )
         elif mean_mm >= high_mm:
             self._show_warning(
-                "Alerta de espesor (exceso)",
-                f"El espesor medio ({mean_mm:.2f} mm) supera el umbral maximo ({high_mm} mm).\n"
-                "Exceso de shotcrete.",
+                "Distancia sobre el umbral orientativo",
+                f"La distancia C2C media ({mean_mm:.2f} mm) supera {high_mm} mm.\n"
+                "Resultado exploratorio: no demuestra exceso de shotcrete.",
             )
 
     def _generate_report(self) -> None:
@@ -3307,11 +3268,11 @@ class AuroraGUI:
         mean_mm = stats.mean * 1000
 
         if mean_mm < low_mm:
-            status_text, status_color = "FALTA SHOTCRETE (bajo el umbral)", rl_colors.HexColor("#FFCC00")
+            status_text, status_color = "DISTANCIA BAJO EL UMBRAL (exploratoria)", rl_colors.HexColor("#FFCC00")
         elif mean_mm >= high_mm:
-            status_text, status_color = "EXCESO DE SHOTCRETE (sobre el umbral)", rl_colors.HexColor("#FF3B30")
+            status_text, status_color = "DISTANCIA SOBRE EL UMBRAL (exploratoria)", rl_colors.HexColor("#FF3B30")
         else:
-            status_text, status_color = "DENTRO DE PARAMETRO", rl_colors.HexColor("#34C759")
+            status_text, status_color = "DISTANCIA ENTRE UMBRALES (sin certificacion)", rl_colors.HexColor("#34C759")
 
         try:
             target_thickness_cm = float(self.target_thickness_entry.get_text() or 12)
@@ -3341,25 +3302,26 @@ class AuroraGUI:
         )
 
         story = [
-            Paragraph("Informe de Medición de Espesor de Shotcrete", title_style),
+            Paragraph("Informe exploratorio de distancias entre superficies", title_style),
             Paragraph("Proyecto: CORFO Eureka (Aurora)", subtitle_style),
             Paragraph(f"Fecha y hora: {now.strftime('%Y-%m-%d %H:%M:%S')}", subtitle_style),
             Spacer(1, 12),
             Paragraph(status_text, status_style),
+            Paragraph("C2C es una distancia euclidiana sin signo. No certifica espesor normal en roca ni falta/exceso de shotcrete. El registro, cobertura, rugosidad y oclusiones pueden cambiar el resultado.", body_style),
             Spacer(1, 6),
             Paragraph("1. Archivos analizados", h2_style),
             Paragraph(f"<b>Nube base (original):</b> {self.base_path}", body_style),
             Paragraph(f"<b>Nube actualizada (shotcrete):</b> {self.updated_path}", body_style),
             Paragraph("2. Umbrales de alerta", h2_style),
             Paragraph(f"Umbral bajo (mínimo): {low_mm / 10:.2f} cm — Umbral alto (máximo): {high_mm / 10:.2f} cm", body_style),
-            Paragraph("3. Estadísticas de espesor", h2_style),
+            Paragraph("3. Estadísticas de distancia C2C", h2_style),
         ]
 
         stats_rows = [
             ["Métrica", "Valor (cm)"],
             ["Puntos analizados", f"{stats.n_points:,}"],
-            ["Espesor medio", f"{stats.mean * 100:.2f}"],
-            ["Espesor mediano", f"{stats.median * 100:.2f}"],
+            ["Distancia media", f"{stats.mean * 100:.2f}"],
+            ["Distancia mediana", f"{stats.median * 100:.2f}"],
             ["Desviación estándar", f"{stats.std * 100:.2f}"],
             ["Mínimo", f"{stats.min * 100:.2f}"],
             ["Máximo", f"{stats.max * 100:.2f}"],
@@ -3612,6 +3574,14 @@ class AuroraGUI:
     def _on_updated_source_changed(self) -> None:
         self._apply_viewer_settings()
 
+    def _on_delete(self, *_args) -> bool:
+        if self._session_busy():
+            if self.capture_stop_event is not None:
+                self._stop_capture_clicked()
+            self._show_warning("Guardado en curso", "Espera a que termine el trabajo y se guarde la sesion antes de cerrar.")
+            return True
+        return False
+
     def _on_close(self, *_args) -> None:
         self._close_viewer()
         self._close_imu_pose_viewer()
@@ -3624,6 +3594,10 @@ class AuroraGUI:
 
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description="Aurora: sesiones exploratorias por sector")
+    parser.add_argument("--session", type=Path, help="Abrir un sesion.json existente")
+    args = parser.parse_args()
     settings = Gtk.Settings.get_default()
     if settings is not None:
         settings.set_property("gtk-application-prefer-dark-theme", True)
@@ -3636,7 +3610,9 @@ def main() -> None:
 
     window = Gtk.Window()
     window.set_title("Aurora — Medicion de espesor de shotcrete")
-    AuroraGUI(window)
+    app = AuroraGUI(window)
+    if args.session:
+        app._session_load(args.session)
     window.show_all()
     Gtk.main()
 

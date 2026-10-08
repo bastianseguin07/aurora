@@ -1,5 +1,11 @@
 # CLAUDE.md
 
+## Flujo actual y validación (octubre 2026)
+
+GTK inicia en Sesión por sector (`sector_workflow.py` + `measurement_session.py`), con copias de BASE/etapas, manifest JSON portable, zona común y registro por referencias. Herramientas avanzadas y laboratorio están ocultos inicialmente. `gui.py` Windows conserva el flujo anterior y ya no es equivalente. Las secciones históricas siguientes deben interpretarse con esta actualización y con `docs/AUDITORIA_AURORA.md`.
+
+Hay pruebas: `python3 scripts/test_measurement_session.py`, `python3 scripts/smoke_test_quick_workflow.py` y `GDK_BACKEND=x11 python3 scripts/verify_gui_pages.py`. `scripts/audit_dataset.py` reproduce el ensayo de cajas en `pcd`. No llamar a C2C espesor normal certificado ni usar pose SLAM como si fuera marco de la nube de cámara. `capture_snapshot` no compensa movimiento. La validación con hardware y mina sigue pendiente.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Que es este proyecto
