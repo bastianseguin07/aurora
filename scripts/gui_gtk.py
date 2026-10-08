@@ -318,6 +318,12 @@ class AuroraGUI:
         _fixed_base = Path("/home/miguel/Desktop/gui_gtkV2/thickness_20260702_150301.ply")
         self.base_path = str(_fixed_base) if _fixed_base.exists() else _latest_capture_path("base")
         self.updated_path = _latest_capture_path("updated")
+        # Una sesion rapida siempre parte de cero: no se mezclan capturas de
+        # otra fecha aunque existan nubes anteriores en data/.
+        self.quick_base_path: str | None = None
+        self.quick_updated_path: str | None = None
+        self.quick_stage_results: list[tuple[str, float, float]] = []
+        self.quick_pending_stage: str | None = None
         self.output_dir = str(PROJECT_ROOT / "output")
 
         self.sensor_connection = None
@@ -758,6 +764,11 @@ class AuroraGUI:
         )
         capture_note.set_line_wrap(True)
         capture_box.pack_start(capture_note, False, False, 0)
+        self.quick_imu_button = Gtk.Button(label="Ayuda para volver a la posicion BASE")
+        self.quick_imu_button.connect(
+            "clicked", lambda _b: self.stack.set_visible_child_name("alineacion_imu")
+        )
+        capture_box.pack_start(self.quick_imu_button, False, False, 0)
 
         capture_row = self._row(capture_box)
         self.quick_capture_base_button = Gtk.Button(label="Leer BASE (antes)")
@@ -2595,18 +2606,53 @@ class AuroraGUI:
     def _refresh_quick_workflow_state(self) -> None:
         if not hasattr(self, "quick_compare_button"):
             return
-        base = Path(self.base_path)
-        updated = Path(self.updated_path)
-        self.quick_base_path_label.set_text(base.name if base.is_file() else "Sin captura BASE")
-        self.quick_updated_path_label.set_text(updated.name if updated.is_file() else "Sin captura DESPUES")
+        base = Path(self.quick_base_path) if self.quick_base_path else None
+        updated = Path(self.quick_updated_path) if self.quick_updated_path else None
+        self.quick_base_path_label.set_text(base.name if base and base.is_file() else "Sin captura BASE")
+        self.quick_updated_path_label.set_text(updated.name if updated and updated.is_file() else "Sin captura DESPUES")
         worker_running = bool(self.worker_thread and self.worker_thread.is_alive())
         capturing = self.capture_stop_event is not None
-        self.quick_compare_button.set_sensitive(base.is_file() and updated.is_file() and not worker_running and not capturing)
+        self.quick_compare_button.set_sensitive(
+            bool(base and base.is_file() and updated and updated.is_file()) and not worker_running and not capturing
+        )
 
     def _quick_compare_clicked(self) -> None:
-        if not Path(self.base_path).is_file() or not Path(self.updated_path).is_file():
+        if not self.quick_base_path or not self.quick_updated_path:
+            self._show_warning("Faltan capturas", "Captura una BASE nueva y al menos un DESPUES en esta sesion.")
+            return
+        if not Path(self.quick_base_path).is_file() or not Path(self.quick_updated_path).is_file():
             self._show_warning("Faltan capturas", "Captura BASE y DESPUES antes de comparar.")
             return
+        try:
+            base_pose = load_reference_pose(Path(self.quick_base_path))
+            updated_pose = load_reference_pose(Path(self.quick_updated_path))
+        except Exception as exc:
+            self._show_warning("Pose IMU invalida", f"No se pudieron leer las posiciones del sensor: {exc}")
+            return
+        if base_pose is None or updated_pose is None:
+            self._show_warning(
+                "No se pudo verificar la posicion",
+                "Falta la pose IMU guardada en una de las capturas. Vuelve a capturar con el sensor conectado.",
+            )
+            return
+        position_error_cm = float(np.linalg.norm(base_pose[0] - updated_pose[0]) * 100.0)
+        rotation_error = ((base_pose[1] - updated_pose[1] + 180.0) % 360.0) - 180.0
+        rotation_error_deg = float(np.max(np.abs(rotation_error)))
+        if (
+            position_error_cm > self.IMU_POSITION_TOLERANCE_CM
+            or rotation_error_deg > self.IMU_ROTATION_TOLERANCE_DEG
+        ):
+            self.quick_result_label.set_text(
+                f"No se comparo: DESPUES esta a {position_error_cm:.1f} cm y "
+                f"{rotation_error_deg:.1f} grados de la pose BASE. Usa la ayuda IMU y vuelve a leer DESPUES."
+            )
+            self._show_warning(
+                "Sensor fuera de posicion",
+                "El sensor no volvio suficientemente cerca de la pose BASE. Usa 'Ayuda para volver a la posicion BASE' y captura de nuevo el DESPUES. "
+                f"Diferencia actual: {position_error_cm:.1f} cm, {rotation_error_deg:.1f} grados.",
+            )
+            return
+        self.quick_pending_stage = self.quick_updated_path
         self.quick_result_label.set_text("Comparando capturas...")
         self._run_pipeline_clicked(quick=True)
 
@@ -2768,6 +2814,10 @@ class AuroraGUI:
             self.updated_path = ""
             self.last_updated_capture_path = None
             self.updated_path_label.set_text("Sin captura DESPUES")
+            self.quick_base_path = path
+            self.quick_updated_path = None
+            self.quick_stage_results.clear()
+            self.quick_pending_stage = None
 
         import open3d as o3d
 
@@ -2827,7 +2877,13 @@ class AuroraGUI:
             self.last_updated_capture_path = path
             self.view_updated_capture_button.set_sensitive(True)
             self.capture_status_label.set_text("Tunel con shotcrete capturado")
+            if quick:
+                self.quick_updated_path = path
         self.quick_capture_status_label.set_text(f"Lectura guardada: {Path(path).name}")
+        if quick and target == "updated":
+            self.quick_result_label.set_text(
+                "Etapa DESPUES capturada. Compara para registrar su espesor acumulado respecto de BASE."
+            )
         self._refresh_quick_workflow_state()
 
     def _view_last_capture(self, target: str) -> None:
@@ -3031,11 +3087,12 @@ class AuroraGUI:
         self.worker_thread.start()
 
     def _build_params(self, quick: bool = False) -> PipelineParams:
-        base_path = Path(self.base_path)
-        updated_path = Path(self.updated_path)
+        base_path = Path(self.quick_base_path) if quick else Path(self.base_path)
+        updated_path = Path(self.quick_updated_path) if quick else Path(self.updated_path)
         output_dir = Path(self.output_dir)
 
         if quick:
+            output_dir = output_dir / "etapas" / updated_path.stem
             return PipelineParams(
                 base_path=base_path,
                 updated_path=updated_path,
@@ -3102,10 +3159,20 @@ class AuroraGUI:
         )
         self.generate_report_button.set_sensitive(True)
         self._generate_alerts()
-        self.quick_result_label.set_text(
-            f"Comparacion lista. Espesor medio: {stats.mean * 100:.2f} cm; "
-            f"mediana: {stats.median * 100:.2f} cm."
-        )
+        if self.quick_pending_stage:
+            stage = self.quick_pending_stage
+            self.quick_stage_results = [row for row in self.quick_stage_results if row[0] != stage]
+            self.quick_stage_results.append((stage, stats.mean * 100.0, stats.median * 100.0))
+            lines = ["Espesor acumulado respecto de BASE:"]
+            for index, (path, mean_cm, median_cm) in enumerate(self.quick_stage_results, start=1):
+                lines.append(f"{index}. {Path(path).name}: media {mean_cm:.2f} cm; mediana {median_cm:.2f} cm")
+            self.quick_result_label.set_text("\n".join(lines))
+            self.quick_pending_stage = None
+        else:
+            self.quick_result_label.set_text(
+                f"Comparacion lista. Espesor medio: {stats.mean * 100:.2f} cm; "
+                f"mediana: {stats.median * 100:.2f} cm."
+            )
         self._refresh_quick_workflow_state()
 
     def _on_pipeline_failure(self, message: str) -> None:

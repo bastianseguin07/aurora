@@ -217,6 +217,20 @@ red que el sensor. La IP por defecto del dispositivo suele ser `192.168.11.1`
 
 ## 4. Usar la GUI
 
+### Flujo rapido para una medicion de shotcrete
+
+La pestaña inicial **Medicion rapida** guia una sesion nueva:
+
+1. Conecta el Aurora (IP inicial `192.168.11.1`) y captura **BASE** antes del shotcrete.
+2. Mantén el sensor encendido durante la aplicacion. Usa **Ayuda para volver a la posicion BASE** para seguir la guia IMU antes de cada lectura posterior.
+3. Captura **DESPUES** y pulsa **Comparar**. Puedes repetir captura y comparacion despues de cada capa; cada lectura se mide de forma acumulada contra la misma BASE.
+
+La comparacion rapida no mezcla capturas de sesiones anteriores. Comprueba que las poses guardadas esten a no mas de 0.5 cm y 3 grados; si no, solicita volver a la posicion BASE y repetir la lectura. Las capturas usan 15 segundos, persistencia 0, campo visual completo y eje Z. Cada etapa guarda sus resultados en `output/etapas/<captura>/`. La lista de resultados se mantiene mientras la GUI esta abierta; los archivos por etapa quedan guardados.
+
+Este flujo requiere capturar con el sensor Aurora conectado para guardar las poses IMU. La prueba de captura y el control de posicion deben validarse con el sensor fisico antes de usarlo como medicion de produccion.
+
+La seccion **Flujo tipico (un solo click)** de abajo describe el modo de comparacion avanzado con archivos `.ply`.
+
 ```bash
 # Linux / macOS
 ./venv/bin/python3 scripts/gui_gtk.py
