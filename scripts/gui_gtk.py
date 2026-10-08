@@ -429,6 +429,64 @@ popover contents {{
 .sector-flow checkbutton {{
     min-height: 24px;
 }}
+
+.quick-result-panel {{
+    background-color: #10141A;
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 12px;
+    padding: 12px;
+}}
+
+.quick-result-heading {{
+    background-color: rgba(86, 180, 197, 0.16);
+    border: 1px solid rgba(86, 180, 197, 0.42);
+    border-radius: 999px;
+    color: #E8FAFC;
+    padding: 6px 12px;
+    font-weight: 600;
+}}
+
+.quick-result-stage {{
+    background-color: {COLOR_CARD};
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 10px;
+    padding: 10px;
+}}
+
+.quick-result-stage-title {{
+    color: {COLOR_ACCENT};
+    font-weight: 700;
+}}
+
+.quick-result-metric {{
+    background-color: #111820;
+    border: 1px solid #303946;
+    border-radius: 999px;
+    padding: 7px 12px;
+}}
+
+.quick-result-value {{
+    color: #FFFFFF;
+    font-size: 17px;
+    font-weight: 700;
+}}
+
+.quick-result-caption {{
+    color: #AEBAC8;
+    font-size: 10px;
+}}
+
+.quick-result-note {{
+    background-color: rgba(255, 255, 255, 0.045);
+    border-radius: 8px;
+    color: #D3DCE5;
+    padding: 8px 10px;
+}}
+
+.quick-result-files {{
+    color: #8FD8C8;
+    font-size: 11px;
+}}
 """.encode("utf-8")
 
 
@@ -2935,7 +2993,7 @@ class AuroraGUI(SectorWorkflowMixin):
                 self.quick_updated_path = path
         self.quick_capture_status_label.set_text(f"Lectura guardada: {Path(path).name}")
         if quick and target == "updated":
-            self.quick_result_label.set_text(
+            self._show_quick_result_message(
                 "Etapa DESPUES capturada. Compara para registrar su espesor acumulado respecto de BASE."
             )
         self._refresh_quick_workflow_state()
@@ -3613,7 +3671,9 @@ def main() -> None:
     app = AuroraGUI(window)
     if args.session:
         app._session_load(args.session)
+    window.resize(1050, 820)
     window.show_all()
+    window.present()
     Gtk.main()
 
 

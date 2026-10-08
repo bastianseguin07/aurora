@@ -98,6 +98,11 @@ def main():
         app._session_load(session_path)
         assert len(app.measurement_session.data["stages"]) == 2
         assert "ENSAYO" in app.quick_result_label.get_text()
+        assert not app.quick_result_label.get_visible()
+        result_children = app.quick_result_cards.get_children()
+        assert app.quick_result_cards.get_visible() and len(result_children) == 6
+        assert result_children[0].get_style_context().has_class("quick-result-heading")
+        assert all(child.get_style_context().has_class("quick-result-stage") for child in result_children[1:4])
         assert (session_path.parent / "informe.md").is_file()
         assert (session_path.parent / "resumen.csv").is_file()
         assert app.measurement_session.data["base"]["pose"]["sensor_timestamp_ns"] == 1234

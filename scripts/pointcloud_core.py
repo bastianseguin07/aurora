@@ -234,19 +234,96 @@ def pick_landmark_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np
     orden elegido, o None si se eligieron menos de 3 puntos.
     """
     vis = o3d.visualization.VisualizerWithEditing()
-    vis.create_window(window_name=window_name)
-    vis.add_geometry(cloud)
-    _apply_sdk_render_style(vis, cloud)
-    _start_at_sensor_pov(vis)
-    vis.run()
-    vis.destroy_window()
+    created = vis.create_window(window_name=window_name)
+    if not created or vis.get_render_option() is None:
+        # Open3D's legacy GLFW viewer can fail to create an OpenGL context in
+        # WSLg (for example, GLEW initialization fails). Do not continue into
+        # _apply_sdk_render_style with a None render option: retain an
+        # interactive landmark workflow using Matplotlib instead.
+        try:
+            if created:
+                vis.destroy_window()
+        except Exception:
+            pass
+        return _pick_landmark_points_matplotlib(cloud, window_name)
 
-    picked_indices = vis.get_picked_points()
+    try:
+        vis.add_geometry(cloud)
+        _apply_sdk_render_style(vis, cloud)
+        _start_at_sensor_pov(vis)
+        vis.run()
+        picked_indices = vis.get_picked_points()
+    finally:
+        vis.destroy_window()
+
     if len(picked_indices) < 3:
         return None
 
     points = np.asarray(cloud.points)
     return points[picked_indices]
+
+
+def _pick_landmark_points_matplotlib(
+    cloud: o3d.geometry.PointCloud, window_name: str, display_limit: int = 120_000
+) -> np.ndarray | None:
+    """Interactive 3D fallback for systems where Open3D cannot create a GL window.
+
+    The rendered cloud is sampled for responsiveness, while clicks are mapped
+    against every original point so the returned landmarks retain full cloud
+    precision. Rotate the view with the mouse, click three or more landmarks
+    in order, then close the window.
+    """
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import proj3d
+
+    points = np.asarray(cloud.points)
+    if len(points) < 3:
+        return None
+
+    if len(points) > display_limit:
+        sample_idx = np.linspace(0, len(points) - 1, display_limit, dtype=np.int64)
+    else:
+        sample_idx = np.arange(len(points))
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+    if cloud.has_colors():
+        colors = np.asarray(cloud.colors)[sample_idx]
+    else:
+        colors = "#aeb8c4"
+    ax.scatter(*points[sample_idx].T, c=colors, s=1, depthshade=False, linewidths=0)
+    ax.set_title(f"{window_name}\nClick en 3+ referencias en orden; arrastra para orbitar y cierra al terminar")
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    ax.set_zlabel("Z (m)")
+
+    selected: list[int] = []
+    markers = []
+
+    def on_click(event) -> None:
+        if event.inaxes is not ax or event.button != 1 or event.x is None or event.y is None:
+            return
+        projected_x, projected_y, projected_z = proj3d.proj_transform(
+            points[:, 0], points[:, 1], points[:, 2], ax.get_proj()
+        )
+        screen = ax.transData.transform(np.column_stack((projected_x, projected_y)))
+        delta = screen - np.array([event.x, event.y])
+        distance_sq = np.einsum("ij,ij->i", delta, delta)
+        # In dense/overlapping projections, prefer the front-most close point.
+        nearest = np.flatnonzero(distance_sq <= distance_sq.min() + 4.0)
+        index = int(nearest[np.argmax(projected_z[nearest])])
+        selected.append(index)
+        x, y, z = points[index]
+        marker = ax.scatter([x], [y], [z], c="#55d6be", s=55, edgecolors="black", depthshade=False)
+        markers.append(marker)
+        ax.text(x, y, z, str(len(selected)), color="#55d6be", fontsize=10)
+        fig.canvas.draw_idle()
+
+    fig.canvas.mpl_connect("button_press_event", on_click)
+    plt.show()
+    if len(selected) < 3:
+        return None
+    return points[np.asarray(selected, dtype=np.int64)]
 
 
 def reference_photo_path_for(ply_path: Path) -> Path:

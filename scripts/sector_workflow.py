@@ -99,10 +99,15 @@ class SectorWorkflowMixin:
         self.quick_compare_button.get_style_context().add_class("suggested-action")
         self.quick_compare_button.connect("clicked", lambda _b: self._quick_compare_clicked())
         box.pack_start(self.quick_compare_button, False, False, 0)
+        self.quick_result_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.quick_result_panel.get_style_context().add_class("quick-result-panel")
         self.quick_result_label = Gtk.Label(label="Carga o captura las dos nubes para comenzar.", xalign=0)
         self.quick_result_label.set_line_wrap(True)
         self.quick_result_label.set_selectable(True)
-        box.pack_start(self.quick_result_label, False, False, 0)
+        self.quick_result_panel.pack_start(self.quick_result_label, False, False, 0)
+        self.quick_result_cards = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.quick_result_panel.pack_start(self.quick_result_cards, False, False, 0)
+        box.pack_start(self.quick_result_panel, False, False, 0)
         row = self._row(box)
         self.session_view_button = Gtk.Button(label="Ver resultado 3D")
         self.session_view_button.connect("clicked", lambda _b: self._session_view())
@@ -288,7 +293,7 @@ class SectorWorkflowMixin:
             return
         incremental = self.session_mode_combo.get_active() == 1
         surface_reviewed = self.session_surface_check.get_active()
-        self.quick_result_label.set_text("Comparando distancias entre superficies...")
+        self._show_quick_result_message("Comparando distancias entre superficies...")
         def worker():
             try:
                 record, result = session.compare(index, incremental=incremental, log=self._log, surface_reviewed=surface_reviewed)
@@ -309,22 +314,60 @@ class SectorWorkflowMixin:
         self._finish_pipeline_ui()
 
     def _session_comparison_failed(self, message):
-        self.quick_result_label.set_text("Comparacion no aceptada: " + message)
+        self._show_quick_result_message("Comparacion no aceptada: " + message)
         self._log(message)
         self._finish_pipeline_ui()
 
     def _session_render_results(self):
         session = self.measurement_session
         if not session or not session.data["results"]:
-            self.quick_result_label.set_text("Listo para comparar cuando tengas las dos capturas.")
+            self._show_quick_result_message("Listo para comparar cuando tengas las dos capturas.")
             return
-        lines = ["ENSAYO CON DATOS DE PRUEBA" if session.data["demo"] else "RESULTADO EXPLORATORIO; PRECISION DE CAMPO NO VALIDADA"]
+        is_demo = session.data["demo"]
+        lines = ["ENSAYO CON DATOS DE PRUEBA" if is_demo else "RESULTADO EXPLORATORIO; PRECISION DE CAMPO NO VALIDADA"]
+        for child in self.quick_result_cards.get_children():
+            self.quick_result_cards.remove(child)
+        heading = Gtk.Label(label=lines[0], xalign=0.5)
+        heading.get_style_context().add_class("quick-result-heading")
+        self.quick_result_cards.pack_start(heading, False, False, 0)
         for record in session.data["results"]:
             stage = next(i + 1 for i, capture in enumerate(session.data["stages"]) if capture["id"] == record["stage_id"])
             stats = record["stats_m"]
             lines.append(f"DESPUES {stage}: media {stats['mean'] * 100:.2f} cm; mediana {stats['median'] * 100:.2f} cm")
+            stage_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            stage_card.get_style_context().add_class("quick-result-stage")
+            title = Gtk.Label(label=f"DESPUES {stage}", xalign=0)
+            title.get_style_context().add_class("quick-result-stage-title")
+            stage_card.pack_start(title, False, False, 0)
+            metrics = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            for caption, value in (("MEDIA", stats["mean"] * 100), ("MEDIANA", stats["median"] * 100)):
+                metric = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+                metric.get_style_context().add_class("quick-result-metric")
+                value_label = Gtk.Label(label=f"{value:.2f} cm")
+                value_label.get_style_context().add_class("quick-result-value")
+                caption_label = Gtk.Label(label=caption)
+                caption_label.get_style_context().add_class("quick-result-caption")
+                metric.pack_start(value_label, False, False, 0)
+                metric.pack_start(caption_label, False, False, 0)
+                metrics.pack_start(metric, True, True, 0)
+            stage_card.pack_start(metrics, False, False, 0)
+            self.quick_result_cards.pack_start(stage_card, False, False, 0)
         lines += ["La distancia no certifica espesor normal ni cobertura completa.", "CSV, mapa de colores e histograma guardados automaticamente."]
         self.quick_result_label.set_text("\n".join(lines))
+        self.quick_result_label.hide()
+        note = Gtk.Label(label="La distancia no certifica espesor normal ni cobertura completa.", xalign=0)
+        note.set_line_wrap(True)
+        note.get_style_context().add_class("quick-result-note")
+        self.quick_result_cards.pack_start(note, False, False, 0)
+        files = Gtk.Label(label="CSV, mapa de colores e histograma guardados automaticamente.", xalign=0)
+        files.get_style_context().add_class("quick-result-files")
+        self.quick_result_cards.pack_start(files, False, False, 0)
+        self.quick_result_cards.show_all()
+
+    def _show_quick_result_message(self, message):
+        self.quick_result_label.set_text(message)
+        self.quick_result_label.show()
+        self.quick_result_cards.hide()
 
     def _session_show_advanced(self, page):
         self.stack.set_visible_child_name(page)
