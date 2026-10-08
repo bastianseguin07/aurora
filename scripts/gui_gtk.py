@@ -15,10 +15,10 @@ Ejecutar con:
 
 from __future__ import annotations
 
+import csv
 import os
 import queue
 import threading
-import csv
 from pathlib import Path
 
 import gi
@@ -2614,11 +2614,18 @@ class AuroraGUI:
         self.quick_updated_path_label.set_text(updated.name if updated and updated.is_file() else "Sin captura DESPUES")
         worker_running = bool(self.worker_thread and self.worker_thread.is_alive())
         capturing = self.capture_stop_event is not None
+        self._set_capture_buttons_sensitive(self.sensor_connection is not None and not worker_running and not capturing)
         self.quick_compare_button.set_sensitive(
             bool(base and base.is_file() and updated and updated.is_file()) and not worker_running and not capturing
         )
 
     def _quick_compare_clicked(self) -> None:
+        if self.capture_stop_event is not None:
+            self._show_warning("Captura en curso", "Espera a que termine la lectura antes de comparar.")
+            return
+        if self.worker_thread and self.worker_thread.is_alive():
+            self._show_warning("Analisis en curso", "Espera a que termine la comparacion actual.")
+            return
         if not self.quick_base_path or not self.quick_updated_path:
             self._show_warning("Faltan capturas", "Captura una BASE nueva y al menos un DESPUES en esta sesion.")
             return
@@ -2720,6 +2727,12 @@ class AuroraGUI:
         self._refresh_quick_workflow_state()
 
     def _capture_clicked(self, target: str, quick: bool = False) -> None:
+        if self.capture_stop_event is not None:
+            self._show_warning("Captura en curso", "Espera a que termine la lectura actual.")
+            return
+        if self.worker_thread and self.worker_thread.is_alive():
+            self._show_warning("Analisis en curso", "Espera a que termine la comparacion antes de capturar otra etapa.")
+            return
         if self.sensor_connection is None:
             self._show_warning("Sensor no conectado", "Conecta el sensor antes de capturar.")
             return
@@ -2755,6 +2768,9 @@ class AuroraGUI:
         self.capture_status_label.set_text(f"Capturando {label} durante {duration_s:.0f} s...")
         self.quick_capture_status_label.set_text(f"Leyendo {label} ({duration_s:.0f} s)...")
         self._log(f"Capturando nube ({label}) durante {duration_s:.0f} s, persistencia >= {persistence_ratio:.2f}...")
+        self._set_connect_buttons("Capturando...", False)
+        self.run_button.set_sensitive(False)
+        self._refresh_quick_workflow_state()
 
         stop_event = self.capture_stop_event
 
@@ -2799,6 +2815,10 @@ class AuroraGUI:
         self.stop_capture_button.set_sensitive(False)
         self.quick_stop_capture_button.set_sensitive(False)
         self.capture_stop_event = None
+        connect_label = "Desconectar" if self.sensor_connection is not None else "Conectar"
+        self._set_connect_buttons(connect_label, self.sensor_connection is not None)
+        self.run_button.set_sensitive(True)
+        self._refresh_quick_workflow_state()
 
         import datetime
 
@@ -2913,6 +2933,9 @@ class AuroraGUI:
         self.stop_capture_button.set_sensitive(False)
         self.quick_stop_capture_button.set_sensitive(False)
         self.capture_stop_event = None
+        connect_label = "Desconectar" if self.sensor_connection is not None else "Conectar"
+        self._set_connect_buttons(connect_label, self.sensor_connection is not None)
+        self.run_button.set_sensitive(True)
         self.capture_status_label.set_text("")
         self.quick_capture_status_label.set_text("La lectura fallo.")
         self._refresh_quick_workflow_state()
@@ -3084,12 +3107,14 @@ class AuroraGUI:
         self.status_spinner.start()
         self.status_spinner.set_visible(True)
         self.status_label.set_markup("Calculando el espesor...")
+        self._set_capture_buttons_sensitive(False)
         if quick:
             self.quick_compare_button.set_sensitive(False)
             self.quick_result_label.set_text("Comparando; se asume el sensor en la misma posicion y orientacion.")
 
         self.worker_thread = threading.Thread(target=self._run_pipeline_worker, args=(params,), daemon=True)
         self.worker_thread.start()
+        self._refresh_quick_workflow_state()
 
     def _build_params(self, quick: bool = False) -> PipelineParams:
         base_path = Path(self.quick_base_path) if quick else Path(self.base_path)
@@ -3143,10 +3168,16 @@ class AuroraGUI:
             self._ui(self._on_pipeline_failure, str(exc))
             self._ui(self._show_error, "Error durante el analisis", str(exc))
         finally:
-            self._ui(self.run_button.set_sensitive, True)
-            self._ui(self.status_spinner.stop)
-            self._ui(self.status_spinner.set_visible, False)
-            self._ui(self._refresh_quick_workflow_state)
+            self._ui(self._finish_pipeline_ui)
+
+    def _finish_pipeline_ui(self) -> None:
+        if self.worker_thread and self.worker_thread.is_alive():
+            GLib.timeout_add(50, self._finish_pipeline_ui)
+            return
+        self.run_button.set_sensitive(True)
+        self.status_spinner.stop()
+        self.status_spinner.set_visible(False)
+        self._refresh_quick_workflow_state()
 
     def _on_pipeline_success(self) -> None:
         stats = self.result.stats
