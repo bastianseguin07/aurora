@@ -229,6 +229,8 @@ La comparacion rapida no mezcla capturas de sesiones anteriores. Comprueba que l
 
 Este flujo requiere capturar con el sensor Aurora conectado para guardar las poses IMU. La prueba de captura y el control de posicion deben validarse con el sensor fisico antes de usarlo como medicion de produccion.
 
+Para validar la interfaz y el analisis sin sensor, ejecuta `python3 scripts/smoke_test_quick_workflow.py` desde una sesion grafica de Ubuntu. El test usa nubes sinteticas y guarda sus resultados en una carpeta temporal.
+
 La seccion **Flujo tipico (un solo click)** de abajo describe el modo de comparacion avanzado con archivos `.ply`.
 
 ```bash
