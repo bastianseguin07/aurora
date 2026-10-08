@@ -83,7 +83,11 @@ class SectorWorkflowMixin:
         row.pack_start(self.quick_capture_status_label, True, True, 0)
 
         frame, box = self._section("Comparar")
-        note = Gtk.Label(label="Si moviste el sensor entre capturas, alinea las nubes desde la seccion Alineacion antes de comparar.", xalign=0)
+        note = Gtk.Label(
+            label="Si moviste el sensor entre capturas, alinea las nubes desde la seccion Alineacion antes de comparar. "
+                  "El boton superior usa esta misma comparacion, etapa, zona y opciones avanzadas.",
+            xalign=0,
+        )
         note.set_line_wrap(True)
         box.pack_start(note, False, False, 0)
         self.session_align_button = Gtk.Button(label="Alinear etapa con referencias estables")
@@ -205,7 +209,9 @@ class SectorWorkflowMixin:
             self.base_path = self.quick_base_path
             self._set_path_label(self.base_path_label, self.base_path)
         if self.quick_updated_path:
-            self.updated_path = self.quick_updated_path
+            capture = session.data["stages"][index]
+            selected_path = capture["registration"]["path"] if capture["registration"] else capture["path"]
+            self.updated_path = str(session.resolve(selected_path))
             self._set_path_label(self.updated_path_label, self.updated_path)
         self.alignment_applied = False
         self._session_render_results()
@@ -234,6 +240,24 @@ class SectorWorkflowMixin:
         self.quick_stop_capture_button.set_sensitive(self.capture_stop_event is not None)
         self.quick_stop_capture_button.set_visible(self.capture_stop_event is not None)
         self.quick_demo_check.set_sensitive(not busy and not session)
+
+    def _advanced_pair_is_selected_session(self):
+        """Whether the advanced action is still pointed at the active session pair."""
+        session = self.measurement_session
+        index = self.session_stage_combo.get_active() if session else -1
+        if not session or not session.data["base"] or index < 0:
+            return False
+        capture = session.data["stages"][index]
+        updated_relative = capture["registration"]["path"] if capture["registration"] else capture["path"]
+        expected = (
+            session.resolve(session.data["base"]["path"]),
+            session.resolve(updated_relative),
+        )
+        try:
+            actual = (Path(self.base_path).resolve(), Path(self.updated_path).resolve())
+        except (TypeError, OSError):
+            return False
+        return actual == expected
 
     def _session_import(self, target):
         if self._session_busy():
@@ -293,10 +317,18 @@ class SectorWorkflowMixin:
             return
         incremental = self.session_mode_combo.get_active() == 1
         surface_reviewed = self.session_surface_check.get_active()
+        try:
+            pipeline_options = self._build_params()
+        except Exception as exc:
+            self._show_error("Parametros invalidos", str(exc))
+            return
         self._show_quick_result_message("Comparando distancias entre superficies...")
         def worker():
             try:
-                record, result = session.compare(index, incremental=incremental, log=self._log, surface_reviewed=surface_reviewed)
+                record, result = session.compare(
+                    index, incremental=incremental, log=self._log,
+                    surface_reviewed=surface_reviewed, pipeline_options=pipeline_options,
+                )
                 self._ui(self._session_comparison_done, session, record, result)
             except Exception as exc:
                 self._ui(self._session_comparison_failed, str(exc))

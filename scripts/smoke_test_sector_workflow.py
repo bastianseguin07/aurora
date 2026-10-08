@@ -61,9 +61,19 @@ def main():
         pump_until(lambda: app.measurement_session.data["base"] and not app._session_busy(), "loaded BEFORE")
         app._session_import("updated")
         pump_until(lambda: len(app.measurement_session.data["stages"]) == 1 and not app._session_busy(), "loaded AFTER")
+        app.voxel_entry.set_text("0.20")
         app._quick_compare_clicked()
         pump_until(lambda: len(app.measurement_session.data["results"]) == 1 and not app._session_busy(), "loaded pair comparison")
         assert abs(app.measurement_session.data["results"][0]["stats_m"]["mean"] - .04) < 1e-6
+        assert app.measurement_session.data["results"][0]["stats_m"]["n_points"] < len(xy)
+        app.voxel_entry.set_text("0.0")
+        assert app._advanced_pair_is_selected_session()
+        advanced_dispatch = []
+        quick_compare = app._quick_compare_clicked
+        app._quick_compare_clicked = lambda: advanced_dispatch.append(True)
+        app._run_pipeline_clicked()
+        app._quick_compare_clicked = quick_compare
+        assert advanced_dispatch == [True]
 
         module.aurora_sensor.connect = lambda _: object()
         module.aurora_sensor.disconnect = lambda _: None
@@ -136,6 +146,7 @@ def main():
         app.session_stable_anchors_check.set_active(True)
         app._apply_alignment()
         pump_until(lambda: app.measurement_session.data["stages"][0]["registration"] and not app._session_busy(), "manual anchor registration")
+        assert app._advanced_pair_is_selected_session()
         app._session_crop_selected()
         app.segmentation_quad = np.array([[.1, .1, .16], [.9, .1, .16], [.9, .9, .16], [.1, .9, .16]])
         app.segmentation_width_spin.set_value(100)

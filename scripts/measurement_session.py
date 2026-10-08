@@ -187,7 +187,7 @@ class MeasurementSession:
             self.data["roi"] = before
             raise
 
-    def compare(self, stage_index: int, incremental=False, log=print, surface_reviewed=False):
+    def compare(self, stage_index: int, incremental=False, log=print, surface_reviewed=False, pipeline_options=None):
         base = self.data["base"]
         current = self.data["stages"][stage_index]
         previous = self.data["stages"][stage_index - 1] if incremental and stage_index > 0 else base
@@ -224,7 +224,20 @@ class MeasurementSession:
                     raise OSError(f"No se pudo guardar el sector recortado: {destination}")
                 paths.append(destination)
             first_path, second_path = paths
-        result = run_pipeline(PipelineParams(first_path, second_path, directory), log=log)
+        if pipeline_options is None:
+            params = PipelineParams(first_path, second_path, directory)
+        else:
+            params = PipelineParams(
+                first_path, second_path, directory,
+                voxel_size=pipeline_options.voxel_size,
+                remove_outliers=pipeline_options.remove_outliers,
+                use_icp=pipeline_options.use_icp,
+                icp_threshold=pipeline_options.icp_threshold,
+                crop_min=pipeline_options.crop_min,
+                crop_max=pipeline_options.crop_max,
+                max_distance=pipeline_options.max_distance,
+            )
+        result = run_pipeline(params, log=log)
         first = cloud_diagnostics(result.base_cloud)
         second = cloud_diagnostics(result.updated_cloud)
         reverse = np.asarray(result.base_cloud.compute_point_cloud_distance(result.updated_cloud))

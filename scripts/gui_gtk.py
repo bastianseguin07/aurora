@@ -568,8 +568,9 @@ class AuroraGUI(SectorWorkflowMixin):
 
         self.run_button = Gtk.Button(label="Calcular distancia (avanzado)")
         self.run_button.set_tooltip_text(
-            "Compara las dos nubes de puntos y calcula el espesor de shotcrete. "
-            "El resultado se muestra automaticamente en 3D."
+            "Con una comparacion Antes y despues activa, ejecuta ese mismo par con sus "
+            "controles de sesion y opciones avanzadas. Sin sesion, ejecuta el analisis avanzado "
+            "actual y muestra el resultado en 3D."
         )
         self.run_button.get_style_context().add_class("suggested-action")
         self.run_button.connect("clicked", lambda _b: self._run_pipeline_clicked())
@@ -1583,12 +1584,19 @@ class AuroraGUI(SectorWorkflowMixin):
         self.apply_alignment_button.set_sensitive(True)
         self.alignment_result_label.set_text(f"Error residual: {rms * 1000:.2f} mm — nube alineada guardada")
         self.alignment_applied = True
-        self.updated_path = aligned_path
-        self._set_path_label(self.updated_path_label, aligned_path)
+        comparison_path = Path(aligned_path)
+        session = getattr(self, "measurement_session", None)
+        stage_index = self.session_stage_combo.get_active() if session else -1
+        if session and stage_index >= 0:
+            registration = session.data["stages"][stage_index]["registration"]
+            if registration:
+                comparison_path = session.resolve(registration["path"])
+        self.updated_path = str(comparison_path)
+        self._set_path_label(self.updated_path_label, str(comparison_path))
         self._show_info(
             "Alineacion aplicada",
             f"Error residual en los puntos de referencia: {rms * 1000:.2f} mm.\n\n"
-            f"Se guardo la nube alineada en:\n{aligned_path}\n\n"
+            f"Se guardo la nube alineada en:\n{comparison_path}\n\n"
             "La pestaña 'Comparacion' ya usa este archivo como nube con shotcrete.",
         )
 
@@ -3175,6 +3183,13 @@ class AuroraGUI(SectorWorkflowMixin):
         return False
 
     def _run_pipeline_clicked(self) -> None:
+        if self._advanced_pair_is_selected_session():
+            # A session owns its registration, ROI, review gates and artifacts.
+            # Reuse its comparison path so the header action cannot report a
+            # different distance for the same selected pair.
+            self.stack.set_visible_child_name("rapido")
+            self._quick_compare_clicked()
+            return
         if self._session_importing or self.capture_stop_event is not None:
             self._show_warning("Trabajo en curso", "Espera a que termine la captura o el guardado del sector.")
             return
