@@ -357,16 +357,12 @@ def load_reference_photo(ply_path: Path) -> tuple[np.ndarray, np.ndarray] | None
 
 
 def reference_pose_path_for(ply_path: Path) -> Path:
-    """Convencion de nombre del sidecar con la pose del sensor (posicion +
-    orientacion IMU/SLAM) al momento de una captura .ply — ver pestana
-    'Alineacion IMU' en gui_gtk.py."""
+    """Convencion de nombre para metadata SLAM asociada a un PLY."""
     return ply_path.with_name(ply_path.stem + "_pose.npz")
-
 
 def save_reference_pose(ply_path: Path, position: np.ndarray, rpy_deg: np.ndarray) -> None:
     """Guarda la pose del sensor (posicion en metros, orientacion roll/pitch/yaw
-    en grados) junto a un .ply, para poder guiar al usuario a devolver el
-    sensor a esa misma posicion fisica antes de la siguiente captura."""
+    en grados) junto a un .ply como metadata auxiliar de captura."""
     np.savez_compressed(
         reference_pose_path_for(ply_path),
         position=np.asarray(position, dtype=np.float64),
@@ -382,41 +378,6 @@ def load_reference_pose(ply_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
         return None
     data = np.load(path)
     return data["position"], data["rpy_deg"]
-
-
-def local_axes_from_rpy_deg(rpy_deg: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Ejes propios del sensor (adelante/derecha/arriba) expresados en el
-    sistema de coordenadas mundo/mapa, a partir de su orientacion
-    roll/pitch/yaw (grados) en un instante dado. Asume que en el marco
-    propio del sensor 'adelante' (la cara con las camaras) es +Y, 'derecha'
-    es +X y 'arriba' es +Z — ajustado a mano contra el sensor real (la
-    primera version tenia 'adelante' y 'arriba' cruzados: lo que se
-    mostraba como 'arriba'/'abajo' era en realidad 'adelante'/'atras')."""
-    rotation = o3d.geometry.get_rotation_matrix_from_xyz(np.radians(np.asarray(rpy_deg, dtype=np.float64)))
-    forward = rotation @ np.array([0.0, 1.0, 0.0])
-    right = rotation @ np.array([1.0, 0.0, 0.0])
-    up = rotation @ np.array([0.0, 0.0, 1.0])
-    return forward, right, up
-
-
-def direction_word_pairs_for_axes(rpy_deg: np.ndarray) -> dict[str, tuple[str, str]]:
-    """Para cada eje del mundo (x, y, z), la palabra que corresponde a
-    moverse en +eje y en -eje ('adelante'/'atras', 'derecha'/'izquierda' o
-    'arriba'/'abajo') segun cual de los ejes propios del sensor (ver
-    local_axes_from_rpy_deg) este mas alineado con ese eje del mundo."""
-    forward, right, up = local_axes_from_rpy_deg(rpy_deg)
-    candidates = [(forward, "adelante", "atras"), (right, "derecha", "izquierda"), (up, "arriba", "abajo")]
-
-    pairs: dict[str, tuple[str, str]] = {}
-    for index, axis in enumerate(("x", "y", "z")):
-        world_axis = np.zeros(3)
-        world_axis[index] = 1.0
-        local_axis, positive_word, negative_word = max(
-            candidates, key=lambda candidate: abs(float(np.dot(world_axis, candidate[0])))
-        )
-        projection = float(np.dot(world_axis, local_axis))
-        pairs[axis] = (positive_word, negative_word) if projection >= 0 else (negative_word, positive_word)
-    return pairs
 
 
 def render_reference_photo_from_cloud(
@@ -765,97 +726,6 @@ def build_heatmap_cloud(
     return heatmap_cloud
 
 
-def build_subtle_overlay_cloud(
-    updated: o3d.geometry.PointCloud,
-    distances: np.ndarray,
-    max_distance: float | None = None,
-    base_gray: float = 0.72,
-    highlight_color: tuple[float, float, float] = (0.85, 0.55, 0.20),
-) -> o3d.geometry.PointCloud:
-    """
-    Colorea la nube 'actualizada' con un resaltado sutil (gris -> ambar tenue)
-    proporcional a la diferencia con la base, pensado para superponerla sobre
-    la nube base y ver la diferencia sin un heatmap llamativo tipo arcoiris.
-    """
-    clip_max = max_distance if max_distance else float(np.percentile(distances, 95))
-    clip_max = max(clip_max, 1e-9)
-    t = np.clip(distances / clip_max, 0.0, 1.0)[:, None]
-
-    base_color = np.array([base_gray, base_gray, base_gray])
-    highlight = np.array(highlight_color)
-    colors = base_color * (1 - t) + highlight * t
-
-    overlay_cloud = o3d.geometry.PointCloud(updated)
-    overlay_cloud.colors = o3d.utility.Vector3dVector(colors)
-    return overlay_cloud
-
-
-# Verde = espesor bajo (dentro de spec / insuficiente), amarillo = medio, rojo = alto.
-BAND_COLOR_LOW = (0.204, 0.780, 0.349)  # verde #34C759
-BAND_COLOR_MEDIUM = (1.0, 0.8, 0.0)  # amarillo #FFCC00
-BAND_COLOR_HIGH = (1.0, 0.231, 0.188)  # rojo #FF3B30
-
-
-def build_heatmap_cloud_banded(
-    updated: o3d.geometry.PointCloud,
-    distances: np.ndarray,
-    low_threshold: float,
-    high_threshold: float,
-) -> o3d.geometry.PointCloud:
-    """
-    Colorea la nube en 3 niveles discretos segun el espesor (en metros),
-    en vez de un gradiente continuo: <low_threshold -> verde,
-    [low_threshold, high_threshold) -> amarillo, >=high_threshold -> rojo.
-    """
-    colors = np.empty((distances.shape[0], 3))
-    low_mask = distances < low_threshold
-    high_mask = distances >= high_threshold
-    medium_mask = ~low_mask & ~high_mask
-
-    colors[low_mask] = BAND_COLOR_LOW
-    colors[medium_mask] = BAND_COLOR_MEDIUM
-    colors[high_mask] = BAND_COLOR_HIGH
-
-    banded_cloud = o3d.geometry.PointCloud(updated)
-    banded_cloud.colors = o3d.utility.Vector3dVector(colors)
-    return banded_cloud
-
-
-# Escala termica de 6 niveles equidistantes segun el espesor objetivo definido
-# por el usuario (0 = frio/sin aplicar, tope = caliente/objetivo alcanzado).
-SIX_BAND_LABELS = ("Muy Frio", "Frio", "Fresco", "Templado", "Calido", "Caliente")
-SIX_BAND_COLORS = (
-    (0.557, 0.267, 0.678),  # Muy Frio - Morado
-    (0.0, 0.482, 1.0),  # Frio - Azul #007AFF
-    (0.0, 0.780, 0.820),  # Fresco - Cian
-    (0.204, 0.780, 0.349),  # Templado - Verde #34C759
-    (1.0, 0.549, 0.0),  # Calido - Naranja #FF8C00
-    (1.0, 0.231, 0.188),  # Caliente - Rojo #FF3B30
-)
-
-
-def build_heatmap_cloud_six_bands(
-    updated: o3d.geometry.PointCloud,
-    distances: np.ndarray,
-    target_thickness_m: float,
-) -> o3d.geometry.PointCloud:
-    """
-    Colorea la nube en 6 niveles equidistantes entre 0 y 'target_thickness_m'
-    (el espesor objetivo definido por el usuario), con la escala termica
-    Muy Frio/Frio/Fresco/Templado/Calido/Caliente (morado -> azul -> cian ->
-    verde -> naranja -> rojo). Puntos por debajo de 0 o por encima del
-    objetivo se recortan a la primera/ultima banda.
-    """
-    target_thickness_m = max(float(target_thickness_m), 1e-9)
-    band_width = target_thickness_m / len(SIX_BAND_COLORS)
-    band_idx = np.clip((distances / band_width).astype(np.int64), 0, len(SIX_BAND_COLORS) - 1)
-    colors = np.asarray(SIX_BAND_COLORS)[band_idx]
-
-    six_band_cloud = o3d.geometry.PointCloud(updated)
-    six_band_cloud.colors = o3d.utility.Vector3dVector(colors)
-    return six_band_cloud
-
-
 @dataclass
 class RaycastPipelineParams:
     base_path: Path
@@ -880,7 +750,7 @@ class RaycastPipelineParams:
     # "normal": raycast_thickness_along_normal, un rayo por cada vertice de
     # la malla base a lo largo de la normal del plano que mejor la ajusta
     # — no necesita la pose del sensor, pero SI necesita que las dos nubes
-    # ya compartan sistema de coordenadas (alineacion IMU o por puntos de
+    # ya compartan sistema de coordenadas (registro por puntos de
     # referencia aplicada de antemano).
     ray_method: str = "origin"
     delaunay_max_edge_trim_factor: float = 4.0
@@ -1011,7 +881,7 @@ def raycast_thickness_along_normal(
     viaje del lado donde se aplico el shotcrete.
 
     Requiere que ambas mallas YA COMPARTAN sistema de coordenadas
-    (alineacion IMU o por puntos de referencia, pestaña 'Alineacion',
+    (registro por puntos de referencia, pestaña 'Alineacion',
     aplicada de antemano) — a diferencia de 'raycast_thickness', este
     metodo no tiene forma de detectar ni corregir un desplazamiento del
     sensor entre capturas, lo mediria como si fuera espesor real.
@@ -1058,12 +928,9 @@ def raycast_thickness(
     con shotcrete quedo mas cerca del sensor que la original, como se
     espera fisicamente.
 
-    Requiere que el sensor no se haya movido entre ambas capturas (o que se
-    haya vuelto a la misma posicion via la pestaña 'Alineacion IMU') — si
-    'base_origin' y 'updated_origin' difieren, las direcciones no apuntan
-    al mismo punto fisico en ambas mallas y el resultado deja de ser
-    valido; quien llama a esta funcion es responsable de avisar si el
-    desfasaje es grande (ver run_raycast_pipeline).
+    Requiere que el sensor se mantenga en la misma posicion fisica entre
+    capturas. Si los origenes difieren, los rayos no apuntan al mismo punto;
+    este metodo experimental no registra las nubes.
 
     Devuelve (distancias, puntos de impacto sobre la malla actualizada)
     solo para los rayos que impactaron ambas mallas.
@@ -1131,8 +998,8 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
             if base_pose is None:
                 raise ValueError(
                     "No hay sidecar de pose ('_pose.npz') para la nube base y no se dio "
-                    "un origen manual. Vuelve a capturar con el sensor conectado, o "
-                    "completa el origen manual en la pestaña 'Raycasting (prueba)'."
+                    "un origen manual. Vuelve a capturar con el sensor conectado o "
+                    "proporciona params.base_origin al llamar el pipeline experimental."
                 )
             base_origin = np.asarray(base_pose[0], dtype=np.float64)
 
@@ -1144,8 +1011,8 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
             if updated_pose is None:
                 raise ValueError(
                     "No hay sidecar de pose ('_pose.npz') para la nube actualizada y no "
-                    "se dio un origen manual. Vuelve a capturar con el sensor conectado, "
-                    "o completa el origen manual en la pestaña 'Raycasting (prueba)'."
+                    "se dio un origen manual. Vuelve a capturar con el sensor conectado o "
+                    "proporciona params.updated_origin al llamar el pipeline experimental."
                 )
             updated_origin = np.asarray(updated_pose[0], dtype=np.float64)
         origin_gap_cm = float(np.linalg.norm(updated_origin - base_origin)) * 100
@@ -1153,7 +1020,7 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
             log(
                 f"Aviso: el sensor se movio {origin_gap_cm:.1f} cm entre capturas segun "
                 "la pose guardada. El metodo de raycasting asume que el sensor no se "
-                "movio (o volvio a la misma posicion via 'Alineacion IMU'); el "
+                "movio (o mantuvo la misma posicion fisica); el "
                 "resultado puede no ser fisicamente valido."
             )
 
@@ -1339,6 +1206,8 @@ def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
     save_histogram(histogram_path, distances)
     log(f"Histograma guardado en: {histogram_path}")
 
+    # In the C2C pipeline this value only sets the heatmap color ceiling;
+    # distances, CSV, histogram, and summary statistics remain unfiltered.
     heatmap_cloud = build_heatmap_cloud(updated_cloud, distances, params.max_distance)
     heatmap_path = params.output_dir / "thickness_heatmap.ply"
     o3d.io.write_point_cloud(str(heatmap_path), heatmap_cloud)

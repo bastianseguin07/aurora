@@ -190,7 +190,7 @@ class MeasurementSession:
             self.data["roi"] = before
             raise
 
-    def compare(self, stage_index: int, incremental=False, log=print, surface_reviewed=False, pipeline_options=None):
+    def compare(self, stage_index: int, incremental=False, log=print, pipeline_options=None):
         base = self.data["base"]
         current = self.data["stages"][stage_index]
         previous = self.data["stages"][stage_index - 1] if incremental and stage_index > 0 else base
@@ -204,8 +204,6 @@ class MeasurementSession:
             registration = capture["registration"]
             if not registration or registration["base_id"] != base["id"]:
                 raise ValueError("Faltan referencias estables para esta etapa. Usa Alinear etapa. La coincidencia IMU no verifica el registro.")
-        if not surface_reviewed:
-            raise ValueError("Falta revisar visualmente que el par cubra la misma zona y no incluya maquinaria u oclusiones. Esa revision es manual, no una prueba automatica de cobertura.")
         def working_path(capture):
             registration = capture["registration"]
             return self.resolve(registration["path"] if registration else capture["path"])
@@ -255,7 +253,10 @@ class MeasurementSession:
             "stage_id": current["id"], "reference_id": previous["id"], "mode": mode,
             "created_at": now(), "status": "exploratorio_no_validado",
             "method": "C2C euclidiana sin signo; no es espesor normal certificado",
-            "surface_review": {"operator_confirmed": bool(surface_reviewed), "automated_coverage_validated": False},
+            "coverage_assessment": {
+                "assumption": "Se asume que la escena esta despejada y corresponde a la zona de interes.",
+                "automated_coverage_validated": False,
+            },
             "roi": copy.deepcopy(roi),
             "stats_m": {key: getattr(result.stats, key) for key in ("mean", "median", "std", "min", "max", "p95", "n_points")},
             "diagnostics": diagnostic,
@@ -299,7 +300,7 @@ class MeasurementSession:
                                  stats["mean"] * 100, stats["median"] * 100, stats["p95"] * 100, stats["n_points"], record["created_at"], record["artifacts"]["csv"]])
                 lines += [f"- {record['mode']}: {record['reference_id']} → {record['stage_id']}",
                           f"  Media C2C {stats['mean'] * 100:.3f} cm; mediana {stats['median'] * 100:.3f} cm; P95 {stats['p95'] * 100:.3f} cm. Estado: {record['status']}.",
-                          f"  Revision manual de zona: {record.get('surface_review')}; no valida cobertura automatica.",
+                          f"  Cobertura: {record.get('coverage_assessment', record.get('surface_review', 'no validada automaticamente'))}.",
                           f"  Diagnosticos: {json.dumps(record['diagnostics'], ensure_ascii=False)}", f"  CSV: {record['artifacts']['csv']}"]
         path.write_text("\n\n".join(lines) + "\n", encoding="utf-8")
         return path

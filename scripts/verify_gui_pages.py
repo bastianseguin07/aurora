@@ -25,6 +25,7 @@ def main():
     app.window.resize(1280, 960)
     app.window.show_all()
     assert not hasattr(app, "quick_demo_button")
+    assert not hasattr(app, "embedded_viewer")
     if args.session:
         app._session_load(args.session)
     methods = set()
@@ -36,7 +37,8 @@ def main():
     missing = [name for name in methods if not hasattr(app, name)]
     assert not missing, missing
     pages = []
-    for page in app._sidebar_rows:
+    page_names = [app.stack.child_get_property(child, "name") for child in app.stack.get_children()]
+    for page in page_names:
         app.stack.set_visible_child_name(page)
         deadline = time.monotonic() + .3
         while time.monotonic() < deadline:
@@ -50,10 +52,9 @@ def main():
             snapshot.savev(str(args.output_dir / f"{page}.png"), "png", [], [])
         pages.append({"page": page, "width": window.get_width(), "height": window.get_height(), "snapshot": snapshot is not None})
     (args.output_dir / "verification.json").write_text(json.dumps({"pages": pages, "callback_methods_checked": len(methods), "missing_methods": missing}, indent=2), encoding="utf-8")
-    app._stop_imu_poll()
     app.window.disconnect_by_func(app._on_close)
     app.window.destroy()
-    print(f"Rendered {len(pages)} GTK pages; {len(methods)} callback/helper references resolved.")
+    print(f"Rendered {len(pages)} GTK stack pages; {len(methods)} callback/helper references resolved.")
 
 
 if __name__ == "__main__":

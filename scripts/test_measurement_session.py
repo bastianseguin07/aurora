@@ -41,7 +41,7 @@ class Sessions(unittest.TestCase):
         session = self.make_session()
         self.assertNotIn("demo", session.data)
         for index, incremental, expected in ((0, False, .04), (1, False, .08), (1, True, .04)):
-            record, _result = session.compare(index, incremental, log=lambda _: None, surface_reviewed=True)
+            record, _result = session.compare(index, incremental, log=lambda _: None)
             self.assertAlmostEqual(record["stats_m"]["mean"], expected, places=6)
             session.record_result(record)
         for path in self.paths:
@@ -77,9 +77,7 @@ class Sessions(unittest.TestCase):
         aligned_path = self.root / "aligned.ply"
         o3d.io.write_point_cloud(str(aligned_path), aligned)
         session.register_stage(stage, aligned_path, anchors, anchors + offset, rotation, translation, 0)
-        with self.assertRaisesRegex(ValueError, "Falta revisar"):
-            session.compare(2, log=lambda _: None)
-        result, _ = session.compare(2, log=lambda _: None, surface_reviewed=True)
+        result, _ = session.compare(2, log=lambda _: None)
         self.assertAlmostEqual(result["stats_m"]["mean"], .04, places=6)
         self.assertEqual(result["status"], "exploratorio_no_validado")
         with self.assertRaises(ValueError):
@@ -101,7 +99,7 @@ class Sessions(unittest.TestCase):
         session = self.make_session()
         quad = np.array([[.1, .1, 0], [.9, .1, 0], [.9, .9, 0], [.1, .9, 0]])
         session.set_roi(quad, 1.)
-        record, _ = session.compare(1, log=lambda _: None, surface_reviewed=True)
+        record, _ = session.compare(1, log=lambda _: None)
         self.assertAlmostEqual(record["stats_m"]["mean"], .08, places=6)
         self.assertLess(record["stats_m"]["n_points"], 100)
         session.record_result(record)
@@ -130,8 +128,8 @@ class Sessions(unittest.TestCase):
         for stage, path in zip(stages, (inward_path, outward_path)):
             session.register_stage(stage, path, anchors, anchors, np.eye(3), np.zeros(3), 0.0)
 
-        inward, _ = session.compare(0, log=lambda _: None, surface_reviewed=True)
-        outward, _ = session.compare(1, log=lambda _: None, surface_reviewed=True)
+        inward, _ = session.compare(0, log=lambda _: None)
+        outward, _ = session.compare(1, log=lambda _: None)
         self.assertAlmostEqual(inward["stats_m"]["mean"], 0.04, places=6)
         self.assertAlmostEqual(outward["stats_m"]["mean"], 0.04, places=6)
         self.assertAlmostEqual(inward["stats_m"]["p95"], 0.04, places=6)

@@ -34,8 +34,6 @@ def main():
             category, recommendation = "SDK vendorizado/fallback", "CONSERVAR paquete; imports internos, binario externo requerido"
         elif path.name in ("gui.py", "smoke_test_quick_workflow_tk.py", "setup.ps1", "setup.bat"):
             category, recommendation = "Windows heredado", "CONSERVAR; sin paridad con sesiones GTK"
-        elif path.name == "embedded_viewer.py":
-            category, recommendation = "visor alternativo experimental", "LABORATORIO; candidato a eliminar tras elegir visor"
         elif path.suffix in (".md", ".txt"):
             category, recommendation = "documentacion/configuracion", "CONSERVAR; plan intacto, docs de flujo actualizadas"
         else:

@@ -21,7 +21,6 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable
 
 import numpy as np
 import open3d as o3d
@@ -114,9 +113,8 @@ def get_current_pose(connection: AuroraConnection) -> SensorPose:
     """Pose actual del sensor (posicion + orientacion) segun el tracking
     visual-inercial (SLAM+IMU) del Aurora. La nube cruda de profundidad usa
     coordenadas locales de camara: no se aplica aqui la extrinseca ni la pose.
-    Esta pose sirve como guia auxiliar; no verifica registro ni continuidad del mapa. Se usa para guiar al
-    usuario a devolver el sensor a la posicion donde capturo la nube base
-    (pestana 'Alineacion IMU'), sin necesidad de recorrer toda la nube."""
+    La pose se guarda como metadata auxiliar; no registra ni transforma la
+    nube de profundidad."""
     try:
         position, rpy, timestamp_ns = connection.sdk.get_current_pose(use_se3=False)
     except Exception as exc:
@@ -514,28 +512,3 @@ def capture_snapshot(
     if voxel_size and voxel_size > 0:
         cloud = cloud.voxel_down_sample(voxel_size)
     return cloud
-
-
-def stream_frames(
-    connection: AuroraConnection,
-    callback: Callable[[np.ndarray], None],
-    stop_event: threading.Event,
-    max_points: int = 40000,
-    rate_hz: float = 10.0,
-) -> None:
-    """
-    Bucle bloqueante que entrega frames del sensor en vivo a
-    'callback(points_xyz)' hasta que se active 'stop_event'. Pensado para
-    correr en un hilo aparte (no llamar desde el hilo principal de la GUI).
-    """
-    interval = 1.0 / rate_hz
-    last = 0.0
-    while not stop_event.is_set():
-        now = time.time()
-        if now - last < interval:
-            time.sleep(0.01)
-            continue
-        points = read_frame_points(connection, max_points=max_points, timeout_ms=100)
-        if points is not None:
-            callback(points)
-        last = now

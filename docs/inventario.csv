@@ -1,12 +1,12 @@
 archivo,bytes,categoria,decision,imports,definiciones_principales
 .gitattributes,87,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,,
-.gitignore,397,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,,
-CLAUDE.md,33852,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
-MANUAL_USO.md,17850,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
-README.md,23223,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
+.gitignore,381,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,,
+CLAUDE.md,3018,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
+MANUAL_USO.md,3684,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
+README.md,3651,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
 data/.gitkeep,0,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,,
-docs/AUDITORIA_AURORA.md,21844,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
-docs/FLUJO_SECTOR.md,2842,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
+docs/AUDITORIA_AURORA.md,22749,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
+docs/FLUJO_SECTOR.md,3431,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
 output/.gitkeep,0,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,,
 output/auditoria/5b0d29e2958347d28afd196847f2c36a/capturas/69fee8fed5294515a00f357be13d8400.ply,27123195,captura/resultado generado,"CONSERVAR; revisar archivado, no borrar automaticamente",,
 output/auditoria/5b0d29e2958347d28afd196847f2c36a/capturas/ffa58a5126784d7097f0eebaed31ccc4.ply,29323425,captura/resultado generado,"CONSERVAR; revisar archivado, no borrar automaticamente",,
@@ -158,6 +158,9 @@ output/sesiones/11413e3e1de748e59fffba3cb89830dc/sesion.json,11956,captura/resul
 output/sesiones/22ef71ce5aca43f9a3fd0938ad32291f/capturas/72e1f31abec548749b3c1db0faf91957.ply,27123195,captura/resultado generado,"CONSERVAR; revisar archivado, no borrar automaticamente",,
 output/sesiones/22ef71ce5aca43f9a3fd0938ad32291f/capturas/8d12d9a2bb23458e93d4d57282d09d40.ply,27123195,captura/resultado generado,"CONSERVAR; revisar archivado, no borrar automaticamente",,
 output/sesiones/22ef71ce5aca43f9a3fd0938ad32291f/sesion.json,2188,captura/resultado generado,"CONSERVAR; revisar archivado, no borrar automaticamente",,
+output/sesiones/23fedb222a9c4b90912fd94d0feaaeeb/capturas/5203bef83ed245d48847bf3dde355ee5.ply,29323425,captura/resultado generado,"CONSERVAR; revisar archivado, no borrar automaticamente",,
+output/sesiones/23fedb222a9c4b90912fd94d0feaaeeb/capturas/b7b9d4181e004551bc4f10fac4f6332f.ply,27123195,captura/resultado generado,"CONSERVAR; revisar archivado, no borrar automaticamente",,
+output/sesiones/23fedb222a9c4b90912fd94d0feaaeeb/sesion.json,2178,captura/resultado generado,"CONSERVAR; revisar archivado, no borrar automaticamente",,
 output/sesiones/366c5a1cec6d4ad182d8744ef7d4cf90/capturas/209c303434a94789b235a82e79f3813d.ply,27123195,captura/resultado generado,"CONSERVAR; revisar archivado, no borrar automaticamente",,
 output/sesiones/366c5a1cec6d4ad182d8744ef7d4cf90/capturas/61b5c62b227b498292a056b83964b68f.ply,27123195,captura/resultado generado,"CONSERVAR; revisar archivado, no borrar automaticamente",,
 output/sesiones/366c5a1cec6d4ad182d8744ef7d4cf90/capturas/b97b17112e5646b7aaf73b59d698434e.ply,29323425,captura/resultado generado,"CONSERVAR; revisar archivado, no borrar automaticamente",,
@@ -190,16 +193,16 @@ output/thickness_histogram.png,43615,captura/resultado generado,"CONSERVAR; revi
 output/thickness_per_point.csv,51118931,captura/resultado generado,"CONSERVAR; revisar archivado, no borrar automaticamente",,
 pcd/base_capturada_20261006_143616.ply,27123195,datos de prueba del usuario,CONSERVAR; no valida mina,,
 pcd/updated_capturada_20261006_143645.ply,29323425,datos de prueba del usuario,CONSERVAR; no valida mina,,
-plan.txt,2939,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
+plan.txt,2913,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
 python_bindings/__pycache__/setup.cpython-312.pyc,13241,cache regenerable,PRESCINDIBLE; no eliminado,,
 python_bindings/setup.py,13965,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",os; pathlib; platform; setuptools; shutil; sys,get_version; get_platform_info; get_native_lib_path; check_native_library; copy_native_libraries; get_supported_platforms; read_requirements; read_optional_requirements
 python_bindings/slamtec_aurora_sdk/__init__.py,3552,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.aurora_sdk; .camera_mask; .controller; .dashcam_recorder; .data_provider; .data_recorder; .data_types; .enhanced_imaging; .exceptions; .lidar_2d_map_builder; .listener; .map_manager; .persistent_config; .timesync; .transform_manager,
 python_bindings/slamtec_aurora_sdk/__pycache__/__init__.cpython-312.pyc,2586,cache regenerable,PRESCINDIBLE; no eliminado,,
 python_bindings/slamtec_aurora_sdk/__pycache__/aurora_sdk.cpython-312.pyc,23155,cache regenerable,PRESCINDIBLE; no eliminado,,
 python_bindings/slamtec_aurora_sdk/__pycache__/c_bindings.cpython-312.pyc,136462,cache regenerable,PRESCINDIBLE; no eliminado,,
-python_bindings/slamtec_aurora_sdk/__pycache__/camera_mask.cpython-312.pyc,11622,cache regenerable,PRESCINDIBLE; no eliminado,,
+python_bindings/slamtec_aurora_sdk/__pycache__/camera_mask.cpython-312.pyc,11582,cache regenerable,PRESCINDIBLE; no eliminado,,
 python_bindings/slamtec_aurora_sdk/__pycache__/controller.cpython-312.pyc,37515,cache regenerable,PRESCINDIBLE; no eliminado,,
-python_bindings/slamtec_aurora_sdk/__pycache__/dashcam_recorder.cpython-312.pyc,10215,cache regenerable,PRESCINDIBLE; no eliminado,,
+python_bindings/slamtec_aurora_sdk/__pycache__/dashcam_recorder.cpython-312.pyc,10175,cache regenerable,PRESCINDIBLE; no eliminado,,
 python_bindings/slamtec_aurora_sdk/__pycache__/data_provider.cpython-312.pyc,33019,cache regenerable,PRESCINDIBLE; no eliminado,,
 python_bindings/slamtec_aurora_sdk/__pycache__/data_recorder.cpython-312.pyc,17243,cache regenerable,PRESCINDIBLE; no eliminado,,
 python_bindings/slamtec_aurora_sdk/__pycache__/data_types.cpython-312.pyc,86218,cache regenerable,PRESCINDIBLE; no eliminado,,
@@ -207,17 +210,17 @@ python_bindings/slamtec_aurora_sdk/__pycache__/enhanced_imaging.cpython-312.pyc,
 python_bindings/slamtec_aurora_sdk/__pycache__/exceptions.cpython-312.pyc,2897,cache regenerable,PRESCINDIBLE; no eliminado,,
 python_bindings/slamtec_aurora_sdk/__pycache__/floor_detector.cpython-312.pyc,4937,cache regenerable,PRESCINDIBLE; no eliminado,,
 python_bindings/slamtec_aurora_sdk/__pycache__/lidar_2d_map_builder.cpython-312.pyc,24160,cache regenerable,PRESCINDIBLE; no eliminado,,
-python_bindings/slamtec_aurora_sdk/__pycache__/listener.cpython-312.pyc,15504,cache regenerable,PRESCINDIBLE; no eliminado,,
+python_bindings/slamtec_aurora_sdk/__pycache__/listener.cpython-312.pyc,15494,cache regenerable,PRESCINDIBLE; no eliminado,,
 python_bindings/slamtec_aurora_sdk/__pycache__/map_manager.cpython-312.pyc,15474,cache regenerable,PRESCINDIBLE; no eliminado,,
-python_bindings/slamtec_aurora_sdk/__pycache__/persistent_config.cpython-312.pyc,12451,cache regenerable,PRESCINDIBLE; no eliminado,,
-python_bindings/slamtec_aurora_sdk/__pycache__/timesync.cpython-312.pyc,10091,cache regenerable,PRESCINDIBLE; no eliminado,,
-python_bindings/slamtec_aurora_sdk/__pycache__/transform_manager.cpython-312.pyc,8826,cache regenerable,PRESCINDIBLE; no eliminado,,
+python_bindings/slamtec_aurora_sdk/__pycache__/persistent_config.cpython-312.pyc,12424,cache regenerable,PRESCINDIBLE; no eliminado,,
+python_bindings/slamtec_aurora_sdk/__pycache__/timesync.cpython-312.pyc,10057,cache regenerable,PRESCINDIBLE; no eliminado,,
+python_bindings/slamtec_aurora_sdk/__pycache__/transform_manager.cpython-312.pyc,8799,cache regenerable,PRESCINDIBLE; no eliminado,,
 python_bindings/slamtec_aurora_sdk/__pycache__/utils.cpython-312.pyc,13665,cache regenerable,PRESCINDIBLE; no eliminado,,
 python_bindings/slamtec_aurora_sdk/aurora_sdk.py,19847,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.camera_mask; .controller; .dashcam_recorder; .data_provider; .data_recorder; .data_types; .enhanced_imaging; .exceptions; .floor_detector; .lidar_2d_map_builder; .map_manager; .persistent_config; .transform_manager,AuroraSDK
 python_bindings/slamtec_aurora_sdk/c_bindings.py,127919,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.data_types; .exceptions; ctypes; os; platform; time,load_aurora_sdk_library; CBindings; get_c_bindings
-python_bindings/slamtec_aurora_sdk/camera_mask.py,8119,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes; numpy,CameraMaskManager
+python_bindings/slamtec_aurora_sdk/camera_mask.py,7911,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes; numpy,CameraMaskManager
 python_bindings/slamtec_aurora_sdk/controller.py,32322,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes,Controller
-python_bindings/slamtec_aurora_sdk/dashcam_recorder.py,6344,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes,DashcamStorageInfo; DashcamRecorderManager
+python_bindings/slamtec_aurora_sdk/dashcam_recorder.py,6176,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes,DashcamStorageInfo; DashcamRecorderManager
 python_bindings/slamtec_aurora_sdk/data_provider.py,29401,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes; time,DataProvider
 python_bindings/slamtec_aurora_sdk/data_recorder.py,15067,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes,DataRecorder
 python_bindings/slamtec_aurora_sdk/data_types.py,69855,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; ctypes; cv2; math; numpy,Vector3; Quaternion; EulerAngle; Pose; PoseSE3; ConnectionInfo; ServerConnectionInfo; DeviceBasicInfo; ImageDesc; StereoImagePairDesc; StereoImagePairBuffer; Keypoint; TrackingDataBuffer; TrackingInfo; LidarScanPoint; LidarScanData; VersionInfo; SessionConfig; CameraMaskImageBuffer; DashcamStatus; DashcamStorageStatus; DashcamSessionInfo; PoseCovariance; PoseCovarianceReadable; PoseAugmentationConfig; TimeSyncOptions; TimeSyncQuality; WallclockOffsetResult; WallclockSyncResult; WallclockAccuracyResult; MapStorageSessionStatus; IMUData; SDKListenerStruct; DeviceBasicInfoWrapper; DeviceInfo; DeviceStatusDesc; ImageFrame; TrackingFrame; ScanData; LidarScanData; GridMap2D; GridMapGenerationOptions; GlobalMapDesc; MapPointDesc; KeyframeDesc; MapDesc; MapDataVisitor; GridMap2DDimension; Rect; GridMapGenerationOptions; GridMap2DFetchInfo; FloorDetectionDesc; FloorDetectionHistogramInfo; LidarScanPoint; LidarSinglelayerScanDataInfo; GridMap2DDimension; GridMap2DGenerationOptions; SingleCameraCalibration; ExtCameraTransform; CameraCalibrationInfo; TransformCalibrationInfo; SemanticSegmentationConfig; SemanticSegmentationLabelName; SemanticSegmentationLabelInfo; EnhancedImagingFrameDesc; EnhancedImagingFrameBuffer; DepthcamConfigInfo; IMUInfo
@@ -225,51 +228,48 @@ python_bindings/slamtec_aurora_sdk/enhanced_imaging.py,17654,SDK vendorizado/fal
 python_bindings/slamtec_aurora_sdk/exceptions.py,2165,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.data_types,AuroraSDKError; ConnectionError; DataNotReadyError; TimeoutError; InvalidArgumentError; NotSupportedError; ConnectionLostError; error_code_to_exception
 python_bindings/slamtec_aurora_sdk/floor_detector.py,3798,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .exceptions,FloorDetector
 python_bindings/slamtec_aurora_sdk/lidar_2d_map_builder.py,20088,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes,LIDAR2DMapBuilder; GridMapRef
-python_bindings/slamtec_aurora_sdk/listener.py,10765,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.data_types; ctypes; traceback,_copy_struct; SDKListener
+python_bindings/slamtec_aurora_sdk/listener.py,10522,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.data_types; ctypes; traceback,_copy_struct; SDKListener
 python_bindings/slamtec_aurora_sdk/map_manager.py,15023,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes; threading; time,MapManager
-python_bindings/slamtec_aurora_sdk/persistent_config.py,8128,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes; json,_as_bytes; ConfigData; PersistentConfigManager
-python_bindings/slamtec_aurora_sdk/timesync.py,6182,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes,_as_bytes; TimeSyncClient
-python_bindings/slamtec_aurora_sdk/transform_manager.py,5610,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes,_as_bytes; _coerce_pose_se3; TransformManager
+python_bindings/slamtec_aurora_sdk/persistent_config.py,7913,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes; json,_as_bytes; ConfigData; PersistentConfigManager
+python_bindings/slamtec_aurora_sdk/timesync.py,6021,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes,_as_bytes; TimeSyncClient
+python_bindings/slamtec_aurora_sdk/transform_manager.py,5454,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.c_bindings; .data_types; .exceptions; ctypes,_as_bytes; _coerce_pose_se3; TransformManager
 python_bindings/slamtec_aurora_sdk/utils.py,13952,SDK vendorizado/fallback,"CONSERVAR paquete; imports internos, binario externo requerido",.exceptions; cv2; numpy; random; time,get_map_sync_status; wait_for_map_data; format_map_sync_status; validate_map_generation_options; to_numpy_segmentation_map; to_colorized_segmentation_map; generate_class_colors; manual_colorize_segmentation; get_colorized_segmentation; get_class_at_position
-requirements.txt,136,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
+requirements.txt,113,documentacion/configuracion,"CONSERVAR; plan intacto, docs de flujo actualizadas",,
 run_gui.sh,636,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,,
-scripts/__pycache__/audit_dataset.cpython-312.pyc,2409,cache regenerable,PRESCINDIBLE; no eliminado,,
-scripts/__pycache__/audit_project.cpython-312.pyc,4915,cache regenerable,PRESCINDIBLE; no eliminado,,
-scripts/__pycache__/aurora_sensor.cpython-312.pyc,26660,cache regenerable,PRESCINDIBLE; no eliminado,,
+scripts/__pycache__/audit_dataset.cpython-312.pyc,3533,cache regenerable,PRESCINDIBLE; no eliminado,,
+scripts/__pycache__/audit_project.cpython-312.pyc,4755,cache regenerable,PRESCINDIBLE; no eliminado,,
+scripts/__pycache__/aurora_sensor.cpython-312.pyc,25429,cache regenerable,PRESCINDIBLE; no eliminado,,
 scripts/__pycache__/compare_point_clouds.cpython-312.pyc,5392,cache regenerable,PRESCINDIBLE; no eliminado,,
-scripts/__pycache__/embedded_viewer.cpython-312.pyc,9749,cache regenerable,PRESCINDIBLE; no eliminado,,
-scripts/__pycache__/gui.cpython-312.pyc,69298,cache regenerable,PRESCINDIBLE; no eliminado,,
-scripts/__pycache__/gui_gtk.cpython-312.pyc,215742,cache regenerable,PRESCINDIBLE; no eliminado,,
+scripts/__pycache__/gui.cpython-312.pyc,69353,cache regenerable,PRESCINDIBLE; no eliminado,,
+scripts/__pycache__/gui_gtk.cpython-312.pyc,94817,cache regenerable,PRESCINDIBLE; no eliminado,,
 scripts/__pycache__/live_stream_server.cpython-312.pyc,15244,cache regenerable,PRESCINDIBLE; no eliminado,,
-scripts/__pycache__/live_viewer.cpython-312.pyc,16890,cache regenerable,PRESCINDIBLE; no eliminado,,
-scripts/__pycache__/measurement_session.cpython-312.pyc,24160,cache regenerable,PRESCINDIBLE; no eliminado,,
-scripts/__pycache__/pointcloud_core.cpython-312.pyc,75118,cache regenerable,PRESCINDIBLE; no eliminado,,
+scripts/__pycache__/live_viewer.cpython-312.pyc,11169,cache regenerable,PRESCINDIBLE; no eliminado,,
+scripts/__pycache__/measurement_session.cpython-312.pyc,24038,cache regenerable,PRESCINDIBLE; no eliminado,,
+scripts/__pycache__/pointcloud_core.cpython-312.pyc,67955,cache regenerable,PRESCINDIBLE; no eliminado,,
 scripts/__pycache__/pose_alignment_viewer.cpython-312.pyc,18535,cache regenerable,PRESCINDIBLE; no eliminado,,
-scripts/__pycache__/sector_workflow.cpython-312.pyc,45745,cache regenerable,PRESCINDIBLE; no eliminado,,
+scripts/__pycache__/sector_workflow.cpython-312.pyc,53937,cache regenerable,PRESCINDIBLE; no eliminado,,
 scripts/__pycache__/smoke_test_quick_workflow.cpython-312.pyc,347,cache regenerable,PRESCINDIBLE; no eliminado,,
 scripts/__pycache__/smoke_test_quick_workflow_tk.cpython-312.pyc,14754,cache regenerable,PRESCINDIBLE; no eliminado,,
-scripts/__pycache__/smoke_test_sector_workflow.cpython-312.pyc,19482,cache regenerable,PRESCINDIBLE; no eliminado,,
-scripts/__pycache__/test_measurement_session.cpython-312.pyc,15888,cache regenerable,PRESCINDIBLE; no eliminado,,
-scripts/__pycache__/verify_gui_pages.cpython-312.pyc,6145,cache regenerable,PRESCINDIBLE; no eliminado,,
-scripts/audit_dataset.py,2127,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; argparse; json; measurement_session; numpy; pathlib; pointcloud_core,main
-scripts/audit_project.py,2975,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; ast; csv; pathlib,main
-scripts/aurora_sensor.py,21704,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; dataclasses; numpy; open3d; pathlib; slamtec_aurora_sdk; slamtec_aurora_sdk.exceptions; sys; threading; time; typing,AuroraNotAvailable; _import_sdk; AuroraConnection; connect; disconnect; SensorPose; get_current_pose; read_frame_points; _build_strided_uint8_image; _extract_camera_rgb_image; _height_based_colors; _colorize_from_camera; read_frame_points_and_colors; capture_reference_frame; _voxel_keys; capture_snapshot; stream_frames
-scripts/compare_point_clouds.py,4550,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; argparse; pathlib; pointcloud_core; sys,parse_args; main
-scripts/embedded_viewer.py,5833,visor alternativo experimental,LABORATORIO; candidato a eliminar tras elegir visor,__future__; cairo; gi; gi.repository; numpy; open3d,EmbeddedComparisonViewer
-scripts/gui.py,49381,Windows heredado,CONSERVAR; sin paridad con sesiones GTK,__future__; aurora_sensor; csv; customtkinter; datetime; live_stream_server; live_viewer; numpy; open3d; pathlib; pointcloud_core; queue; threading; tkinter,AuroraGUI; main
-scripts/gui_gtk.py,166067,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; argparse; aurora_sensor; cairo; datetime; embedded_viewer; gi; gi.repository; live_stream_server; live_viewer; numpy; open3d; os; pathlib; pointcloud_core; pose_alignment_viewer; queue; reportlab.lib; reportlab.lib.enums; reportlab.lib.pagesizes; reportlab.lib.styles; reportlab.lib.units; reportlab.platypus; sector_workflow; threading; uuid,_latest_capture_path; AuroraGUI; main
-scripts/live_stream_server.py,9948,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,PIL; __future__; asyncio; http.server; numpy; pathlib; qrcode; socket; struct; threading; websockets,_get_lan_ip; make_qr_image; _downsample; _encode_frame; _StaticHandler; LiveStreamServer
-scripts/live_viewer.py,13076,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; aurora_sensor; live_stream_server; numpy; open3d; pointcloud_core; threading; time; typing,LiveViewer
-scripts/measurement_session.py,16361,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; copy; csv; datetime; hashlib; json; numpy; open3d; pathlib; pointcloud_core; shutil; uuid,now; digest; cloud_diagnostics; MeasurementSession
-scripts/pointcloud_core.py,57932,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; dataclasses; matplotlib.backends.backend_agg; matplotlib.figure; matplotlib.pyplot; mpl_toolkits.mplot3d; numpy; open3d; pathlib; scipy.spatial; typing,DistanceStats; PipelineParams; PipelineResult; load_point_cloud; crop_point_cloud; preprocess; align_clouds; compute_rigid_transform; rigid_transform_rms_error; apply_rigid_transform; _apply_sdk_render_style; _start_at_sensor_pov; show_point_cloud; pick_landmark_points; _pick_landmark_points_matplotlib; reference_photo_path_for; save_reference_photo; load_reference_photo_file; load_reference_photo; reference_pose_path_for; save_reference_pose; load_reference_pose; local_axes_from_rpy_deg; direction_word_pairs_for_axes; render_reference_photo_from_cloud; _nearest_valid_point; pick_landmark_points_from_photo; pick_quad_points; _points_in_polygon_2d; _quad_box_axes; crop_cloud_by_quad_box; build_quad_box_wireframe; show_quad_box_preview; compute_c2c_distance; summarize; build_heatmap_cloud; build_subtle_overlay_cloud; build_heatmap_cloud_banded; build_heatmap_cloud_six_bands; RaycastPipelineParams; RaycastPipelineResult; mesh_from_point_cloud; fit_plane; mesh_from_point_cloud_delaunay; raycast_thickness_along_normal; raycast_thickness; run_raycast_pipeline; save_distances_csv; save_histogram; visualize; pick_crop_bounds; run_pipeline
-scripts/pose_alignment_viewer.py,14319,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; numpy; open3d; threading; time; typing,_rotation_aligning_z_to; _proximity_color; _marker_sphere; _direction_arrow; _hud_frame; _active_axis_correction; _hud_indicator; _floor_grid; PoseAlignmentViewer
-scripts/sector_workflow.py,28572,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; copy; gi.repository; measurement_session; numpy; open3d; pathlib; pointcloud_core; threading,SectorWorkflowMixin
-scripts/smoke_test_quick_workflow.py,168,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,smoke_test_sector_workflow,
+scripts/__pycache__/smoke_test_sector_workflow.cpython-312.pyc,37044,cache regenerable,PRESCINDIBLE; no eliminado,,
+scripts/__pycache__/test_measurement_session.cpython-312.pyc,15485,cache regenerable,PRESCINDIBLE; no eliminado,,
+scripts/__pycache__/verify_gui_pages.cpython-312.pyc,6368,cache regenerable,PRESCINDIBLE; no eliminado,,
+scripts/audit_dataset.py,2086,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; argparse; json; measurement_session; numpy; pathlib; pointcloud_core,main
+scripts/audit_project.py,2800,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; ast; csv; pathlib,main
+scripts/aurora_sensor.py,20206,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; dataclasses; numpy; open3d; pathlib; slamtec_aurora_sdk; slamtec_aurora_sdk.exceptions; sys; threading; time,AuroraNotAvailable; _import_sdk; AuroraConnection; connect; disconnect; SensorPose; get_current_pose; read_frame_points; _build_strided_uint8_image; _extract_camera_rgb_image; _height_based_colors; _colorize_from_camera; read_frame_points_and_colors; capture_reference_frame; _voxel_keys; capture_snapshot
+scripts/compare_point_clouds.py,4419,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; argparse; pathlib; pointcloud_core; sys,parse_args; main
+scripts/gui.py,48845,Windows heredado,CONSERVAR; sin paridad con sesiones GTK,__future__; aurora_sensor; csv; customtkinter; datetime; live_stream_server; live_viewer; numpy; open3d; pathlib; pointcloud_core; queue; threading; tkinter,AuroraGUI; main
+scripts/gui_gtk.py,66340,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; argparse; aurora_sensor; cairo; datetime; gi; gi.repository; live_stream_server; live_viewer; numpy; open3d; os; pathlib; pointcloud_core; queue; sector_workflow; threading; uuid,AuroraGUI; main
+scripts/live_stream_server.py,9708,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,PIL; __future__; asyncio; http.server; numpy; pathlib; qrcode; socket; struct; threading; websockets,_get_lan_ip; make_qr_image; _downsample; _encode_frame; _StaticHandler; LiveStreamServer
+scripts/live_viewer.py,8517,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; aurora_sensor; live_stream_server; numpy; open3d; threading; time; typing,LiveViewer
+scripts/measurement_session.py,16231,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; copy; csv; datetime; hashlib; json; numpy; open3d; pathlib; pointcloud_core; shutil; uuid,now; digest; cloud_diagnostics; MeasurementSession
+scripts/pointcloud_core.py,50869,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; dataclasses; matplotlib.backends.backend_agg; matplotlib.figure; matplotlib.pyplot; mpl_toolkits.mplot3d; numpy; open3d; pathlib; scipy.spatial; typing,DistanceStats; PipelineParams; PipelineResult; load_point_cloud; crop_point_cloud; preprocess; align_clouds; compute_rigid_transform; rigid_transform_rms_error; apply_rigid_transform; _apply_sdk_render_style; _start_at_sensor_pov; show_point_cloud; pick_landmark_points; _pick_landmark_points_matplotlib; reference_photo_path_for; save_reference_photo; load_reference_photo_file; load_reference_photo; reference_pose_path_for; save_reference_pose; load_reference_pose; render_reference_photo_from_cloud; _nearest_valid_point; pick_landmark_points_from_photo; pick_quad_points; _points_in_polygon_2d; _quad_box_axes; crop_cloud_by_quad_box; build_quad_box_wireframe; show_quad_box_preview; compute_c2c_distance; summarize; build_heatmap_cloud; RaycastPipelineParams; RaycastPipelineResult; mesh_from_point_cloud; fit_plane; mesh_from_point_cloud_delaunay; raycast_thickness_along_normal; raycast_thickness; run_raycast_pipeline; save_distances_csv; save_histogram; visualize; pick_crop_bounds; run_pipeline
+scripts/sector_workflow.py,35852,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; gi.repository; measurement_session; numpy; pathlib; pointcloud_core; threading,SectorWorkflowMixin
+scripts/smoke_test_quick_workflow.py,167,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,smoke_test_sector_workflow,
 scripts/smoke_test_quick_workflow_tk.py,8147,Windows heredado,CONSERVAR; sin paridad con sesiones GTK,__future__; csv; gui; numpy; open3d; pathlib; pointcloud_core; tempfile; threading; tkinter.messagebox; types,FakeConnection; main
-scripts/smoke_test_sector_workflow.py,9457,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; gi; gi.repository; gui_gtk; numpy; open3d; pathlib; tempfile; threading; time; types,pump_until; main
-scripts/test_measurement_session.py,7511,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,json; measurement_session; numpy; open3d; pathlib; pointcloud_core; shutil; tempfile; unittest,Sessions
-scripts/verify_gui_pages.py,2838,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,argparse; ast; gi; gi.repository; gui_gtk; json; pathlib; time,main
-scripts/web_static/viewer.html,16301,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,,
-setup.bat,227,Windows heredado,CONSERVAR; sin paridad con sesiones GTK,,
-setup.ps1,760,Windows heredado,CONSERVAR; sin paridad con sesiones GTK,,
+scripts/smoke_test_sector_workflow.py,21400,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,__future__; gi; gi.repository; gui_gtk; live_viewer; numpy; open3d; os; pathlib; pointcloud_core; sector_workflow; tempfile; threading; time; types,pump_until; main
+scripts/test_measurement_session.py,7279,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,json; measurement_session; numpy; open3d; pathlib; pointcloud_core; shutil; tempfile; unittest,Sessions
+scripts/verify_gui_pages.py,2960,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,argparse; ast; gi; gi.repository; gui_gtk; json; pathlib; time,main
+scripts/web_static/viewer.html,15893,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,,
+setup.bat,222,Windows heredado,CONSERVAR; sin paridad con sesiones GTK,,
+setup.ps1,739,Windows heredado,CONSERVAR; sin paridad con sesiones GTK,,
 setup.sh,2261,codigo/configuracion/pruebas,CONSERVAR; ver matriz de auditoria,,
