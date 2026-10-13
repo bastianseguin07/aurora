@@ -48,6 +48,9 @@ def main():
         app._show_warning = lambda *args: warnings.append(args)
         app._show_info = lambda *args: infos.append(args)
         assert app.stack.get_visible_child_name() == "rapido"
+        assert not app.technical_log_frame.get_visible()
+        assert isinstance(app.technical_log_frame, Gtk.Expander)
+        assert app.technical_log_frame.get_label() == "Registro tecnico · detalles de captura y proceso"
         assert app.quick_sensor_status_label.get_use_markup()
         assert app.base_path == app.updated_path == ""
         app._open_viewer()
@@ -123,10 +126,12 @@ def main():
             app.stack.set_visible_child_name(page)
             pump_until(lambda: not Gtk.events_pending(), "GTK page render")
         app.stack.set_visible_child_name("herramientas")
+        assert app.technical_log_frame.get_visible()
         for page in app.tools_nav_buttons:
             app.tools_nav_buttons[page].emit("clicked")
             assert app.stack.get_visible_child_name() == page
         app.stack.set_visible_child_name("rapido")
+        assert not app.technical_log_frame.get_visible()
         app.stack.set_visible_child_name("alineacion")
         app.alignment_back_button.emit("clicked")
         assert app.stack.get_visible_child_name() == "rapido"

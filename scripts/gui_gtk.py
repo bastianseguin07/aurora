@@ -535,11 +535,10 @@ class AuroraGUI(SectorWorkflowMixin):
         content_box.pack_start(sidebar, False, False, 0)
         content_box.pack_start(self.stack, True, True, 0)
 
-        self.technical_log_frame, log_box = self._section("Registro tecnico")
+        self.technical_log_frame = Gtk.Expander(label="Registro tecnico · detalles de captura y proceso")
         self.technical_log_frame.get_style_context().add_class("status-bar")
         self.technical_log_frame.set_no_show_all(True)
-        log_expander = Gtk.Expander(label="Detalles de captura y proceso")
-        log_expander.set_expanded(False)
+        self.technical_log_frame.set_expanded(False)
         log_scroller = Gtk.ScrolledWindow()
         log_scroller.set_min_content_height(110)
         log_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -550,8 +549,7 @@ class AuroraGUI(SectorWorkflowMixin):
         self.log_view.set_top_margin(6)
         self.log_buffer = self.log_view.get_buffer()
         log_scroller.add(self.log_view)
-        log_expander.add(log_scroller)
-        log_box.pack_start(log_expander, False, True, 0)
+        self.technical_log_frame.add(log_scroller)
         root_box.pack_start(self.technical_log_frame, False, True, 4)
 
         self._update_page_chrome(self.stack.get_visible_child_name())
