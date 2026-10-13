@@ -362,10 +362,22 @@ class SectorWorkflowMixin:
         selected_result = self._session_selected_result()
         mode_valid = self.session_stage_combo.get_active() > 0 or self.session_mode_combo.get_active() == 0
         self.quick_compare_button.set_sensitive(has_registration and mode_valid and not busy)
-        show_alignment_action = has_stage and not already_measured
+        show_alignment_action = has_stage
+        if already_measured:
+            self.session_align_note.set_text(
+                "Esta etapa ya tiene comparaciones guardadas. Puedes volver a alinearla; los resultados anteriores se conservan."
+            )
+            self.session_align_button.set_label("Rehacer alineacion de esta etapa")
+            self.session_align_button.set_tooltip_text(
+                "Guarda una nueva alineacion para futuras comparaciones. Los resultados existentes no cambian."
+            )
+        else:
+            self.session_align_note.set_text("Alinea cada etapa DESPUES con referencias estables antes de calcular.")
+            self.session_align_button.set_label("Alinear etapa con referencias estables")
+            self.session_align_button.set_tooltip_text("Marca puntos fisicos estables que aparezcan en ambas nubes.")
         self.session_align_note.set_visible(show_alignment_action)
         self.session_align_row.set_visible(show_alignment_action)
-        self.session_align_button.set_sensitive(show_alignment_action and not busy)
+        self.session_align_button.set_sensitive(has_stage and not busy)
         self.quick_crop_button.set_sensitive(has_registration and not busy and not has_results)
         if has_roi:
             if has_results:

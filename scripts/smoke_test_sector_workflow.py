@@ -48,7 +48,7 @@ def main():
         app._show_warning = lambda *args: warnings.append(args)
         app._show_info = lambda *args: infos.append(args)
         assert app.stack.get_visible_child_name() == "rapido"
-        assert not app.technical_log_frame.get_visible()
+        assert app.technical_log_frame.get_visible()
         assert isinstance(app.technical_log_frame, Gtk.Expander)
         assert app.technical_log_frame.get_label() == "Registro tecnico · detalles de captura y proceso"
         assert app.quick_sensor_status_label.get_use_markup()
@@ -78,7 +78,7 @@ def main():
         os.utime(older_manifest, ns=(1_000_000_000, 1_000_000_000))
         os.utime(newer_manifest, ns=(2_000_000_000, 2_000_000_000))
         assert app._session_picker_start_dir() == newer_dir
-        assert set(app._sidebar_rows) == {"rapido", "herramientas"}
+        assert set(app._sidebar_rows) == {"rapido", "alineacion", "segmentacion", "procesamiento", "visualizacion"}
         assert hasattr(app, "alignment_back_button")
         assert not hasattr(app, "run_button")
         assert not hasattr(app, "generate_report_button")
@@ -95,7 +95,7 @@ def main():
         assert not hasattr(app, "capture_base_button")
         assert not hasattr(app, "capture_updated_button")
         assert not hasattr(app, "capture_live_baseline_button")
-        assert hasattr(app, "tools_nav_buttons")
+        assert not hasattr(app, "tools_nav_buttons")
         assert hasattr(app, "voxel_entry") and hasattr(app, "remove_outliers_check")
         assert app.analysis_options_expander.get_label() == "Ajustes avanzados de medicion"
         assert app.analysis_options_expander.get_expanded()
@@ -129,15 +129,15 @@ def main():
             assert app.stack.get_visible_child_name() == page
         page_names = [app.stack.child_get_property(child, "name") for child in app.stack.get_children()]
         assert not {"captura", "alineacion_imu", "comparacion", "prueba_embebida", "prueba_raycasting"} & set(page_names)
-        assert {"herramientas", "procesamiento", "visualizacion"} <= set(page_names)
-        assert len(page_names) == 6
+        assert {"alineacion", "segmentacion", "procesamiento", "visualizacion"} <= set(page_names)
+        assert len(page_names) == 5
         for page in page_names:
             app.stack.set_visible_child_name(page)
             pump_until(lambda: not Gtk.events_pending(), "GTK page render")
-        app.stack.set_visible_child_name("herramientas")
+        app.stack.set_visible_child_name("visualizacion")
         assert app.technical_log_frame.get_visible()
         app.stack.set_visible_child_name("rapido")
-        assert not app.technical_log_frame.get_visible()
+        assert app.technical_log_frame.get_visible()
         app.stack.set_visible_child_name("alineacion")
         app.alignment_back_button.emit("clicked")
         assert app.stack.get_visible_child_name() == "rapido"
@@ -170,7 +170,9 @@ def main():
         app._quick_compare_clicked()
         pump_until(lambda: len(app.measurement_session.data["results"]) == 1 and not app._session_busy(), "loaded pair comparison")
         assert abs(app.measurement_session.data["results"][0]["stats_m"]["mean"] - .04) < 1e-6
-        assert not app.session_align_note.get_visible() and not app.session_align_row.get_visible()
+        assert app.session_align_note.get_visible() and app.session_align_row.get_visible()
+        assert app.session_align_button.get_sensitive()
+        assert app.session_align_button.get_label() == "Rehacer alineacion de esta etapa"
         assert app.measurement_session.data["results"][0]["stats_m"]["n_points"] < len(xy)
         app.voxel_entry.set_text("0.0")
 

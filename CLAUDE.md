@@ -25,7 +25,7 @@ El operador trabaja en una sesion por sector. La sesion tiene una nube ANTES inm
 - `scripts/live_viewer.py`, `live_stream_server.py`, `web_static/`: visualizacion y transmision auxiliares.
 - `scripts/audit_dataset.py`: ensayo tecnico con `pcd/`; no es camino alternativo de campo.
 
-Mantener Medicion rapida como camino principal y agrupar las funciones ocasionales en Herramientas tecnicas. Los ajustes del calculo viven en su pagina propia y la inspeccion 3D conserva una pagina auxiliar. Evitar duplicar importacion, captura, ejecucion de pipeline o visualizacion. Los metodos experimentales deben etiquetarse como tales y no mezclarse con el resultado por sector.
+Mantener Medicion rapida como camino principal y dejar acceso directo a alineacion por referencias, zona comun, ajustes de analisis e inspeccion 3D. Evitar duplicar importacion, captura, ejecucion de pipeline o visualizacion. El registro tecnico debe estar disponible sin una pagina intermedia. Los metodos experimentales deben etiquetarse como tales y no mezclarse con el resultado por sector.
 
 ## Validacion
 
