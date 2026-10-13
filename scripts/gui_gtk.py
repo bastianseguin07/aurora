@@ -1705,6 +1705,7 @@ def main() -> None:
     app = AuroraGUI(window)
     if args.session:
         app._session_load(args.session)
+    app.stack.set_visible_child_name("rapido")
     window.resize(1400, 950)
     window.show_all()
     window.present()
