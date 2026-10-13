@@ -1061,21 +1061,16 @@ class AuroraGUI(SectorWorkflowMixin):
     def _build_visualization_page(self) -> Gtk.Widget:
         page = self._new_page()
 
-        color_frame, color_box = self._section("Inspeccion de nubes (sin medicion)")
+        view_frame, view_box = self._section("Inspeccion 3D")
         note = Gtk.Label(
             label=(
-                "Vista auxiliar para inspeccionar forma y cobertura. La nube actual se muestra en celeste; "
-                "esta vista no calcula espesores. Para el mapa exploratorio de una comparacion registrada, "
-                "usa Medicion rapida."
+                "Revisa la forma y cobertura de la nube ANTES o el sensor en vivo. Esta vista no calcula "
+                "espesor; para ver una comparacion registrada, usa Medicion rapida."
             ),
             xalign=0,
         )
         note.set_line_wrap(True)
-        color_box.pack_start(note, False, False, 0)
-
-        page.pack_start(color_frame, False, True, 0)
-
-        view_frame, view_box = self._section("Vista 3D")
+        view_box.pack_start(note, False, False, 0)
         row = self._row(view_box)
         self.show_updated_check = Gtk.CheckButton(label="Mostrar la nube actual (celeste)")
         self.show_updated_check.set_active(True)
