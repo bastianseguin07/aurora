@@ -141,7 +141,7 @@ python3 -m compileall -q scripts python_bindings
 git diff --check
 ```
 
-Se verificaron 5 pruebas de modelo (portabilidad/integridad, bloqueo de registro, distancia por etapas y zona fija), integración GTK con sensor simulado (captura, varias etapas, reapertura, bloqueos, alineación y recorte), CSS y render de 6 páginas activas. No se verificó conexión al sensor físico, precisión de espesor, detección de tracking perdido, red/tablet real ni trabajo en mina.
+Se verificaron 5 pruebas de modelo (portabilidad/integridad, bloqueo de registro, distancia por etapas y zona fija), integración GTK con sensor simulado (captura, varias etapas, reapertura, bloqueos, alineación y recorte), CSS y render de 4 páginas activas. No se verificó conexión al sensor físico, precisión de espesor, detección de tracking perdido, red/tablet real ni trabajo en mina. Los ajustes del pipeline se movieron a Medición rápida y se eliminó el hub técnico que duplicaba navegación a herramientas existentes.
 
 Se detectó y corrigió `python3-gi-cairo` faltante al renderizar DrawingArea; `libgl1-mesa-glx` no tiene candidato en Ubuntu 24.04, se reemplazó por `libgl1`. Se normalizaron `setup.sh` y `run_gui.sh` a LF y se agregó `.gitattributes` para conservarlo en checkouts Windows. Se corrigió el manejo de error de `run_gui.sh` que quedaba anulado por `set -e`, y se verificó sintaxis con Bash. WSLg/Wayland produjo capturas de ventana negras; los renders inspeccionados se obtuvieron con X11. El fallback X11 es de ejecución, no modifica la lógica de cálculo.
 

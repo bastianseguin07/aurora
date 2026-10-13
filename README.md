@@ -41,7 +41,7 @@ El sensor debe ser accesible por la red indicada en la pantalla. Para evaluar ar
 Las sesiones se guardan en `output/sesiones/`. Cada carpeta contiene el manifiesto, copias de las capturas, los resultados de comparacion y el informe Markdown/CSV. Conserva esas carpetas como evidencia y respaldo.
 
 - `scripts/compare_point_clouds.py`: pipeline CLI para diagnostico tecnico de pares PLY.
-- **Medicion rapida** ofrece la zona comun opcional despues de alinear. **Herramientas tecnicas** reúne la inspeccion 3D, la transmision del visor al celular y los ajustes del pipeline.
+- **Medicion rapida** ofrece la zona comun opcional despues de alinear. Los ajustes avanzados del pipeline estan dentro de Medicion rapida; la inspeccion 3D y la transmision al celular tienen acceso directo desde la barra lateral.
 - `pcd/`: datos de cajas para verificar lectura y funcionamiento; no representan ni validan condiciones mineras.
 
 ## Comprobaciones

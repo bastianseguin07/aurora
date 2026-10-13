@@ -153,6 +153,8 @@ class SectorWorkflowMixin:
         crop_row.pack_start(self.quick_crop_button, False, False, 0)
         self.quick_crop_expander.add(crop_box)
         box.pack_start(self.quick_crop_expander, False, False, 0)
+        analysis_options, _analysis_box = self._build_advanced_measurement_options()
+        box.pack_start(analysis_options, False, False, 0)
         self.quick_compare_button = Gtk.Button(label="Calcular comparacion")
         self.quick_compare_button.get_style_context().add_class("suggested-action")
         self.quick_compare_button.connect("clicked", lambda _b: self._quick_compare_clicked())

@@ -16,8 +16,8 @@ La app asume que las capturas cubren la misma zona y que esta despejada; no dete
 ## Secciones de la interfaz
 
 - **Medicion rapida:** captura/importa ANTES y DESPUES, alinea cada etapa desde el boton del flujo, calcula y abre el informe. La alineacion vuelve a esta pantalla con **Volver a Medicion rapida**.
-- **Herramientas tecnicas:** reúne la inspeccion 3D, la transmision al celular y los ajustes de analisis.
-- **Inspeccion 3D y celular:** permite revisar la nube ANTES de la sesion abierta o el sensor en vivo y compartir esa vista por la red local. No carga automaticamente nubes antiguas de `data/`, no registra con la sesion ni calcula espesor; tampoco es realidad aumentada. El mapa guardado se abre desde Medicion rapida con **Ver mapa del resultado 3D**.
+- **Ajustes avanzados de medicion:** dentro de Medicion rapida, permite cambiar voxel, filtro de puntos aislados y carpeta de salida.
+- **Vista 3D y celular:** desde la barra lateral inspecciona la nube ANTES de la sesion o el sensor en vivo y comparte la vista por la red local. No registra ni calcula espesor, y no es realidad aumentada; el mapa de comparacion se abre desde Medicion rapida.
 - **Zona comun:** despues de alinear una etapa, aparece dentro de **Opciones de comparacion** en Medicion rapida. Es opcional y, una vez definida, se aplica a toda la sesion.
 
 La GUI GTK se inicia en Ubuntu con:

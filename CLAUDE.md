@@ -19,13 +19,13 @@ El operador trabaja en una sesion por sector. La sesion tiene una nube ANTES inm
 
 - `scripts/sector_workflow.py`: captura/importacion, sesiones, etapas y recorrido del operador.
 - `scripts/measurement_session.py`: almacenamiento portable, hashes, registro, comparaciones e informes.
-- `scripts/gui_gtk.py`: frontend principal y herramientas tecnicas.
+- `scripts/gui_gtk.py`: frontend principal; ajustes de medicion en el flujo por sector e inspeccion 3D auxiliar.
 - `scripts/pointcloud_core.py`: pipeline de nube y exportacion.
 - `scripts/gui.py`: frontend Tk anterior.
 - `scripts/live_viewer.py`, `live_stream_server.py`, `web_static/`: visualizacion y transmision auxiliares.
 - `scripts/audit_dataset.py`: ensayo tecnico con `pcd/`; no es camino alternativo de campo.
 
-Mantener la navegacion principal breve. Las opciones tecnicas ocasionales van agrupadas bajo **Herramientas tecnicas**. Evitar duplicar importacion, captura, ejecucion de pipeline o visualizacion. Los metodos experimentales deben etiquetarse como tales y no mezclarse con el resultado por sector.
+Mantener la navegacion principal breve. Los ajustes tecnicos del calculo se encuentran dentro de Medicion rapida y la inspeccion 3D tiene acceso directo desde la barra lateral. Evitar duplicar importacion, captura, ejecucion de pipeline o visualizacion. Los metodos experimentales deben etiquetarse como tales y no mezclarse con el resultado por sector.
 
 ## Validacion
 
