@@ -839,9 +839,6 @@ class AuroraGUI(SectorWorkflowMixin):
         except Exception as exc:
             self._on_alignment_failed(str(exc))
             return
-        self._refresh_quick_workflow_state()
-        self.apply_alignment_button.set_sensitive(True)
-        self.alignment_result_label.set_text(f"Error residual: {rms * 1000:.2f} mm — nube alineada guardada")
         comparison_path = Path(aligned_path)
         session = getattr(self, "measurement_session", None)
         stage_index = self.session_stage_combo.get_active() if session else -1
@@ -850,6 +847,13 @@ class AuroraGUI(SectorWorkflowMixin):
             if registration:
                 comparison_path = session.resolve(registration["path"])
         self.updated_path = str(comparison_path)
+        self._refresh_quick_workflow_state()
+        self.apply_alignment_button.set_sensitive(True)
+        self.alignment_result_label.set_text(f"Error residual: {rms * 1000:.2f} mm — nube alineada guardada")
+        self.quick_capture_status_label.set_text(
+            "Alineacion guardada en la sesion. Ya puedes calcular la comparacion."
+        )
+        self.stack.set_visible_child_name("rapido")
         self._show_info(
             "Alineacion aplicada",
             f"Error residual en los puntos de referencia: {rms * 1000:.2f} mm.\n\n"

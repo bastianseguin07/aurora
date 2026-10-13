@@ -166,6 +166,12 @@ def main():
         app.landmarks_updated = anchors.copy()
         app._apply_alignment()
         pump_until(lambda: app.measurement_session.data["stages"][0]["registration"] and not app._session_busy(), "imported pair alignment")
+        assert app.quick_compare_button.get_sensitive(), (
+            app.measurement_session.data["stages"][0]["registration"],
+            app.session_stage_combo.get_active(),
+            app._session_busy(),
+        )
+        assert app.stack.get_visible_child_name() == "rapido"
         app.voxel_entry.set_text("0.20")
         app._quick_compare_clicked()
         pump_until(lambda: len(app.measurement_session.data["results"]) == 1 and not app._session_busy(), "loaded pair comparison")
