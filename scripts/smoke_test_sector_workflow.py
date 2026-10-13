@@ -161,7 +161,9 @@ def main():
         assert not app.session_report_button.get_sensitive()
         assert not app.session_view_button.get_visible() and not app.session_report_button.get_visible()
         anchors = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=float)
-        app._session_align_selected()
+        app._sidebar_listbox.select_row(app._sidebar_rows["alineacion"])
+        assert app.stack.get_visible_child_name() == "alineacion"
+        assert app._session_alignment_target is not None
         app.landmarks_base = anchors
         app.landmarks_updated = anchors.copy()
         app._apply_alignment()

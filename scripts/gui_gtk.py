@@ -558,6 +558,8 @@ class AuroraGUI(SectorWorkflowMixin):
         listbox = Gtk.ListBox()
         listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
         listbox.get_style_context().add_class("sidebar")
+        self._sidebar_listbox = listbox
+        self._syncing_sidebar_selection = False
         self._sidebar_rows: dict[str, Gtk.ListBoxRow] = {}
 
         def add_header(text: str) -> None:
@@ -599,7 +601,16 @@ class AuroraGUI(SectorWorkflowMixin):
         add_page("Vista 3D y celular", "visualizacion")
 
         def on_row_selected(_listbox, row) -> None:
+            if self._syncing_sidebar_selection:
+                return
             if row is not None and getattr(row, "stack_name", None):
+                if row.stack_name == "alineacion":
+                    if not self._session_align_selected():
+                        self._syncing_sidebar_selection = True
+                        visible_name = self.stack.get_visible_child_name()
+                        listbox.select_row(self._sidebar_rows.get(visible_name))
+                        self._syncing_sidebar_selection = False
+                    return
                 self.stack.set_visible_child_name(row.stack_name)
 
         listbox.connect("row-selected", on_row_selected)
@@ -609,7 +620,9 @@ class AuroraGUI(SectorWorkflowMixin):
             name = stack.get_visible_child_name()
             row = self._sidebar_rows.get(name)
             if row is not None and listbox.get_selected_row() is not row:
+                self._syncing_sidebar_selection = True
                 listbox.select_row(row)
+                self._syncing_sidebar_selection = False
             self._update_page_chrome(name)
 
         self.stack.connect("notify::visible-child-name", on_stack_page_changed)

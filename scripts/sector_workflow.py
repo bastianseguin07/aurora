@@ -560,8 +560,11 @@ class SectorWorkflowMixin:
     def _session_align_selected(self):
         session = self.measurement_session
         index = self.session_stage_combo.get_active()
-        if self._session_busy() or not session or index < 0:
-            return
+        if self._session_busy():
+            return False
+        if not session or index < 0:
+            self._show_warning("Falta una etapa DESPUES", "Carga ANTES y DESPUES antes de alinear.")
+            return False
         capture = session.data["stages"][index]
         self._set_base_path(str(session.resolve(session.data["base"]["path"])))
         self._set_updated_path(str(session.resolve(capture["path"])))
@@ -602,6 +605,7 @@ class SectorWorkflowMixin:
         self.landmarks_updated_label.set_text("(ninguno)")
         self._session_alignment_target = (session, capture)
         self.stack.set_visible_child_name("alineacion")
+        return True
 
     def _session_registration_done(self, aligned_path, rms):
         if self._session_alignment_target is None:
