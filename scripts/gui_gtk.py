@@ -527,7 +527,9 @@ class AuroraGUI(SectorWorkflowMixin):
         self.stack.add_titled(self._build_simple_workflow_page(), "rapido", "Medici\u00f3n r\u00e1pida")
         self.stack.add_titled(self._build_alignment_page(), "alineacion", "Alineacion")
         self.stack.add_titled(self._build_segmentation_page(), "segmentacion", "Segmentacion")
+        self.stack.add_titled(self._build_processing_page(), "procesamiento", "Ajustes de analisis")
         self.stack.add_titled(self._build_visualization_page(), "visualizacion", "Vista 3D auxiliar")
+        self.stack.add_titled(self._build_tools_page(), "herramientas", "Herramientas tecnicas")
 
         sidebar = self._build_sidebar()
         content_box.pack_start(sidebar, False, False, 0)
@@ -553,7 +555,7 @@ class AuroraGUI(SectorWorkflowMixin):
         self._update_page_chrome(self.stack.get_visible_child_name())
 
     def _build_sidebar(self) -> Gtk.Widget:
-        """Navegacion breve: medicion principal e inspeccion auxiliar."""
+        """Navegacion por flujo de medicion y herramientas tecnicas."""
         listbox = Gtk.ListBox()
         listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
         listbox.get_style_context().add_class("sidebar")
@@ -589,8 +591,8 @@ class AuroraGUI(SectorWorkflowMixin):
         add_header("Medicion")
         add_page("Medici\u00f3n r\u00e1pida", "rapido")
 
-        add_header("Inspeccion")
-        add_page("Vista 3D y celular", "visualizacion")
+        add_header("Mas herramientas")
+        add_page("Herramientas tecnicas", "herramientas")
 
         def on_row_selected(_listbox, row) -> None:
             if row is not None and getattr(row, "stack_name", None):
@@ -614,9 +616,40 @@ class AuroraGUI(SectorWorkflowMixin):
         scroller.add(listbox)
         return scroller
 
+    def _build_tools_page(self) -> Gtk.Widget:
+        page = self._new_page()
+        intro = Gtk.Label(
+            label="Funciones de uso ocasional y herramientas de análisis. El flujo habitual está en Medición rápida.",
+            xalign=0,
+        )
+        intro.set_line_wrap(True)
+        page.pack_start(intro, False, False, 8)
+        self.tools_nav_buttons = {}
+        groups = (
+            ("Inspeccion", (
+                ("Vista 3D y celular", "Inspeccionar una nube o compartirla por la red local.", "visualizacion"),
+            )),
+            ("Herramientas de sesion", (
+                ("Ajustes del analisis", "Parametros tecnicos del procesamiento.", "procesamiento"),
+            )),
+        )
+        for title, items in groups:
+            frame, box = self._section(title)
+            for label, description, page_name in items:
+                row = self._row(box)
+                text = Gtk.Label(label=f"{label} — {description}", xalign=0)
+                text.set_line_wrap(True)
+                row.pack_start(text, True, True, 0)
+                button = Gtk.Button(label="Abrir")
+                button.connect("clicked", lambda _button, name=page_name: self.stack.set_visible_child_name(name))
+                row.pack_end(button, False, False, 0)
+                self.tools_nav_buttons[page_name] = button
+            page.pack_start(frame, False, True, 0)
+        return self._scrolled(page)
+
     def _update_page_chrome(self, page_name: str | None) -> None:
-        """Keep technical logs with the auxiliary inspection tools."""
-        self.technical_log_frame.set_visible(page_name == "visualizacion")
+        """Keep technical logs with the technical tools hub."""
+        self.technical_log_frame.set_visible(page_name == "herramientas")
 
     # -- Pagina: Captura ---------------------------------------------------------
 
@@ -1006,6 +1039,25 @@ class AuroraGUI(SectorWorkflowMixin):
         self.apply_segmentation_button.set_sensitive(True)
         self.segmentation_result_label.set_text("No se guardo la zona")
         self._show_error("Error", message)
+
+    # -- Pagina: Ajustes de analisis --------------------------------------------
+
+    def _build_processing_page(self) -> Gtk.Widget:
+        page = self._new_page()
+        intro = Gtk.Label(
+            label=(
+                "La zona comun se define desde Medicion rapida, despues de alinear una etapa, "
+                "y queda guardada en la sesion. Aqui puedes ajustar el muestreo y los "
+                "filtros del calculo."
+            ),
+            xalign=0,
+        )
+        intro.set_line_wrap(True)
+        page.pack_start(intro, False, False, 8)
+        advanced_frame, _advanced_box = self._build_advanced_measurement_options()
+        advanced_frame.set_expanded(True)
+        page.pack_start(advanced_frame, False, True, 0)
+        return self._scrolled(page)
 
     # -- Opciones avanzadas de medicion ------------------------------------------
 

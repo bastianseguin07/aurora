@@ -78,7 +78,7 @@ def main():
         os.utime(older_manifest, ns=(1_000_000_000, 1_000_000_000))
         os.utime(newer_manifest, ns=(2_000_000_000, 2_000_000_000))
         assert app._session_picker_start_dir() == newer_dir
-        assert set(app._sidebar_rows) == {"rapido", "visualizacion"}
+        assert set(app._sidebar_rows) == {"rapido", "herramientas"}
         assert hasattr(app, "alignment_back_button")
         assert not hasattr(app, "run_button")
         assert not hasattr(app, "generate_report_button")
@@ -95,10 +95,10 @@ def main():
         assert not hasattr(app, "capture_base_button")
         assert not hasattr(app, "capture_updated_button")
         assert not hasattr(app, "capture_live_baseline_button")
-        assert not hasattr(app, "tools_nav_buttons")
+        assert hasattr(app, "tools_nav_buttons")
         assert hasattr(app, "voxel_entry") and hasattr(app, "remove_outliers_check")
         assert app.analysis_options_expander.get_label() == "Ajustes avanzados de medicion"
-        assert not app.analysis_options_expander.get_expanded()
+        assert app.analysis_options_expander.get_expanded()
         app.voxel_entry.set_text("0.012")
         app.remove_outliers_check.set_active(True)
         advanced_params = app._build_params()
@@ -128,12 +128,13 @@ def main():
             pump_until(lambda: not Gtk.events_pending(), "GTK navigation")
             assert app.stack.get_visible_child_name() == page
         page_names = [app.stack.child_get_property(child, "name") for child in app.stack.get_children()]
-        assert not {"captura", "alineacion_imu", "comparacion", "prueba_embebida", "prueba_raycasting", "herramientas", "procesamiento"} & set(page_names)
-        assert len(page_names) == 4
+        assert not {"captura", "alineacion_imu", "comparacion", "prueba_embebida", "prueba_raycasting"} & set(page_names)
+        assert {"herramientas", "procesamiento", "visualizacion"} <= set(page_names)
+        assert len(page_names) == 6
         for page in page_names:
             app.stack.set_visible_child_name(page)
             pump_until(lambda: not Gtk.events_pending(), "GTK page render")
-        app.stack.set_visible_child_name("visualizacion")
+        app.stack.set_visible_child_name("herramientas")
         assert app.technical_log_frame.get_visible()
         app.stack.set_visible_child_name("rapido")
         assert not app.technical_log_frame.get_visible()
