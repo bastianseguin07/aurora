@@ -8,7 +8,7 @@ Una sesión por túnel y sector/estación, con una BASE inmutable y tantas etapa
 
 Para volver desde otra posición se necesitan referencias físicas estables visibles en ambas capturas; se conserva la alineación Kabsch existente. La GUI no exige permanecer en el mismo punto durante la aplicación de shotcrete. Las comparaciones de terreno requieren ese registro explícito; una pose parecida no lo sustituye. Hasta caracterizar errores del sensor y registro, el resultado se presenta como distancia exploratoria entre superficies. No se emite una certificación de espesor ni una instrucción de aplicar material basada solamente en C2C.
 
-El modo Ensayo admite archivos sin referencias, siempre identificado como prueba. Los originales se copian junto a sus sidecars, se verifican por SHA-256 y se guardan en un paquete de sesión portable. No se cambia el algoritmo geométrico existente ni el formato de las salidas C2C.
+Las nubes de prueba y las capturas mineras usan el mismo flujo y los mismos requisitos de registro y revision visual. No hay un modo de prueba que omita controles. Los originales se copian junto a sus sidecars, se verifican por SHA-256 y se guardan en un paquete de sesion portable. No se cambia el algoritmo geometrico existente ni el formato de las salidas C2C.
 
 ## Auditoría de cada sección
 
@@ -18,7 +18,7 @@ El modo Ensayo admite archivos sin referencias, siempre identificado como prueba
 | Captura | Técnico: conectar, snapshots, filtros y vista en vivo | `_toggle_sensor_connection` → SDK; `_capture_clicked` → `capture_snapshot` → PLY, foto/grid y pose best effort. Vivo → `LiveViewer` | Captura densa vía `DEPTHCAM_FRAME_TYPE_POINT3D`, no lectura de escaneo LiDAR. Frames se acumulan sin pose por frame. La GUI nueva reutiliza ese flujo | CONSERVAR como avanzada; conexión y captura simples en inicio |
 | Alineación IMU | Auxiliar para acercarse a una pose anterior | `_refresh_imu_reference` / `_imu_poll_tick` → pose SLAM, HUD y `PoseAlignmentViewer` | La pose no demuestra continuidad del mapa, sincronía ni calidad de nube. 0,5 cm / 3° son umbrales heredados de guía, no tolerancias metrológicas | OCULTAR COMO AVANZADA; no habilita medición de terreno |
 | Comparación | Técnico: pares arbitrarios de archivos | `_set_base_path`, `_set_updated_path` → parámetros del pipeline | Selección de paths no guarda historial. Cambiar par invalida alineación. Sustituida para operadores por archivos vinculados a sesión | OCULTAR COMO AVANZADA |
-| Alineación por referencias | Necesaria al mover sensor | `_pick_alignment_points` → 3D/foto; `_apply_alignment` → Kabsch + RMS → nube alineada | No requiere que la pared completa siga igual. Sesión guarda puntos, rotación, traslación, residual y vínculo a BASE. Rechaza referencias colineales/no finitas y exige confirmación de estabilidad | CONSERVAR, acceso directo desde la etapa |
+| Alineación por referencias | Necesaria al mover sensor | `_pick_alignment_points` → 3D/foto; `_apply_alignment` → Kabsch + RMS → nube alineada | No requiere que la pared completa siga igual. Sesión guarda puntos, rotación, traslación, residual y vínculo a BASE. Rechaza referencias colineales/no finitas y muestra instrucciones para usar referencias estables | CONSERVAR, acceso directo desde la etapa |
 | Foto de referencia | Facilitar selección visible | NPZ imagen + grid 3D; picking busca profundidad y puede acudir a píxel vecino | No ve a través de material ni recupera una referencia tapada. No confundir foto sintética con evidencia fotográfica real. Puede seleccionar otra superficie | CONSERVAR COMO AVANZADA; texto corregido |
 | Segmentación | Aislar una zona comparable y excluir fondo/maquinaria | `_pick_segmentation_quad` / `_apply_segmentation` → `crop_cloud_by_quad_box` → PLY recortados | Aproxima un box local a partir de cuatro puntos; no reconstruye una pared curva. Sesión conserva una única zona BASE y aplica el mismo recorte a todas las etapas alineadas | CONSERVAR, acceso directo; zona fija tras comparar |
 | Ajustes de análisis | Técnico: muestreo, ruido y recorte | `_build_params` → `preprocess`; parámetros avanzados, ICP | Voxel puede perder capas finas. ICP global puede absorber shotcrete como desplazamiento. No está activado en sesiones de operador | OCULTAR COMO AVANZADA |
@@ -29,7 +29,7 @@ El modo Ensayo admite archivos sin referencias, siempre identificado como prueba
 | Alertas avanzadas | Visualizar comparación con umbrales | `_generate_alerts` → media C2C y umbrales de usuario | Media de toda escena no prueba falta/exceso local. Se corrigieron textos para no afirmar necesidad de material. El flujo de sesiones no usa estas alertas | SIMPLIFICAR y calificar; no diagnóstico de obra |
 | Informe | Trazabilidad para operador / revisión técnica | Sesión exporta MD + CSV automáticamente, con fuentes, modo, fecha, pose, diagnóstico y artefactos; PDF avanzado preservado | Resultados originales con nombres `thickness_*` permanecen por compatibilidad, pero significado C2C explicitado. PDF también identifica resultado exploratorio | CONSERVAR; informe de sector en inicio |
 
-La comprobación de GUI recorre las 10 páginas y comprueba las referencias a métodos/callbacks. No sustituye la ejecución con sensor físico, picking manual real, stream de red o precisión de campo. Las capturas de pantalla verifican presentación bajo GTK3/X11 en Ubuntu 24.04 mediante WSLg, con escalas 1× y 2×.
+La comprobación de GUI recorre las 10 páginas y comprueba las referencias a métodos/callbacks. No sustituye la ejecución con sensor físico, picking manual real, stream de red o precisión de campo. Las capturas de pantalla verifican presentación bajo GTK3/X11 en Ubuntu 24.04 mediante WSLg, con escalas 1× y 2×. La prueba de geometría incluye una bóveda cilíndrica sintética con desplazamientos radiales conocidos de 4 cm, tanto hacia dentro como hacia fuera; valida la distancia C2C en esa geometría ideal y deja visible que la salida sin signo no distingue ambos casos. Esto no valida captura, calibración, rugosidad, oclusión ni exactitud física del Aurora.
 
 ## Geometría y calidad: qué se mide hoy
 
@@ -63,7 +63,7 @@ Reproducción:
 python3 scripts/audit_dataset.py --base pcd/base_capturada_20261006_143616.ply --updated pcd/updated_capturada_20261006_143645.ply --output-dir output/auditoria
 ```
 
-El JSON `output/auditoria/pcd_diagnostico.json` apunta a una sesión de ensayo completa con copias, CSV por punto, histograma, mapa e informe. Cada nueva ejecución crea otra sesión y conserva resultados anteriores.
+El diagnostico `output/auditoria/diagnostico_dataset.json` conserva estadisticas y rutas de CSV, histograma y mapa generados para el par original. Corre fuera de las sesiones del operador, sin registro; por diseno no produce una comparacion de terreno ni omite los controles de la aplicacion.
 
 ## Sensor, oscuridad y marcos
 

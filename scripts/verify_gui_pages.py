@@ -24,7 +24,7 @@ def main():
     app = gui_gtk.AuroraGUI(Gtk.Window())
     app.window.resize(1280, 960)
     app.window.show_all()
-    app.quick_demo_check.set_active(True)
+    assert not hasattr(app, "quick_demo_button")
     if args.session:
         app._session_load(args.session)
     methods = set()

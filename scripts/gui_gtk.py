@@ -601,7 +601,7 @@ class AuroraGUI(SectorWorkflowMixin):
         capture_page = self._build_capture_page()
         imu_alignment_page = self._build_imu_alignment_page()
         comparison_page = self._build_comparison_page()
-        self.stack.add_titled(self._build_simple_workflow_page(), "rapido", "Antes y despues")
+        self.stack.add_titled(self._build_simple_workflow_page(), "rapido", "Medici\u00f3n r\u00e1pida")
         self.stack.add_titled(capture_page, "captura", "Captura")
         self.stack.add_titled(imu_alignment_page, "alineacion_imu", "Alineacion IMU")
         self.stack.add_titled(comparison_page, "comparacion", "Comparacion")
@@ -703,7 +703,7 @@ class AuroraGUI(SectorWorkflowMixin):
             self._sidebar_rows[stack_name] = row
 
         add_header("Inicio")
-        add_page("Antes y despues", "rapido")
+        add_page("Medici\u00f3n r\u00e1pida", "rapido")
 
         add_header("Flujo de trabajo")
         add_page("Captura", "captura")
@@ -1409,9 +1409,13 @@ class AuroraGUI(SectorWorkflowMixin):
         page.pack_start(step_frame, False, True, 0)
 
         apply_frame, apply_box = self._section("Paso 2: calcular y aplicar")
+        apply_note = Gtk.Label(
+            label="Usa solo marcas físicas fijas, visibles en ambas capturas y fuera del área cubierta. Si no puedes identificar las mismas marcas, no apliques el registro.",
+            xalign=0,
+        )
+        apply_note.set_line_wrap(True)
+        apply_box.pack_start(apply_note, False, False, 0)
         row = self._row(apply_box)
-        self.session_stable_anchors_check = Gtk.CheckButton(label="Las referencias no cambiaron y siguen visibles fuera del shotcrete")
-        apply_box.pack_start(self.session_stable_anchors_check, False, False, 0)
         self.apply_alignment_button = Gtk.Button(label="Calcular alineacion y aplicar")
         self.apply_alignment_button.connect("clicked", lambda _b: self._apply_alignment())
         row.pack_start(self.apply_alignment_button, False, False, 0)
@@ -1522,9 +1526,6 @@ class AuroraGUI(SectorWorkflowMixin):
             self.landmarks_updated_label.set_text(f"{len(points)} puntos elegidos ({method_label}) ✓")
 
     def _apply_alignment(self) -> None:
-        if self._session_alignment_target and not self.session_stable_anchors_check.get_active():
-            self._show_warning("Referencias sin confirmar", "Confirma referencias estables, no cubiertas, antes de alinear la etapa.")
-            return
         if self.landmarks_base is None or self.landmarks_updated is None:
             self._show_warning("Faltan puntos", "Elige los puntos de referencia en las dos nubes primero.")
             return
@@ -1621,8 +1622,8 @@ class AuroraGUI(SectorWorkflowMixin):
             label=(
                 "Elegi 4 puntos (Shift+Click), en orden alrededor del perimetro, sobre la "
                 "nube CON shotcrete (la capturada despues), para marcar una region "
-                "cuadrada/rectangular (por ejemplo, un tramo especifico del tunel o una de "
-                "tus cajas de prueba). La app arma un 'box' 3D extruyendo esa region a lo "
+                "cuadrada/rectangular, por ejemplo un tramo especifico del tunel. La app "
+                "arma un 'box' 3D extruyendo esa region a lo "
                 "largo de su normal (el ancho del box es configurable abajo) y recorta las "
                 "DOS nubes (con shotcrete y original) a los puntos que caen dentro de ese "
                 "box, generando dos archivos .ply nuevos que el resto del analisis va a usar "

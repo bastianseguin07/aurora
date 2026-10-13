@@ -49,18 +49,23 @@ def main():
             assert app.stack.get_visible_child_name() == page
         app.stack.set_visible_child_name("rapido")
 
-        app.quick_demo_check.set_active(True)
         xy = np.array([(x, y) for x in np.linspace(0, 1, 12) for y in np.linspace(0, 1, 12)])
         import_before, import_after = root / "import_before.ply", root / "import_after.ply"
         clouds = [o3d.geometry.PointCloud(o3d.utility.Vector3dVector(np.c_[xy, np.full(len(xy), z)])) for z in (0, .04)]
         o3d.io.write_point_cloud(str(import_before), clouds[0])
         o3d.io.write_point_cloud(str(import_after), clouds[1])
-        selected_files = iter((str(import_before), str(import_after)))
-        app._run_open_file_dialog = lambda: next(selected_files)
-        app._session_import("base")
+        app._new_pair_session()
+        app._session_add_source(import_before, "base")
         pump_until(lambda: app.measurement_session.data["base"] and not app._session_busy(), "loaded BEFORE")
-        app._session_import("updated")
+        app._session_add_source(import_after, "updated")
         pump_until(lambda: len(app.measurement_session.data["stages"]) == 1 and not app._session_busy(), "loaded AFTER")
+        anchors = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=float)
+        app._session_align_selected()
+        app.landmarks_base = anchors
+        app.landmarks_updated = anchors.copy()
+        app._apply_alignment()
+        pump_until(lambda: app.measurement_session.data["stages"][0]["registration"] and not app._session_busy(), "imported pair alignment")
+        app.session_surface_check.set_active(True)
         app.voxel_entry.set_text("0.20")
         app._quick_compare_clicked()
         pump_until(lambda: len(app.measurement_session.data["results"]) == 1 and not app._session_busy(), "loaded pair comparison")
@@ -88,6 +93,13 @@ def main():
             height = count * .04
             count += 1
             return o3d.geometry.PointCloud(o3d.utility.Vector3dVector(np.c_[xy, np.full(len(xy), height)]))
+        def register_selected_stage():
+            app._session_align_selected()
+            app.landmarks_base = anchors
+            app.landmarks_updated = anchors.copy()
+            app._apply_alignment()
+            index = app.session_stage_combo.get_active()
+            pump_until(lambda: app.measurement_session.data["stages"][index]["registration"] and not app._session_busy(), "sensor stage alignment")
         module.aurora_sensor.capture_snapshot = capture
         app._quick_connect_clicked()
         pump_until(lambda: app.sensor_connection is not None, "connect")
@@ -97,6 +109,8 @@ def main():
         for stage in (1, 2):
             app._quick_capture_clicked("updated")
             pump_until(lambda: len(app.measurement_session.data["stages"]) == stage and not app._session_busy(), "stage")
+            register_selected_stage()
+            app.session_surface_check.set_active(True)
             app._quick_compare_clicked()
             pump_until(lambda: len(app.measurement_session.data["results"]) == stage and not app._session_busy(), "comparison")
         assert np.allclose([r["stats_m"]["mean"] for r in app.measurement_session.data["results"]], [.04, .08])
@@ -107,7 +121,7 @@ def main():
         session_path = app.measurement_session.path
         app._session_load(session_path)
         assert len(app.measurement_session.data["stages"]) == 2
-        assert "ENSAYO" in app.quick_result_label.get_text()
+        assert "RESULTADO EXPLORATORIO" in app.quick_result_label.get_text()
         assert not app.quick_result_label.get_visible()
         result_children = app.quick_result_cards.get_children()
         assert app.quick_result_cards.get_visible() and len(result_children) == 6
@@ -127,7 +141,6 @@ def main():
         assert warnings[-1][0] == "Guardado en curso"
         gate.set()
         pump_until(lambda: len(app.measurement_session.data["stages"]) == 3 and not app._session_busy(), "capture controls")
-        app.quick_demo_check.set_active(False)
         app._quick_capture_clicked("base")
         pump_until(lambda: app.measurement_session.data["base"] and not app._session_busy(), "field BASE")
         app._quick_capture_clicked("updated")
@@ -137,15 +150,7 @@ def main():
         pump_until(lambda: not app._session_busy(), "field guard")
         assert not app.measurement_session.data["results"]
         assert "Faltan referencias" in app.quick_result_label.get_text()
-        app._session_align_selected()
-        anchors = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=float)
-        app.landmarks_base = anchors
-        app.landmarks_updated = anchors.copy()
-        app._apply_alignment()
-        assert warnings[-1][0] == "Referencias sin confirmar"
-        app.session_stable_anchors_check.set_active(True)
-        app._apply_alignment()
-        pump_until(lambda: app.measurement_session.data["stages"][0]["registration"] and not app._session_busy(), "manual anchor registration")
+        register_selected_stage()
         assert app._advanced_pair_is_selected_session()
         app._session_crop_selected()
         app.segmentation_quad = np.array([[.1, .1, .16], [.9, .1, .16], [.9, .9, .16], [.1, .9, .16]])

@@ -1,8 +1,8 @@
 # Aurora — comparaciones por sector para evaluar shotcrete
 
-La GUI GTK ahora inicia en **Sesión por sector**: BASE fija, varias etapas DESPUÉS, guardado automático, reapertura, referencias estables, zona común y resultados exploratorios. Consulta el [flujo actual del operador](docs/FLUJO_SECTOR.md) y la [auditoría completa](docs/AUDITORIA_AURORA.md), que contrasta las funciones con `plan.txt` e incluye los resultados de las cajas de `pcd`.
+La GUI GTK inicia en **Medición rápida** y usa el mismo recorrido para archivos PLY de prueba y nubes mineras: ANTES, una o más etapas DESPUÉS, alineación cuando cambia la posición, revisión visual y comparación. No existe un modo de cajas que omita controles. Consulta el [flujo del operador](docs/FLUJO_SECTOR.md) y la [auditoría contra `plan.txt`](docs/AUDITORIA_AURORA.md).
 
-El cálculo existente es distancia C2C sin signo; todavía no certifica espesor normal ni precisión en mina. La GUI Windows `scripts/gui.py` se conserva como alternativa anterior y **no tiene paridad** con las sesiones retomables GTK. Las secciones posteriores describen instalación y herramientas avanzadas heredadas; el flujo del operador vigente está en el documento enlazado.
+El cálculo existente es distancia C2C sin signo; todavía no certifica espesor normal ni precisión en mina. Por ello esta versión es apta para pruebas controladas y pilotos supervisados, no para aceptar shotcrete ni tomar decisiones de seguridad. La GUI Windows `scripts/gui.py` es una alternativa anterior y **no tiene paridad** con las sesiones retomables GTK.
 
 Verificación reproducible en Ubuntu con GTK3, Open3D y PyGObject:
 
@@ -228,21 +228,11 @@ red que el sensor. La IP por defecto del dispositivo suele ser `192.168.11.1`
 
 ## 4. Usar la GUI
 
-### Flujo rapido para una medicion de shotcrete
+### Flujo de operador
 
-La pestaña inicial **Medicion rapida** guia una sesion nueva:
+La pestaña **Medición rápida** acepta la misma ruta para archivos PLY y capturas Aurora. Carga o captura ANTES; cuando el sector vuelva a estar accesible, carga o captura DESPUÉS; si el sensor cambió de lugar, registra esa etapa con referencias físicas estables; revisa que sea la misma zona y pulsa **Calcular comparación**. Puedes registrar varias etapas y compararlas contra ANTES o contra la etapa previa. Las capturas del sensor duran 15 segundos y requieren mantenerlo quieto. Instrucciones de terreno y límites están en [docs/FLUJO_SECTOR.md](docs/FLUJO_SECTOR.md).
 
-1. Conecta el Aurora (IP inicial `192.168.11.1`) y captura **BASE** antes del shotcrete.
-2. Mantén el sensor encendido durante la aplicacion. Usa **Ayuda para volver a la posicion BASE** para seguir la guia IMU antes de cada lectura posterior.
-3. Captura **DESPUES** y pulsa **Comparar**. Puedes repetir captura y comparacion despues de cada capa; cada lectura se mide de forma acumulada contra la misma BASE.
-
-La comparacion rapida no mezcla capturas de sesiones anteriores. Comprueba que las poses guardadas esten a no mas de 0.5 cm y 3 grados; si no, solicita volver a la posicion BASE y repetir la lectura. Las capturas usan 15 segundos, persistencia 0, campo visual completo y eje Z. Cada etapa guarda sus resultados en `output/etapas/<captura>/`; el resumen acumulativo de la sesion queda en `output/etapas/sesion_<base>/resumen_etapas.csv`.
-
-Este flujo requiere capturar con el sensor Aurora conectado para guardar las poses IMU. La prueba de captura y el control de posicion deben validarse con el sensor fisico antes de usarlo como medicion de produccion.
-
-Para validar la interfaz y el analisis sin sensor, ejecuta `python3 scripts/smoke_test_quick_workflow.py` desde una sesion grafica de Ubuntu. El test usa nubes sinteticas y guarda sus resultados en una carpeta temporal.
-
-En Windows, `scripts/gui.py` ofrece el mismo flujo en la pestaña inicial **Medicion rapida** y muestra las diferencias IMU X/Y/Z y de orientación con **Ver distancia a BASE**. Con las dependencias de `requirements.txt` instaladas, valida esa interfaz con `python scripts/smoke_test_quick_workflow_tk.py` desde una sesion de escritorio.
+La comparación exige referencias registradas y revisión manual para todos los archivos, incluidos datos de prueba. Los tests sintéticos verifican el pipeline y el guardado; no validan exactitud del sensor. Para uso productivo se necesita contraste con espesores de referencia independientes en las condiciones reales de la mina.
 
 La seccion **Flujo tipico (un solo click)** de abajo describe el modo de comparacion avanzado con archivos `.ply`.
 

@@ -20,13 +20,18 @@ class SectorWorkflowMixin:
         self.session_result = None
         page = self._new_page()
         page.get_style_context().add_class("sector-flow")
-        intro = Gtk.Label(label="Compara dos capturas: una de ANTES y otra de DESPUES del shotcrete. Puedes cargar archivos o capturar con el sensor.", xalign=0)
+        intro = Gtk.Label(label="Captura o carga ANTES y DESPUES, y calcula la comparacion. Sirve para nubes de prueba y mediciones en terreno.", xalign=0)
         intro.set_line_wrap(True)
         page.pack_start(intro, False, False, 8)
+        pilot_note = Gtk.Label(
+            label="PILOTO: el resultado es distancia exploratoria entre nubes; no lo uses para aprobar el espesor aplicado.",
+            xalign=0,
+        )
+        pilot_note.set_line_wrap(True)
+        pilot_note.get_style_context().add_class("quick-result-note")
+        page.pack_start(pilot_note, False, False, 4)
 
         row = self._row(page)
-        self.quick_demo_check = Gtk.CheckButton(label="Estoy usando datos de prueba")
-        row.pack_start(self.quick_demo_check, False, False, 0)
         self.session_open_button = Gtk.Button(label="Abrir comparacion guardada...")
         self.session_open_button.connect("clicked", lambda _b: self._session_open())
         row.pack_end(self.session_open_button, False, False, 0)
@@ -72,6 +77,13 @@ class SectorWorkflowMixin:
         self.session_mode_combo.append_text("Respecto de ANTES")
         self.session_mode_combo.append_text("Respecto de etapa anterior")
         self.session_mode_combo.set_active(0)
+        selection_row = self._row(page)
+        selection_row.set_no_show_all(True)
+        selection_row.pack_start(Gtk.Label(label="Etapa DESPUES:"), False, False, 0)
+        selection_row.pack_start(self.session_stage_combo, True, True, 0)
+        selection_row.pack_start(Gtk.Label(label="Comparar:"), False, False, 0)
+        selection_row.pack_start(self.session_mode_combo, False, False, 0)
+        self.session_selection_row = selection_row
         row = self._row(page)
         self.quick_stop_capture_button = Gtk.Button(label="Detener captura")
         self.quick_stop_capture_button.set_no_show_all(True)
@@ -99,7 +111,7 @@ class SectorWorkflowMixin:
         self.session_surface_check = Gtk.CheckButton(label="Revise la misma zona en ambas nubes, sin maquinaria ni oclusiones visibles")
         self.session_surface_check.set_tooltip_text("Revision visual del operador; no calcula un porcentaje de cobertura ni certifica precision.")
         box.pack_start(self.session_surface_check, False, False, 0)
-        self.quick_compare_button = Gtk.Button(label="Comparar antes y despues")
+        self.quick_compare_button = Gtk.Button(label="Calcular comparacion")
         self.quick_compare_button.get_style_context().add_class("suggested-action")
         self.quick_compare_button.connect("clicked", lambda _b: self._quick_compare_clicked())
         box.pack_start(self.quick_compare_button, False, False, 0)
@@ -130,7 +142,7 @@ class SectorWorkflowMixin:
         if self._session_busy():
             return
         try:
-            session = MeasurementSession.create(Path(self.output_dir) / "sesiones", "Comparacion rapida", "Par antes y despues", self.quick_demo_check.get_active())
+            session = MeasurementSession.create(Path(self.output_dir) / "sesiones", "Comparacion rapida", "Par antes y despues")
             self._session_activate(session)
         except Exception as exc:
             self._show_error("No se pudo crear la sesion", str(exc))
@@ -138,7 +150,7 @@ class SectorWorkflowMixin:
     def _new_pair_session(self):
         session = MeasurementSession.create(
             Path(self.output_dir) / "sesiones", "Comparacion rapida",
-            "Par antes y despues", self.quick_demo_check.get_active(),
+            "Par antes y despues",
         )
         self._session_activate(session)
         return session
@@ -185,7 +197,6 @@ class SectorWorkflowMixin:
         self._session_roi_target = None
         self.session_surface_check.set_active(False)
         self.session_mode_combo.set_active(0)
-        self.quick_demo_check.set_active(session.data["demo"])
         self.quick_capture_status_label.set_text(f"Comparacion guardada automaticamente · {session.path.parent}")
         self.session_stage_combo.remove_all()
         for index, capture in enumerate(session.data["stages"]):
@@ -224,6 +235,11 @@ class SectorWorkflowMixin:
         busy = self._session_busy()
         has_base = bool(session and session.data["base"])
         has_stage = bool(session and self.session_stage_combo.get_active() >= 0)
+        self.session_selection_row.set_no_show_all(not has_stage)
+        if has_stage:
+            self.session_selection_row.show_all()
+        else:
+            self.session_selection_row.hide()
         self._set_capture_buttons_sensitive(self.sensor_connection is not None and not busy)
         self.quick_capture_base_button.set_sensitive(self.sensor_connection is not None and not busy)
         self.quick_capture_updated_button.set_sensitive(has_base and self.sensor_connection is not None and not busy)
@@ -239,7 +255,6 @@ class SectorWorkflowMixin:
         self.session_view_button.set_sensitive(bool(session and session.data["results"]) and not busy)
         self.quick_stop_capture_button.set_sensitive(self.capture_stop_event is not None)
         self.quick_stop_capture_button.set_visible(self.capture_stop_event is not None)
-        self.quick_demo_check.set_sensitive(not busy and not session)
 
     def _advanced_pair_is_selected_session(self):
         """Whether the advanced action is still pointed at the active session pair."""
@@ -355,8 +370,7 @@ class SectorWorkflowMixin:
         if not session or not session.data["results"]:
             self._show_quick_result_message("Listo para comparar cuando tengas las dos capturas.")
             return
-        is_demo = session.data["demo"]
-        lines = ["ENSAYO CON DATOS DE PRUEBA" if is_demo else "RESULTADO EXPLORATORIO; PRECISION DE CAMPO NO VALIDADA"]
+        lines = ["RESULTADO EXPLORATORIO; PRECISION DE CAMPO NO VALIDADA"]
         for child in self.quick_result_cards.get_children():
             self.quick_result_cards.remove(child)
         heading = Gtk.Label(label=lines[0], xalign=0.5)
@@ -415,7 +429,6 @@ class SectorWorkflowMixin:
         self.landmarks_base = self.landmarks_updated = None
         self.landmarks_base_label.set_text("(ninguno)")
         self.landmarks_updated_label.set_text("(ninguno)")
-        self.session_stable_anchors_check.set_active(False)
         self._session_alignment_target = (session, capture)
         self.stack.set_visible_child_name("alineacion")
 
@@ -425,8 +438,6 @@ class SectorWorkflowMixin:
         session, capture = self._session_alignment_target
         if self.base_path != str(session.resolve(session.data["base"]["path"])) or self._raw_updated_path != str(session.resolve(capture["path"])):
             raise ValueError("Las capturas cambiaron durante la alineacion. Vuelve a seleccionar la etapa.")
-        if not self.session_stable_anchors_check.get_active():
-            raise ValueError("Confirma que las referencias fisicas no cambiaron ni fueron cubiertas por shotcrete.")
         session.register_stage(capture, Path(aligned_path), self.landmarks_base, self.landmarks_updated,
                                self.alignment_rotation, self.alignment_translation, rms)
         self._session_alignment_target = None
@@ -439,7 +450,7 @@ class SectorWorkflowMixin:
         if self._session_busy() or not session or index < 0:
             return
         capture = session.data["stages"][index]
-        if not session.data["demo"] and not capture["registration"]:
+        if not capture["registration"]:
             self._show_warning("Falta alineacion", "Primero alinea la etapa para elegir la misma zona en ambas capturas.")
             return
         self._set_base_path(str(session.resolve(session.data["base"]["path"])))

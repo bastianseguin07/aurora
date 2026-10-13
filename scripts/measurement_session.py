@@ -49,13 +49,13 @@ class MeasurementSession:
         self.path, self.data = path.resolve(), data
 
     @classmethod
-    def create(cls, directory: Path, tunnel: str, sector: str, demo: bool):
+    def create(cls, directory: Path, tunnel: str, sector: str):
         if not tunnel.strip() or not sector.strip():
             raise ValueError("Identifica el tunel y el sector antes de crear la sesion.")
         identifier = uuid.uuid4().hex
         session = cls(directory / identifier / "sesion.json", {
             "version": cls.VERSION, "id": identifier, "tunnel": tunnel.strip(),
-            "sector": sector.strip(), "demo": bool(demo), "created_at": now(),
+            "sector": sector.strip(), "created_at": now(),
             "base": None, "stages": [], "results": [], "roi": None,
         })
         session.save()
@@ -66,9 +66,12 @@ class MeasurementSession:
         data = json.loads(path.read_text(encoding="utf-8"))
         if data.get("version") != cls.VERSION:
             raise ValueError("Version de sesion no compatible.")
-        for field in ("id", "tunnel", "sector", "demo", "created_at", "base", "stages", "results"):
+        for field in ("id", "tunnel", "sector", "created_at", "base", "stages", "results"):
             if field not in data:
                 raise ValueError(f"Sesion incompleta: falta {field}.")
+        # Drop the old UI mode flag when resaving a legacy session. It never
+        # changes registration or comparison requirements.
+        data.pop("demo", None)
         session = cls(path, data)
         for capture in session.captures():
             session.verify(capture)
@@ -195,15 +198,14 @@ class MeasurementSession:
             raise ValueError("La primera etapa solo se puede comparar con BASE.")
         for capture in (base, previous, current):
             self.verify(capture)
-        if not self.data["demo"]:
-            for capture in (previous, current):
-                if capture is base:
-                    continue
-                registration = capture["registration"]
-                if not registration or registration["base_id"] != base["id"]:
-                    raise ValueError("Faltan referencias estables para esta etapa. Usa Alinear etapa. La coincidencia IMU no verifica el registro.")
-            if not surface_reviewed:
-                raise ValueError("Falta revisar visualmente que el par cubra la misma zona y no incluya maquinaria u oclusiones. Esa revision es manual, no una prueba automatica de cobertura.")
+        for capture in (previous, current):
+            if capture is base:
+                continue
+            registration = capture["registration"]
+            if not registration or registration["base_id"] != base["id"]:
+                raise ValueError("Faltan referencias estables para esta etapa. Usa Alinear etapa. La coincidencia IMU no verifica el registro.")
+        if not surface_reviewed:
+            raise ValueError("Falta revisar visualmente que el par cubra la misma zona y no incluya maquinaria u oclusiones. Esa revision es manual, no una prueba automatica de cobertura.")
         def working_path(capture):
             registration = capture["registration"]
             return self.resolve(registration["path"] if registration else capture["path"])
@@ -251,7 +253,7 @@ class MeasurementSession:
         }
         record = {
             "stage_id": current["id"], "reference_id": previous["id"], "mode": mode,
-            "created_at": now(), "status": "ensayo" if self.data["demo"] else "exploratorio_no_validado",
+            "created_at": now(), "status": "exploratorio_no_validado",
             "method": "C2C euclidiana sin signo; no es espesor normal certificado",
             "surface_review": {"operator_confirmed": bool(surface_reviewed), "automated_coverage_validated": False},
             "roi": copy.deepcopy(roi),
@@ -277,7 +279,7 @@ class MeasurementSession:
         path = self.path.parent / "informe.md"
         lines = ["# Aurora — informe exploratorio", f"Tunel: {self.data['tunnel']}", f"Sector: {self.data['sector']}",
                  f"Sesion: {self.data['id']}", f"Creada: {self.data['created_at']}",
-                 "ENSAYO CON DATOS DE PRUEBA" if self.data["demo"] else "TERRENO: RESULTADOS SIN CERTIFICACION",
+                 "RESULTADOS EXPLORATORIOS; PRECISION Y COBERTURA DE CAMPO SIN VALIDAR",
                  "", "Distancias C2C sin signo: incluyen muestreo, rugosidad, registro y oclusiones. No prueban espesor normal ni falta/exceso de shotcrete.",
                  "No se resta la media acumulada para calcular una capa: entre etapas se compara directamente el par de nubes.", "",
                  f"Zona comun: {self.data.get('roi') or 'nubes completas; cobertura del sector sin cuantificar'}", "",

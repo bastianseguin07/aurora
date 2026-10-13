@@ -26,24 +26,33 @@ class Sessions(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def make_session(self, demo=True):
-        session = MeasurementSession.create(self.root / "sessions", "Tunel 1", "Pared izquierda 2", demo)
+    def make_session(self, register=True):
+        session = MeasurementSession.create(self.root / "sessions", "Tunel 1", "Pared izquierda 2")
         session.add_capture(self.paths[0], base=True)
-        session.add_capture(self.paths[1])
-        session.add_capture(self.paths[2])
+        stages = [session.add_capture(self.paths[1]), session.add_capture(self.paths[2])]
+        if register:
+            anchors = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=float)
+            identity = np.eye(3)
+            for stage, path in zip(stages, self.paths[1:]):
+                session.register_stage(stage, path, anchors, anchors, identity, np.zeros(3), 0.)
         return session
 
     def test_resume_portable_and_pairwise_stages(self):
         session = self.make_session()
+        self.assertNotIn("demo", session.data)
         for index, incremental, expected in ((0, False, .04), (1, False, .08), (1, True, .04)):
-            record, _result = session.compare(index, incremental, log=lambda _: None)
+            record, _result = session.compare(index, incremental, log=lambda _: None, surface_reviewed=True)
             self.assertAlmostEqual(record["stats_m"]["mean"], expected, places=6)
             session.record_result(record)
         for path in self.paths:
             path.unlink()
+        legacy_data = json.loads(session.path.read_text(encoding="utf-8"))
+        legacy_data["demo"] = True
+        session.path.write_text(json.dumps(legacy_data), encoding="utf-8")
         relocated = self.root / "moved"
         shutil.copytree(session.path.parent, relocated)
         restored = MeasurementSession.load(relocated / "sesion.json")
+        self.assertNotIn("demo", restored.data)
         self.assertEqual(len(restored.data["stages"]), 2)
         self.assertEqual(len(restored.data["results"]), 3)
         self.assertTrue(restored.resolve(restored.data["results"][0]["artifacts"]["csv"]).is_file())
@@ -52,7 +61,7 @@ class Sessions(unittest.TestCase):
             restored.add_capture(restored.resolve(restored.data["base"]["path"]), base=True)
 
     def test_field_requires_unchanged_anchors_not_pose(self):
-        session = self.make_session(demo=False)
+        session = self.make_session(register=False)
         with self.assertRaisesRegex(ValueError, "Faltan referencias"):
             session.compare(0, log=lambda _: None)
         anchors = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]])
@@ -92,12 +101,42 @@ class Sessions(unittest.TestCase):
         session = self.make_session()
         quad = np.array([[.1, .1, 0], [.9, .1, 0], [.9, .9, 0], [.1, .9, 0]])
         session.set_roi(quad, 1.)
-        record, _ = session.compare(1, log=lambda _: None)
+        record, _ = session.compare(1, log=lambda _: None, surface_reviewed=True)
         self.assertAlmostEqual(record["stats_m"]["mean"], .08, places=6)
         self.assertLess(record["stats_m"]["n_points"], 100)
         session.record_result(record)
         with self.assertRaises(ValueError):
             session.set_roi(quad, .5)
+
+    def test_curved_tunnel_known_offset_and_unsigned_ambiguity(self):
+        """A synthetic cylinder checks geometry math, not physical sensor accuracy."""
+        axial = np.linspace(0, 1, 24)
+        angle = np.linspace(-np.pi, np.pi, 80, endpoint=False)
+        xx, aa = np.meshgrid(axial, angle, indexing="ij")
+        anchors = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=float)
+
+        def save_radius(path, radius):
+            points = np.c_[xx.ravel(), radius * np.sin(aa).ravel(), radius * np.cos(aa).ravel()]
+            cloud_path = self.root / path
+            o3d.io.write_point_cloud(str(cloud_path), o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points)))
+            return cloud_path
+
+        base_path = save_radius("curved_before.ply", 2.0)
+        inward_path = save_radius("curved_after_inward.ply", 1.96)
+        outward_path = save_radius("curved_after_outward.ply", 2.04)
+        session = MeasurementSession.create(self.root / "curved", "Tunel sintetico", "Boveda")
+        session.add_capture(base_path, base=True)
+        stages = [session.add_capture(path) for path in (inward_path, outward_path)]
+        for stage, path in zip(stages, (inward_path, outward_path)):
+            session.register_stage(stage, path, anchors, anchors, np.eye(3), np.zeros(3), 0.0)
+
+        inward, _ = session.compare(0, log=lambda _: None, surface_reviewed=True)
+        outward, _ = session.compare(1, log=lambda _: None, surface_reviewed=True)
+        self.assertAlmostEqual(inward["stats_m"]["mean"], 0.04, places=6)
+        self.assertAlmostEqual(outward["stats_m"]["mean"], 0.04, places=6)
+        self.assertAlmostEqual(inward["stats_m"]["p95"], 0.04, places=6)
+        self.assertAlmostEqual(outward["stats_m"]["p95"], 0.04, places=6)
+        self.assertEqual(inward["method"], outward["method"])
 
 
 if __name__ == "__main__":
