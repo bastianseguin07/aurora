@@ -1,0 +1,22 @@
+[workspace]
+name = "aurora-gtk-windows"
+version = "0.1.0"
+description = "Entorno nativo de Windows para la GUI GTK3 de Aurora"
+channels = ["conda-forge"]
+platforms = ["win-64"]
+
+[dependencies]
+python = "3.11.*"
+gtk3 = ">=3.24"
+pygobject = ">=3.50"
+pycairo = ">=1.26"
+numpy = ">=1.24,<2"
+open3d = ">=0.19"
+websockets = ">=12"
+qrcode = ">=7.4"
+pillow = ">=10"
+scipy = ">=1.10"
+matplotlib = ">=3.7"
+
+[tasks]
+gui = "python scripts/gui_gtk.py"

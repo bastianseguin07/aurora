@@ -4,14 +4,7 @@ Guia de uso de cada seccion de la aplicacion, pensada para el operador que va
 a usar la GUI en terreno o en oficina. Para instalacion y setup, ver
 `README.md`. Para detalles tecnicos internos del codigo, ver `CLAUDE.md`.
 
-Hay dos versiones de la interfaz, con las mismas ideas de fondo pero **no
-identicas** en pestañas disponibles:
-
-- **`scripts/gui_gtk.py`** (Linux/macOS) — version completa, 7 pestañas.
-  Todo este manual describe esta version salvo que se indique lo contrario.
-- **`scripts/gui.py`** (Windows) — version equivalente pero mas simple, 3
-  pestañas. Al final de cada seccion hay una nota "**En Windows (`gui.py`)**"
-  cuando esa parte falta o funciona distinto ahi.
+La aplicacion usa la misma interfaz GTK3 (`scripts/gui_gtk.py`) en Windows y Ubuntu. Este manual describe ese flujo en ambos sistemas.
 
 ## Flujo general (un solo click)
 
@@ -104,11 +97,6 @@ zoom con el dedo, viendo la nube de puntos real (no un video). Si la vista
 en vivo todavia no estaba abierta, se abre sola. **"Detener transmision"**
 la corta.
 
-> **En Windows (`gui.py`):** esta seccion existe igual, en la pestaña "Datos
-> y sensor". La captura en tiempo real (MVP) con "Fijar BASE en vivo" **no**
-> esta disponible ahi — solo "Capturar nube BASE"/"Capturar nube
-> ACTUALIZADA" (snapshots), conectar/desconectar, y la transmision al
-> celular.
 
 ---
 
@@ -127,8 +115,6 @@ segmentar — normalmente no hace falta tocarla a mano salvo para elegir
 archivos `.ply` ya existentes. Cambiar cualquiera de los dos archivos a mano
 invalida una alineacion ya calculada (hay que rehacerla).
 
-> **En Windows (`gui.py`):** no es una pestaña aparte, esta junta con
-> "Captura" en la pestaña "Datos y sensor" (seccion "Archivos").
 
 ---
 
@@ -195,10 +181,6 @@ Aplica la transformacion a la nube con shotcrete, la guarda como
 `<nombre>_alineado.ply`, y actualiza la pestaña "Comparacion" para usar ese
 archivo de ahi en adelante.
 
-> **En Windows (`gui.py`):** esta pestaña **no existe todavia**. La unica
-> forma de corregir desalineacion ahi es el checkbox "Alinear con ICP antes
-> de medir" (pestaña "Procesamiento"), con las limitaciones de ICP ya
-> explicadas arriba.
 
 ---
 
@@ -225,9 +207,6 @@ dos si no se sabe convertir entre ambos sistemas.
    recortados en el resto del analisis. **"Quitar segmentacion"** vuelve a
    usar las nubes completas.
 
-> **En Windows (`gui.py`):** esta pestaña **no existe**. El recorte
-> disponible ahi es el "crop" simple de la pestaña "Procesamiento"
-> (coordenadas min/max en linea recta, sin box orientado a un plano).
 
 ---
 
@@ -252,9 +231,6 @@ dos si no se sabe convertir entre ambos sistemas.
   - Carpeta donde se guardan los resultados (CSV, histograma, heatmap,
     informe).
 
-> **En Windows (`gui.py`):** pestaña "Procesamiento" — mismas opciones de
-> voxel/outliers/ICP, mas un crop simple por coordenadas min/max (no hay
-> seleccion de "solo una zona" por Shift+Click con el mismo flujo).
 
 ---
 
@@ -296,9 +272,6 @@ frontal), mas **inversion de ejes Y/Z** para adaptar la orientacion al
 montaje fisico del sensor si quedo dado vuelta. Comparten estado con la
 pestaña Captura — cambiar uno cambia el otro.
 
-> **En Windows (`gui.py`):** pestaña "Visualizacion". Solo hay 2 modos de
-> color (continuo y 3 niveles, sin el modo de 6 niveles), y no hay ajustes
-> de captura en vivo (no tiene el MVP de captura en tiempo real).
 
 ---
 
@@ -311,7 +284,6 @@ donde difieren, en vez de un heatmap tipo arcoiris. Se controla con el mouse
 (arrastrar = orbitar, rueda = zoom). Todavia no esta decidido si esto queda
 en la version final de la app.
 
-> **En Windows (`gui.py`):** no existe esta pestaña.
 
 ---
 
@@ -350,5 +322,5 @@ python scripts/compare_point_clouds.py --base data/base.ply --updated data/updat
 Ver `README.md` seccion 5 para la lista completa de flags (`--voxel-size`,
 `--remove-outliers`, `--icp`, `--crop-min/--crop-max`, `--max-distance`,
 `--output-dir`, `--overlay`). La alineacion por foto de referencia y la
-segmentacion por box orientado son funciones exclusivas de `gui_gtk.py` por
+segmentacion por box orientado son funciones de la GUI GTK
 ahora, no tienen flag equivalente en el CLI.

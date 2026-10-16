@@ -1,7 +1,7 @@
 """
 Logica central para comparar dos nubes de puntos .ply y estimar el espesor
 de shotcrete (distancia Cloud-to-Cloud). La usan tanto la CLI
-(compare_point_clouds.py) como la GUI (gui.py).
+(compare_point_clouds.py) como la GUI (gui_gtk.py).
 """
 
 from __future__ import annotations

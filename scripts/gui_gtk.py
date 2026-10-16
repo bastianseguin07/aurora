@@ -94,14 +94,15 @@ AXIS_HUD_COLORS = {"x": "#22D3EE", "y": "#E879F9", "z": "#FACC15"}
 COLOR_BG = "#0F1115"
 COLOR_CARD = "#1A1D24"
 COLOR_BORDER = "#2E3440"
-COLOR_ACCENT = "#FF8C00"
-COLOR_ACCENT_DARK = "#CC7000"
+COLOR_ACCENT = "#56B4C5"
+COLOR_ACCENT_DARK = "#3B91A1"
 COLOR_TEXT = "#F8F9FA"
 COLOR_TEXT_MUTED = "#8E95A5"
 
 CSS = f"""
 * {{
     font-family: "Inter", "Roboto", "Segoe UI", sans-serif;
+    font-size: 10pt;
 }}
 
 window, .background {{
@@ -127,10 +128,9 @@ headerbar .subtitle {{
     color: {COLOR_TEXT_MUTED};
 }}
 
-stacksidebar {{
+stacksidebar, list.sidebar {{
     background-color: {COLOR_CARD};
     border-right: 1px solid {COLOR_BORDER};
-    font-size: 1.02em;
 }}
 
 stacksidebar row {{
@@ -148,6 +148,33 @@ stacksidebar row:selected {{
 
 stacksidebar row:hover {{
     background-color: rgba(255, 255, 255, 0.04);
+}}
+
+list.sidebar row {{
+    background-color: transparent;
+    color: {COLOR_TEXT_MUTED};
+    border-left: 3px solid transparent;
+    border-radius: 4px;
+    margin: 2px 8px;
+    padding: 2px 0;
+}}
+
+list.sidebar row label {{
+    color: {COLOR_TEXT_MUTED};
+}}
+
+list.sidebar row:selected {{
+    background-color: rgba(86, 180, 197, 0.16);
+    border-left-color: {COLOR_ACCENT};
+}}
+
+list.sidebar row:selected label {{
+    color: {COLOR_TEXT};
+    font-weight: 600;
+}}
+
+list.sidebar row:hover {{
+    background-color: rgba(255, 255, 255, 0.06);
 }}
 
 frame {{
@@ -209,7 +236,7 @@ button.suggested-action {{
 }}
 
 button.suggested-action:hover {{
-    background-color: #FFA033;
+    background-color: #73C8D5;
 }}
 
 button.suggested-action:active {{
@@ -308,8 +335,8 @@ popover contents {{
 class AuroraGUI:
     def __init__(self, window: Gtk.Window) -> None:
         self.window = window
-        self.window.set_default_size(1050, 820)
-        self.window.set_size_request(880, 660)
+        self.window.set_default_size(1440, 960)
+        self.window.set_size_request(1120, 760)
         self.window.connect("destroy", self._on_close)
 
         # El "antes" queda fijo en esta captura de referencia (pedido del
@@ -343,8 +370,6 @@ class AuroraGUI:
     def _build_layout(self) -> None:
         header_bar = Gtk.HeaderBar()
         header_bar.set_show_close_button(True)
-        header_bar.set_title("Aurora")
-        header_bar.set_subtitle("Medicion de espesor de shotcrete")
         self.window.set_titlebar(header_bar)
 
         self.run_button = Gtk.Button(label="▶  Calcular espesor")
@@ -516,7 +541,7 @@ class AuroraGUI:
 
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_size_request(200, -1)
+        scroller.set_size_request(240, -1)
         scroller.add(listbox)
         return scroller
 

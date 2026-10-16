@@ -1,26 +1,18 @@
 # Aurora — Medicion de espesor de shotcrete a partir de nubes de puntos
 
-Proyecto autocontenido: todo (entorno virtual, scripts y archivos `.ply`) vive
-dentro de esta carpeta `Aurora`. Esta branch (`gui_GTK`) agrega la interfaz
-grafica GTK3, pensada para mostrar la app a clientes con un aspecto nativo de
-escritorio Linux/Mac.
+La interfaz de escritorio de Aurora es GTK3 (`scripts/gui_gtk.py`) tanto en Ubuntu como en Windows. Cada sistema usa su propio entorno de Python.
 
-## Compatibilidad real por sistema operativo
+## Compatibilidad por sistema operativo
 
-Antes de instalar nada, es importante saber que **no los 3 sistemas operativos
-quedan igual de bien soportados** con la interfaz GTK — esto no es una
-limitacion arbitraria, es una limitacion real de como se distribuyen los
-bindings de GTK3 para Python en cada sistema:
+Ubuntu instala GTK desde `apt`; Windows usa un entorno Pixi aislado con GTK3, PyGObject y Open3D de conda-forge. Ambos ejecutan el mismo archivo `scripts/gui_gtk.py` y comparten los modulos de captura, alineacion y comparacion.
 
-| Sistema | GUI recomendada | Estado |
+| Sistema | Interfaz GTK3 | Entorno |
 |---|---|---|
-| **Linux (Ubuntu 20.04+)** | `scripts/gui_gtk.py` | Camino soportado y esperado a funcionar: GTK3 se instala como paquete de sistema (`apt`) y Open3D se instala normal via `pip`, ambos conviven en el mismo entorno virtual. **No se pudo probar contra una maquina Ubuntu real durante el desarrollo** (el entorno de desarrollo fue Windows), pero cada pieza por separado esta verificada. |
-| **macOS** | `scripts/gui_gtk.py` | Debería funcionar via Homebrew (`brew install gtk+3 pygobject3`), siguiendo el mismo patron que Linux. Instrucciones basadas en la practica estandar documentada de PyGObject/Homebrew — **no se pudo probar en una Mac real** (no hay una disponible en el entorno de desarrollo). |
-| **Windows** | `scripts/gui.py` (CustomTkinter) | GTK3 **no tiene un camino simple** en Windows: no existe un wheel de pip que lo instale, la unica forma es MSYS2 (un Python separado del de Windows) o compilar GTK desde cero con `gvsbuild` (un proceso de horas, no apto para un setup de "un comando"). Se probo exhaustivamente en este desarrollo: **MSYS2 permite correr GTK3, pero ese mismo Python no puede instalar Open3D** (no hay wheel compatible). Por eso, en Windows se recomienda usar `gui.py`, una interfaz equivalente hecha con CustomTkinter que instala con un simple `pip install` y funciona con Open3D sin problemas. |
+| Ubuntu 20.04+ / WSLg | `scripts/gui_gtk.py` | `setup.sh` y paquetes GTK del sistema |
+| Windows 10/11 | `scripts/gui_gtk.py` | Pixi y `pixi.lock` (GTK3 + Open3D en el mismo entorno) |
+| macOS | `scripts/gui_gtk.py` | Homebrew; no validado en este proyecto |
 
-Todo lo demas (CLI, `pointcloud_core.py`, captura por sensor, alineacion,
-crop, etc.) funciona igual sin importar que GUI uses — la unica diferencia es
-la interfaz grafica en si.
+En Windows, la GUI GTK se ha iniciado con el entorno Pixi y se verificaron GTK3 y Open3D. La conexion con el sensor real sigue dependiendo de instalar el SDK Slamtec compilado para Windows; la ruta de captura con archivos y los visores se ejecutan dentro del mismo entorno.
 
 ## Inicio rapido
 
@@ -34,7 +26,7 @@ automaticamente (puede tardar unos minutos por Open3D).
 ./setup.sh
 ```
 
-Instala los paquetes de sistema necesarios (`python3-venv`, `python3-tk`,
+Instala los paquetes de sistema necesarios (`python3-venv`,
 `libgl1-mesa-glx`, `libgomp1`, `python3-gi`, `gir1.2-gtk-3.0`) via `apt`
 (pide `sudo` la primera vez), y crea el entorno virtual con
 `--system-site-packages` para que herede los bindings de GTK3 instalados a
@@ -70,36 +62,20 @@ que en Linux: GTK3 vive a nivel de sistema (Homebrew), no via pip.
 
 ### Windows
 
-GTK3 no tiene un camino simple en Windows (ver tabla de arriba), asi que en
-Windows se usa `gui.py` (CustomTkinter) en vez de `gui_gtk.py`:
+Para usar la misma interfaz GTK3 que en Ubuntu, instala [Pixi](https://pixi.sh/latest/#installation) y ejecuta en PowerShell:
 
-**PowerShell:**
 ```powershell
-.\setup.ps1
-```
-Si PowerShell bloquea la ejecucion por politica de scripts, correr una vez
-(no requiere admin):
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+.\setup_gtk_windows.ps1
+.\run_gtk_windows.ps1
 ```
 
-**CMD / doble clic:**
-```bat
-setup.bat
-```
-(wrapper que invoca `setup.ps1` via PowerShell, para quienes no usan
-PowerShell directamente)
-
-Al terminar:
-```powershell
-.\venv\Scripts\python.exe scripts\gui.py
-```
+Pixi crea el entorno `.pixi/` con las versiones fijadas en `pixi.lock`. Para transferir cambios entre equipos, usa la misma rama de Git.
 
 ## Estructura
 
 ```
 Aurora/
-├── venv/                          <- entorno virtual (lo crea setup.ps1 / setup.sh)
+├── venv/                          <- entorno virtual de Ubuntu/macOS (lo crea setup.sh)
 ├── data/
 │   ├── base.ply                   <- nube del tunel original (coloca aqui tu archivo)
 │   └── updated.ply                <- nube del tunel con shotcrete (coloca aqui tu archivo)
@@ -113,10 +89,9 @@ Aurora/
 │   ├── live_viewer.py             <- visor 3D independiente (estatico o en vivo), ventana aparte
 │   ├── embedded_viewer.py         <- visor 3D embebido en la ventana (seccion experimental)
 │   ├── compare_point_clouds.py    <- linea de comandos
-│   ├── gui_gtk.py                 <- interfaz grafica GTK3 (recomendada en Linux/Mac, demos)
-│   └── gui.py                     <- interfaz grafica CustomTkinter (recomendada en Windows)
-├── setup.ps1                      <- setup automatico (Windows, PowerShell) -> gui.py
-├── setup.bat                      <- wrapper de setup.ps1 para Windows CMD / doble clic
+│   ├── gui_gtk.py                 <- unica interfaz grafica GTK3 (Ubuntu y Windows)
+├── setup_gtk_windows.ps1          <- setup GTK3 para Windows mediante Pixi
+|-- run_gtk_windows.ps1            <- lanza la GUI GTK3 en Windows
 ├── setup.sh                       <- setup automatico (Linux y macOS) -> gui_gtk.py
 ├── requirements.txt
 └── README.md
@@ -124,20 +99,13 @@ Aurora/
 
 ## 1. Crear y activar el entorno virtual manualmente (alternativa a los scripts de setup)
 
-Si preferis no usar `setup.ps1`/`setup.sh`, o necesitas ajustar algo (version
-de Python especifica, etc.), podes hacerlo a mano.
-
-**Windows (PowerShell):**
-```powershell
-cd C:\ruta\a\Aurora
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-```
+En Ubuntu/macOS, si preferis no usar `setup.sh` o necesitas ajustar la version
+de Python, podes crear el entorno a mano. En Windows, usa Pixi como se explica arriba.
 
 **Linux:**
 ```bash
 cd /ruta/a/Aurora
-python3 -m venv --system-site-packages venv   # --system-site-packages solo si vas a usar gui_gtk.py
+python3 -m venv --system-site-packages venv   # hereda los bindings GTK instalados por apt
 source venv/bin/activate
 ```
 
@@ -163,8 +131,7 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Esto instala `open3d`, `numpy`, `scipy`, `matplotlib` y `customtkinter` (para
-`gui.py`) con versiones compatibles entre si. Los bindings de GTK3
+Esto instala las dependencias Python de medicion y visualizacion (`open3d`, `numpy`, `scipy` y `matplotlib`) con versiones compatibles entre si. Los bindings de GTK3
 (`gi`/PyGObject, para `gui_gtk.py`) **no** estan en `requirements.txt` porque
 no se instalan con pip — vienen del sistema (`apt`/`brew`), y el venv los
 hereda solo si se creo con `--system-site-packages` (ver seccion 1).
@@ -223,7 +190,7 @@ red que el sensor. La IP por defecto del dispositivo suele ser `192.168.11.1`
 ```
 ```powershell
 # Windows
-.\venv\Scripts\python.exe scripts\gui.py
+.\run_gtk_windows.ps1
 ```
 
 La ventana esta organizada en pestañas con una barra lateral, con el boton

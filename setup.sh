@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Crea el entorno virtual e instala las dependencias del proyecto en Linux o
-# macOS (ver README para detalles y limitaciones por sistema operativo).
+# macOS. Windows usa setup_gtk_windows.ps1 (Pixi); ver README.
 # Uso, parado en la carpeta Aurora:
 #   ./setup.sh
 
@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 OS_NAME="$(uname -s)"
 
 if [ "$OS_NAME" = "Linux" ]; then
-    REQUIRED_PKGS="python3-venv python3-tk libgl1-mesa-glx libgomp1 python3-gi gir1.2-gtk-3.0"
+    REQUIRED_PKGS="python3-venv libgl1-mesa-glx libgomp1 python3-gi gir1.2-gtk-3.0"
     missing=0
     for pkg in $REQUIRED_PKGS; do
         dpkg -s "$pkg" >/dev/null 2>&1 || missing=1
@@ -36,7 +36,7 @@ elif [ "$OS_NAME" = "Darwin" ]; then
 
 else
     echo "Sistema operativo no reconocido ($OS_NAME). Este script soporta Linux y macOS."
-    echo "Para Windows, usa setup.ps1 (PowerShell) o setup.bat (CMD) en su lugar."
+    echo "Para Windows con la GUI GTK3, instala Pixi y ejecuta setup_gtk_windows.ps1."
     exit 1
 fi
 
