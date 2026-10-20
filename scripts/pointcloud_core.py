@@ -210,15 +210,20 @@ def _start_at_sensor_pov(vis) -> None:
         pass  # si el visor no soporta esto, se queda con el encuadre por defecto
 
 
-def show_point_cloud(cloud: o3d.geometry.PointCloud, window_name: str = "Aurora - Vista de la captura") -> None:
+def show_point_cloud(
+    cloud: o3d.geometry.PointCloud,
+    window_name: str = "Aurora - Vista de la captura",
+    show_coordinate_frame: bool = True,
+) -> None:
     """Abre una ventana 3D simple (no editable) mostrando la nube tal cual,
     con el mismo estilo del demo oficial del SDK, para verificar visualmente
     que la captura salio bien. Arranca en el punto de vista del sensor."""
     vis = o3d.visualization.Visualizer()
     vis.create_window(window_name=window_name)
     vis.add_geometry(cloud)
-    coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
-    vis.add_geometry(coord_frame)
+    if show_coordinate_frame:
+        coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
+        vis.add_geometry(coord_frame)
     _apply_sdk_render_style(vis, cloud)
     _start_at_sensor_pov(vis)
     vis.run()
