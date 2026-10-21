@@ -42,13 +42,15 @@ Se usa si el sensor se movio entre las capturas o si no comparten coordenadas. E
 
 ## Segmentacion (opcional)
 
-Recorta una zona del tunel para analizar solo un tramo o preparar una region local para Delaunay. Selecciona cuatro esquinas en la nube DESPUES y define el ancho del box. La misma region se aplica a ANTES, asi que ambas nubes deben compartir coordenadas; si el sensor se movio, primero aplica una alineacion valida. El recorte escribe nubes derivadas; **Quitar segmentacion** vuelve a las nubes completas. Si cambias cualquiera de los archivos despues de recortar, hay que elegir de nuevo la region.
+Recorta una zona del tunel para analizar solo un tramo o preparar una region local para Delaunay. La GUI muestra arriba los archivos activos: selecciona cuatro esquinas en la nube DESPUES y define el ancho del box; la misma region se aplica a ANTES. No hay un selector independiente en esta seccion para evitar que use un par distinto al de Medicion rapida. Ambas nubes deben compartir coordenadas; si el sensor se movio, primero aplica una alineacion valida. El recorte escribe nubes derivadas; **Quitar segmentacion** vuelve a las nubes completas. Si cambias cualquiera de los archivos despues de recortar, hay que elegir de nuevo la region.
 
 ## Preparar nube de prueba
 
-Usa esta pestaña cuando un `.ply` tenga una habitación completa y quieras aislar una caja u otro objeto antes de cargarlo en **Medición rápida**. Carga la nube, pulsa **Elegir dos esquinas opuestas** y usa Shift+clic izquierdo en dos esquinas diagonales del objeto en la vista 3D. Cierra ese visor para abrir una vista previa del recorte con el margen actual; cierra la vista previa para volver y guardar la copia con otro nombre. El PLY original se conserva. Los botones **Usar como ANTES** y **Usar como DESPUÉS** asignan el recorte a la etapa elegida y vuelven a Medición rápida.
+Los nombres de archivos seleccionados se muestran en amarillo en esta sección, en **Medición rápida** y en **Archivos ANTES / DESPUÉS** para distinguirlos de las etiquetas.
 
-El recorte es una caja alineada con los ejes XYZ, así que puede incluir otros puntos que queden dentro de ella. Sirve para preparar datos de prueba y aislar objetos sencillos; no registra nubes ni corrige diferencias de posición entre capturas.
+**Preparar nube de prueba** permite cargar ANTES y DESPUÉS, abrir cada nube por separado o ver el par superpuesto (gris = ANTES, celeste = DESPUÉS). Para recortar ambas, confirma que compartan coordenadas, pulsa **Ver ambas y elegir dos esquinas**, y marca con Shift+clic izquierdo dos esquinas opuestas de la misma cara. Aurora toma esa región de la vista combinada y aplica el mismo box a las dos nubes. Configura la profundidad y revisa el par recortado antes de guardarlo. Las dos copias se guardan en la carpeta elegida con nombres separados ANTES/DESPUÉS; los originales se conservan. **Usar el par recortado en Medición rápida** carga ambas copias juntas.
+
+La cara seleccionada debe estar aproximadamente alineada con los ejes XYZ; el método de dos puntos no calcula la orientación de una cara inclinada. La profundidad debe incluir el objeto deseado sin alcanzar objetos vecinos. Este flujo no alinea las capturas; si el sensor cambió de lugar, alinea el par antes de recortarlo.
 
 ## Configuracion
 

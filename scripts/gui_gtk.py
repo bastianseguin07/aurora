@@ -45,6 +45,7 @@ from pointcloud_core import (  # noqa: E402
     compute_c2c_distance,
     compute_rigid_transform,
     crop_point_cloud,
+    crop_cloud_by_face_depth,
     crop_cloud_by_quad_box,
     direction_word_pairs_for_axes,
     load_point_cloud,
@@ -52,6 +53,7 @@ from pointcloud_core import (  # noqa: E402
     load_reference_photo_file,
     load_reference_pose,
     pick_crop_bounds,
+    pick_crop_bounds_from_pair,
     pick_landmark_points,
     pick_landmark_points_from_photo,
     pick_quad_points,
@@ -62,6 +64,7 @@ from pointcloud_core import (  # noqa: E402
     save_reference_photo,
     save_reference_pose,
     show_point_cloud,
+    show_point_cloud_pair,
     show_quad_box_preview,
 )
 
@@ -72,6 +75,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 COLOR_OK = "#34C759"
 COLOR_ERROR = "#FF3B30"
 COLOR_WARN = "#FFCC00"
+COLOR_FILE_NAME = "#FFD54F"
 
 # Un color por eje (cian/magenta/amarillo) para la guia de alineacion IMU —
 # deben coincidir con AXIS_COLORS en pose_alignment_viewer.py, asi el
@@ -710,6 +714,13 @@ class AuroraGUI:
         card, self.stat_p95 = self._stat_card("Percentil 95")
         self.cards_row.pack_start(card, False, False, 0)
         stats_box.pack_start(self.cards_row, False, False, 0)
+        self.thickness_alert_label = Gtk.Label(xalign=0)
+        self.thickness_alert_label.set_line_wrap(True)
+        self.thickness_alert_label.set_margin_top(8)
+        self.thickness_alert_label.set_margin_bottom(8)
+        self.thickness_alert_label.set_no_show_all(True)
+        self.thickness_alert_label.hide()
+        stats_box.pack_start(self.thickness_alert_label, False, True, 0)
         self.results_empty_label = Gtk.Label(
             label="Al terminar una medicion, aqui apareceran las estadisticas y el acceso al informe.",
             xalign=0,
@@ -1610,7 +1621,14 @@ class AuroraGUI:
             button = getattr(self, name, None)
             if button is not None:
                 button.set_sensitive(False)
+        self._refresh_segmentation_source_labels()
         return had_segmentation
+
+    def _refresh_segmentation_source_labels(self) -> None:
+        if hasattr(self, "segmentation_updated_source_label"):
+            self._set_path_label(self.segmentation_updated_source_label, self.updated_path)
+        if hasattr(self, "segmentation_base_source_label"):
+            self._set_path_label(self.segmentation_base_source_label, self.base_path)
 
     def _invalidate_results(self) -> None:
         """Clear output tied to the previous pair so it cannot be reported as current."""
@@ -1625,6 +1643,9 @@ class AuroraGUI:
             self.cards_row.set_no_show_all(True)
             self.cards_row.hide()
             self.results_empty_label.show()
+            self.thickness_alert_label.set_text("")
+            self.thickness_alert_label.set_no_show_all(True)
+            self.thickness_alert_label.hide()
             self.status_label.set_text("Todavia no se calculo ningun resultado.")
             self.generate_report_button.set_sensitive(False)
             self.open_result_viewer_button.set_sensitive(False)
@@ -1651,6 +1672,7 @@ class AuroraGUI:
                 self._set_path_label(label, path)
         if hasattr(self, "landmark_base_manual_photo_label"):
             self.landmark_base_manual_photo_label.set_text("")
+        self._refresh_segmentation_source_labels()
         self._refresh_quick_status()
 
     def _set_updated_path(self, path: str) -> None:
@@ -1668,6 +1690,7 @@ class AuroraGUI:
                 self._set_path_label(label, path)
         if hasattr(self, "landmark_updated_manual_photo_label"):
             self.landmark_updated_manual_photo_label.set_text("")
+        self._refresh_segmentation_source_labels()
         self._refresh_quick_status()
 
     # -- Pagina: Alineacion (Procrustes por puntos de referencia) ---------------
@@ -1943,6 +1966,7 @@ class AuroraGUI:
             label = getattr(self, name, None)
             if label is not None:
                 self._set_path_label(label, aligned_path)
+        self._refresh_segmentation_source_labels()
         self.quick_alignment_status.set_text(f"Alineacion aplicada (residual: {rms * 1000:.2f} mm)")
         self._refresh_quick_status()
         self._show_info(
@@ -1989,6 +2013,21 @@ class AuroraGUI:
         page.pack_start(info_frame, False, True, 0)
 
         step_frame, step_box = self._section("Paso 1: elegir la region y el ancho del box")
+        row = self._row(step_box)
+        row.pack_start(Gtk.Label(label="La region se marca sobre DESPUES:"), False, False, 0)
+        self.segmentation_updated_source_label = Gtk.Label(xalign=0)
+        self.segmentation_updated_source_label.set_hexpand(True)
+        self.segmentation_updated_source_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        row.pack_start(self.segmentation_updated_source_label, True, True, 0)
+        row = self._row(step_box)
+        row.pack_start(Gtk.Label(label="El mismo box se aplica a ANTES:"), False, False, 0)
+        self.segmentation_base_source_label = Gtk.Label(xalign=0)
+        self.segmentation_base_source_label.set_hexpand(True)
+        self.segmentation_base_source_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        row.pack_start(self.segmentation_base_source_label, True, True, 0)
+
+        self._refresh_segmentation_source_labels()
+
         row = self._row(step_box)
         pick_button = Gtk.Button(label="Elegir 4 puntos en el tunel con shotcrete...")
         pick_button.set_tooltip_text(
@@ -2162,6 +2201,7 @@ class AuroraGUI:
             label = getattr(self, name, None)
             if label is not None:
                 self._set_path_label(label, path)
+        self._refresh_segmentation_source_labels()
         self._hide_quick_mesh_result_actions()
         self.view_segmented_base_button.set_sensitive(True)
         self.view_segmented_updated_button.set_sensitive(True)
@@ -2200,18 +2240,20 @@ class AuroraGUI:
 
     def _build_test_crop_page(self) -> Gtk.Widget:
         page = self._new_page()
-        self.test_crop_input_path: str | None = None
-        self.test_crop_output_path: str | None = None
+        self.test_crop_before_path: str | None = None
+        self.test_crop_after_path: str | None = None
+        self.test_crop_output_paths: tuple[str, str] | None = None
+        self.test_crop_output_dir: Path | None = None
+        self.test_crop_output_dir_is_custom = False
         self.test_crop_bounds: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None
 
-        info_frame, info_box = self._section("Recortar un objeto de una captura grande")
+        info_frame, info_box = self._section("Preparar un par de nubes de prueba")
         note = Gtk.Label(
             label=(
-                "Usa esta herramienta cuando una captura .ply contiene una habitacion completa y "
-                "quieres aislar una caja u otro objeto para probar el calculo. Selecciona una sola "
-                "nube, marca dos esquinas opuestas en la vista 3D, y guarda el recorte como un archivo "
-                "nuevo. El archivo original no se modifica. Luego puedes cargar el recorte como ANTES "
-                "o DESPUES en Medicion rapida."
+                "Carga las nubes ANTES y DESPUES, revisalas juntas y marca dos esquinas de una cara "
+                "en la vista superpuesta. Aurora aplicara el mismo box y profundidad a las dos y "
+                "guardara copias nuevas; los PLY originales no se modifican. Ambas capturas deben "
+                "estar en el mismo sistema de coordenadas."
             ),
             xalign=0,
         )
@@ -2219,36 +2261,64 @@ class AuroraGUI:
         info_box.pack_start(note, False, False, 0)
         page.pack_start(info_frame, False, True, 0)
 
-        source_frame, source_box = self._section("1. Elegir la captura que contiene el objeto")
+        source_frame, source_box = self._section("1. Cargar ANTES y DESPUES")
         row = self._row(source_box)
-        self.test_crop_input_label = Gtk.Label(label="Sin seleccionar", xalign=0)
-        self.test_crop_input_label.set_hexpand(True)
-        self.test_crop_input_label.set_ellipsize(Pango.EllipsizeMode.END)
-        row.pack_start(self.test_crop_input_label, True, True, 0)
-        self.test_crop_choose_button = Gtk.Button(label="Cargar .ply")
-        self.test_crop_choose_button.connect("clicked", lambda _b: self._choose_test_crop_input())
-        row.pack_start(self.test_crop_choose_button, False, False, 0)
+        row.pack_start(Gtk.Label(label="ANTES:"), False, False, 0)
+        self.test_crop_before_label = Gtk.Label(label="Sin seleccionar", xalign=0)
+        self.test_crop_before_label.set_hexpand(True)
+        self.test_crop_before_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        row.pack_start(self.test_crop_before_label, True, True, 0)
+        self.test_crop_choose_before_button = Gtk.Button(label="Cargar ANTES")
+        self.test_crop_choose_before_button.connect("clicked", lambda _b: self._choose_test_crop_input("before"))
+        row.pack_start(self.test_crop_choose_before_button, False, False, 0)
+        self.test_crop_view_before_button = Gtk.Button(label="Ver")
+        self.test_crop_view_before_button.set_sensitive(False)
+        self.test_crop_view_before_button.connect("clicked", lambda _b: self._view_test_crop_cloud("before"))
+        row.pack_start(self.test_crop_view_before_button, False, False, 0)
+        row = self._row(source_box)
+        row.pack_start(Gtk.Label(label="DESPUES:"), False, False, 0)
+        self.test_crop_after_label = Gtk.Label(label="Sin seleccionar", xalign=0)
+        self.test_crop_after_label.set_hexpand(True)
+        self.test_crop_after_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        row.pack_start(self.test_crop_after_label, True, True, 0)
+        self.test_crop_choose_after_button = Gtk.Button(label="Cargar DESPUES")
+        self.test_crop_choose_after_button.connect("clicked", lambda _b: self._choose_test_crop_input("after"))
+        row.pack_start(self.test_crop_choose_after_button, False, False, 0)
+        self.test_crop_view_after_button = Gtk.Button(label="Ver")
+        self.test_crop_view_after_button.set_sensitive(False)
+        self.test_crop_view_after_button.connect("clicked", lambda _b: self._view_test_crop_cloud("after"))
+        row.pack_start(self.test_crop_view_after_button, False, False, 0)
         page.pack_start(source_frame, False, True, 0)
 
-        bounds_frame, bounds_box = self._section("2. Marcar la caja en 3D")
+        bounds_frame, bounds_box = self._section("2. Ver ambas y marcar la region")
+        self.test_crop_view_pair_button = Gtk.Button(label="Ver ANTES y DESPUES juntos")
+        self.test_crop_view_pair_button.set_sensitive(False)
+        self.test_crop_view_pair_button.connect("clicked", lambda _b: self._view_test_crop_pair())
+        bounds_box.pack_start(self.test_crop_view_pair_button, False, False, 0)
         row = self._row(bounds_box)
-        self.test_crop_pick_button = Gtk.Button(label="Elegir dos esquinas opuestas...")
+        self.test_crop_pick_button = Gtk.Button(label="Ver ambas y elegir dos esquinas...")
         self.test_crop_pick_button.connect("clicked", lambda _b: self._pick_test_crop_bounds())
+        self.test_crop_pick_button.set_sensitive(False)
         row.pack_start(self.test_crop_pick_button, False, False, 0)
         self.test_crop_bounds_label = Gtk.Label(label="Limites sin definir", xalign=0)
         row.pack_start(self.test_crop_bounds_label, False, False, 0)
 
         row = self._row(bounds_box)
-        row.pack_start(Gtk.Label(label="Margen alrededor (cm):"), False, False, 0)
-        margin_adjustment = Gtk.Adjustment(
-            value=2.0, lower=0.0, upper=50.0, step_increment=1.0, page_increment=5.0
+        row.pack_start(Gtk.Label(label="Profundidad del box (cm):"), False, False, 0)
+        depth_adjustment = Gtk.Adjustment(
+            value=10.0, lower=1.0, upper=100.0, step_increment=1.0, page_increment=5.0
         )
-        self.test_crop_margin_spin = Gtk.SpinButton(adjustment=margin_adjustment, climb_rate=1.0, digits=1)
-        row.pack_start(self.test_crop_margin_spin, False, False, 0)
+        self.test_crop_depth_spin = Gtk.SpinButton(adjustment=depth_adjustment, climb_rate=1.0, digits=1)
+        self.test_crop_depth_spin.connect("value-changed", lambda _spin: self._on_test_crop_depth_changed())
+        row.pack_start(self.test_crop_depth_spin, False, False, 0)
+        self.test_crop_preview_button = Gtk.Button(label="Vista previa del box")
+        self.test_crop_preview_button.connect("clicked", lambda _button: self._preview_test_crop_bounds())
+        row.pack_start(self.test_crop_preview_button, False, False, 0)
         row.pack_start(
             self._info_button(
-                "El margen agrega espacio a cada lado del recorte para no cortar los bordes del objeto. "
-                "Empieza con 2 cm y aumentalo si falta parte de la caja."
+                "En la vista superpuesta, marca dos esquinas diagonales de la misma cara, idealmente "
+                "en DESPUES. El eje con menor distancia se toma como profundidad. El mismo box se "
+                "aplica a ambas capturas."
             ),
             False,
             False,
@@ -2256,176 +2326,274 @@ class AuroraGUI:
         )
         hint = Gtk.Label(
             label=(
-                "En el visor usa Shift+clic izquierdo en dos esquinas diagonales de la caja. "
-                "El recorte resultante es una caja alineada con los ejes XYZ; puede incluir "
-                "puntos de otros objetos que queden dentro de esa caja."
+                "Elige dos esquinas diagonales de la misma cara en el visor superpuesto (gris = ANTES, "
+                "celeste = DESPUES) y cierra la ventana. Luego ajusta la profundidad y revisa la vista "
+                "previa de ambas nubes recortadas. La cara debe estar aproximadamente alineada con los "
+                "ejes de la nube."
             ),
             xalign=0,
         )
         hint.set_line_wrap(True)
+        self.test_crop_hint_label = hint
         bounds_box.pack_start(hint, False, False, 0)
         page.pack_start(bounds_frame, False, True, 0)
 
-        output_frame, output_box = self._section("3. Guardar una copia recortada")
-        self.test_crop_apply_button = Gtk.Button(label="Recortar y guardar copia .ply")
+        output_frame, output_box = self._section("3. Guardar las dos nubes recortadas")
+        row = self._row(output_box)
+        row.pack_start(Gtk.Label(label="Carpeta destino:"), False, False, 0)
+        self.test_crop_output_dir_label = Gtk.Label(label="Usar carpeta del archivo ANTES", xalign=0)
+        self.test_crop_output_dir_label.set_hexpand(True)
+        self.test_crop_output_dir_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        row.pack_start(self.test_crop_output_dir_label, True, True, 0)
+        self.test_crop_choose_output_dir_button = Gtk.Button(label="Elegir carpeta...")
+        self.test_crop_choose_output_dir_button.connect("clicked", lambda _b: self._choose_test_crop_output_dir())
+        row.pack_start(self.test_crop_choose_output_dir_button, False, False, 0)
+        self.test_crop_apply_button = Gtk.Button(label="Recortar y guardar ANTES + DESPUES")
         self.test_crop_apply_button.get_style_context().add_class("suggested-action")
         self.test_crop_apply_button.set_sensitive(False)
         self.test_crop_apply_button.connect("clicked", lambda _b: self._apply_test_crop())
         output_box.pack_start(self.test_crop_apply_button, False, False, 0)
-        self.test_crop_status_label = Gtk.Label(label="Elige una nube y define sus limites.", xalign=0)
+        self.test_crop_status_label = Gtk.Label(label="Carga ambas nubes para empezar.", xalign=0)
         self.test_crop_status_label.set_line_wrap(True)
         output_box.pack_start(self.test_crop_status_label, False, False, 0)
 
-        self.test_crop_use_row = self._row(output_box)
-        self.test_crop_use_before_button = Gtk.Button(label="Usar como ANTES")
-        self.test_crop_use_before_button.set_sensitive(False)
-        self.test_crop_use_before_button.connect("clicked", lambda _b: self._use_test_crop("base"))
-        self.test_crop_use_row.pack_start(self.test_crop_use_before_button, False, False, 0)
-        self.test_crop_use_after_button = Gtk.Button(label="Usar como DESPUES")
-        self.test_crop_use_after_button.set_sensitive(False)
-        self.test_crop_use_after_button.connect("clicked", lambda _b: self._use_test_crop("updated"))
-        self.test_crop_use_row.pack_start(self.test_crop_use_after_button, False, False, 0)
+        self.test_crop_use_pair_button = Gtk.Button(label="Usar el par recortado en Medicion rapida")
+        self.test_crop_use_pair_button.set_sensitive(False)
+        self.test_crop_use_pair_button.connect("clicked", lambda _b: self._use_test_crop_pair())
+        output_box.pack_start(self.test_crop_use_pair_button, False, False, 0)
         page.pack_start(output_frame, False, True, 0)
+
+        self.test_crop_preview_button.set_sensitive(False)
 
         return self._scrolled(page)
 
-    def _choose_test_crop_input(self) -> None:
+    def _on_test_crop_depth_changed(self) -> None:
+        if self.test_crop_bounds is None:
+            return
+        self.test_crop_output_paths = None
+        self.test_crop_use_pair_button.set_sensitive(False)
+        self.test_crop_status_label.set_text(
+            "Profundidad cambiada. Revisa la vista previa del par antes de guardar."
+        )
+        self._refresh_test_crop_controls()
+
+    def _choose_test_crop_input(self, stage: str) -> None:
         path = self._run_open_file_dialog()
         if not path:
             return
-        self.test_crop_input_path = path
-        self.test_crop_output_path = None
+        if stage == "before":
+            self.test_crop_before_path = path
+            self._set_path_label(self.test_crop_before_label, path)
+            if not self.test_crop_output_dir_is_custom:
+                self.test_crop_output_dir = Path(path).parent
+                self._set_test_crop_output_dir_label()
+        else:
+            self.test_crop_after_path = path
+            self._set_path_label(self.test_crop_after_label, path)
+        self.test_crop_output_paths = None
         self.test_crop_bounds = None
-        self.test_crop_input_label.set_text(Path(path).name)
-        self.test_crop_input_label.set_tooltip_text(path)
         self.test_crop_bounds_label.set_text("Limites sin definir")
-        self.test_crop_status_label.set_text("Marca dos esquinas opuestas de la zona que quieres conservar.")
-        self.test_crop_use_before_button.set_sensitive(False)
-        self.test_crop_use_after_button.set_sensitive(False)
+        self.test_crop_use_pair_button.set_sensitive(False)
+        self.test_crop_status_label.set_text("Carga ambas capturas y confirma que compartan coordenadas.")
         self._refresh_test_crop_controls()
 
-    def _refresh_test_crop_controls(self) -> None:
-        has_input = bool(self.test_crop_input_path and Path(self.test_crop_input_path).is_file())
-        self.test_crop_pick_button.set_sensitive(has_input)
-        self.test_crop_apply_button.set_sensitive(has_input and self.test_crop_bounds is not None)
+    def _set_test_crop_output_dir_label(self) -> None:
+        if self.test_crop_output_dir is None:
+            self.test_crop_output_dir_label.set_text("Usar carpeta del archivo ANTES")
+            self.test_crop_output_dir_label.set_tooltip_text("")
+        else:
+            self.test_crop_output_dir_label.set_text(str(self.test_crop_output_dir))
+            self.test_crop_output_dir_label.set_tooltip_text(str(self.test_crop_output_dir))
 
-    def _pick_test_crop_bounds(self) -> None:
-        if not self.test_crop_input_path or not Path(self.test_crop_input_path).is_file():
-            self._show_warning("Falta la nube", "Carga el archivo .ply que contiene el objeto primero.")
+    def _choose_test_crop_output_dir(self) -> None:
+        native, path = self._windows_native_file_dialog("folder", "Elegir carpeta para los dos recortes")
+        if not native:
+            dialog = Gtk.FileChooserDialog(
+                title="Elegir carpeta para los dos recortes",
+                parent=self.window,
+                action=Gtk.FileChooserAction.SELECT_FOLDER,
+            )
+            dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Seleccionar", Gtk.ResponseType.OK)
+            if self.test_crop_output_dir and self.test_crop_output_dir.is_dir():
+                dialog.set_current_folder(str(self.test_crop_output_dir))
+            if dialog.run() == Gtk.ResponseType.OK:
+                path = dialog.get_filename()
+            dialog.destroy()
+        if path:
+            self.test_crop_output_dir = Path(path)
+            self.test_crop_output_dir_is_custom = True
+            self._set_test_crop_output_dir_label()
+
+    def _refresh_test_crop_controls(self) -> None:
+        has_before = bool(self.test_crop_before_path and Path(self.test_crop_before_path).is_file())
+        has_after = bool(self.test_crop_after_path and Path(self.test_crop_after_path).is_file())
+        has_pair = has_before and has_after
+        self.test_crop_choose_before_button.set_sensitive(True)
+        self.test_crop_choose_after_button.set_sensitive(True)
+        self.test_crop_view_before_button.set_sensitive(has_before)
+        self.test_crop_view_after_button.set_sensitive(has_after)
+        self.test_crop_view_pair_button.set_sensitive(has_pair)
+        self.test_crop_pick_button.set_sensitive(has_pair)
+        has_region = has_pair and self.test_crop_bounds is not None
+        self.test_crop_preview_button.set_sensitive(has_region)
+        self.test_crop_apply_button.set_sensitive(has_region)
+        self.test_crop_use_pair_button.set_sensitive(
+            bool(self.test_crop_output_paths and all(Path(p).is_file() for p in self.test_crop_output_paths))
+        )
+
+    def _load_test_crop_pair(self):
+        if not self.test_crop_before_path or not self.test_crop_after_path:
+            raise RuntimeError("Carga los archivos ANTES y DESPUES primero.")
+        before = load_point_cloud(Path(self.test_crop_before_path))
+        after = load_point_cloud(Path(self.test_crop_after_path))
+        return before, after
+
+    def _view_test_crop_cloud(self, stage: str) -> None:
+        path = self.test_crop_before_path if stage == "before" else self.test_crop_after_path
+        stage_name = "ANTES" if stage == "before" else "DESPUES"
+        if not path or not Path(path).is_file():
+            self._show_warning("Falta la nube", f"Carga el archivo PLY de {stage_name} primero.")
             return
         try:
-            cloud = load_point_cloud(Path(self.test_crop_input_path))
-            bounds = pick_crop_bounds(cloud, margin=0.0)
+            cloud = load_point_cloud(Path(path))
+            show_point_cloud(cloud, window_name=f"Aurora - {stage_name}: {Path(path).name}")
+        except Exception as exc:
+            self._show_error(f"No se pudo abrir la nube {stage_name}", str(exc))
+
+    def _view_test_crop_pair(self) -> None:
+        try:
+            before, after = self._load_test_crop_pair()
+            show_point_cloud_pair(before, after)
+        except Exception as exc:
+            self._show_error("No se pudieron abrir las dos capturas", str(exc))
+
+    def _pick_test_crop_bounds(self) -> None:
+        try:
+            before, after = self._load_test_crop_pair()
+            bounds = pick_crop_bounds_from_pair(before, after)
         except Exception as exc:
             self._show_error("Error al seleccionar la region", str(exc))
             return
         if bounds is None:
-            self._show_info("Sin seleccion", "Marca al menos dos esquinas opuestas y cierra el visor.")
+            self._show_info("Seleccion incompleta", "Marca exactamente dos esquinas opuestas y cierra el visor.")
             return
-
         self.test_crop_bounds = bounds
+        self.test_crop_output_paths = None
+        self.test_crop_use_pair_button.set_sensitive(False)
         low, high = bounds
-        self.test_crop_bounds_label.set_text(
-            f"X {low[0]:.2f}–{high[0]:.2f} · Y {low[1]:.2f}–{high[1]:.2f} · Z {low[2]:.2f}–{high[2]:.2f} m"
-        )
-        self.test_crop_status_label.set_text("Limites definidos. Al guardar se aplicara el margen indicado.")
+        depth_axis = int(np.argmin(np.asarray(high) - np.asarray(low)))
+        axis_name = ("X", "Y", "Z")[depth_axis]
+        self.test_crop_bounds_label.set_text(f"Box definido; profundidad en eje {axis_name}")
+        self.test_crop_status_label.set_text("Se aplicara el mismo box a ANTES y DESPUES.")
         self._refresh_test_crop_controls()
+        self._preview_test_crop_bounds()
 
-        margin_m = self.test_crop_margin_spin.get_value() / 100.0
-        preview_min = tuple(value - margin_m for value in low)
-        preview_max = tuple(value + margin_m for value in high)
+    def _preview_test_crop_bounds(self) -> None:
+        if self.test_crop_bounds is None:
+            return
+        depth_m = self.test_crop_depth_spin.get_value() / 100.0
         try:
-            cropped_preview = crop_point_cloud(cloud, preview_min, preview_max)
-            if len(cropped_preview.points) == 0:
-                self.test_crop_status_label.set_text("La caja elegida no contiene puntos; marca otra region.")
-                self._show_warning("Recorte vacio", "La seleccion no incluye puntos de la nube.")
-                return
+            before, after = self._load_test_crop_pair()
+            before_cut = crop_cloud_by_face_depth(before, self.test_crop_bounds, depth_m)
+            after_cut = crop_cloud_by_face_depth(after, self.test_crop_bounds, depth_m)
+            if len(before_cut.points) == 0 or len(after_cut.points) == 0:
+                raise RuntimeError(
+                    "El box debe contener puntos en ambas nubes. Confirma que comparten coordenadas o ajusta la region."
+                )
             self.test_crop_status_label.set_text(
-                f"Vista previa: {len(cropped_preview.points):,} puntos. Cierra el visor para guardar o ajustar el recorte."
+                f"Vista previa: ANTES {len(before_cut.points):,} puntos; DESPUES {len(after_cut.points):,} puntos."
             )
-            show_point_cloud(
-                cropped_preview,
-                window_name="Aurora - Vista previa de la nube recortada",
-                show_coordinate_frame=False,
-            )
+            show_point_cloud_pair(before_cut, after_cut, window_name="Aurora - Par recortado")
             self.test_crop_status_label.set_text(
-                f"Vista previa revisada: {len(cropped_preview.points):,} puntos. Puedes guardar la copia o elegir otra region."
+                f"Vista previa revisada: ANTES {len(before_cut.points):,}; DESPUES {len(after_cut.points):,} puntos."
             )
         except Exception as exc:
-            self.test_crop_status_label.set_text("No se pudo mostrar la vista previa; revisa la seleccion.")
-            self._show_error("Error en la vista previa del recorte", str(exc))
+            self.test_crop_status_label.set_text("No se pudo previsualizar el par recortado.")
+            self._show_error("Error en la vista previa de las dos nubes", str(exc))
 
     def _apply_test_crop(self) -> None:
-        if not self.test_crop_input_path or not Path(self.test_crop_input_path).is_file():
-            self._show_warning("Falta la nube", "Carga de nuevo el archivo .ply que quieres recortar.")
+        if not self.test_crop_before_path or not self.test_crop_after_path or self.test_crop_bounds is None:
+            self._show_warning("Faltan datos", "Carga ANTES y DESPUES y selecciona la region antes de guardar.")
             return
-        if self.test_crop_bounds is None:
-            self._show_warning("Faltan los limites", "Elige dos esquinas opuestas en la vista 3D primero.")
-            return
-
-        source = Path(self.test_crop_input_path)
-        output_path = self._save_file_dialog(
-            "Guardar nube recortada como",
-            source.parent,
-            f"{source.stem}_recortada.ply",
-        )
-        if not output_path:
-            return
-        destination = Path(output_path)
-        if destination.resolve() == source.resolve():
-            self._show_warning("Elige otro nombre", "Guarda el recorte en un archivo distinto al original.")
+        before_source = Path(self.test_crop_before_path)
+        after_source = Path(self.test_crop_after_path)
+        output_dir = self.test_crop_output_dir or before_source.parent
+        if not output_dir.is_dir():
+            self._show_warning("Carpeta invalida", "Elige una carpeta de destino que exista.")
             return
 
-        margin_m = self.test_crop_margin_spin.get_value() / 100.0
+        suffix = ""
+        index = 2
+        before_destination = output_dir / f"ANTES_{before_source.stem}_recortada.ply"
+        after_destination = output_dir / f"DESPUES_{after_source.stem}_recortada.ply"
+        while before_destination.exists() or after_destination.exists():
+            suffix = f"_{index}"
+            before_destination = output_dir / f"ANTES_{before_source.stem}_recortada{suffix}.ply"
+            after_destination = output_dir / f"DESPUES_{after_source.stem}_recortada{suffix}.ply"
+            index += 1
+
         bounds = self.test_crop_bounds
-        self.test_crop_choose_button.set_sensitive(False)
-        self.test_crop_pick_button.set_sensitive(False)
-        self.test_crop_apply_button.set_sensitive(False)
-        self.test_crop_status_label.set_text("Recortando y guardando...")
+        depth_m = self.test_crop_depth_spin.get_value() / 100.0
+        for button in (
+            self.test_crop_choose_before_button,
+            self.test_crop_choose_after_button,
+            self.test_crop_pick_button,
+            self.test_crop_preview_button,
+            self.test_crop_apply_button,
+        ):
+            button.set_sensitive(False)
+        self.test_crop_status_label.set_text("Recortando y guardando ambas nubes...")
 
         def worker() -> None:
+            before_temp = before_destination.with_name(f".{before_destination.stem}.{os.getpid()}.tmp.ply")
+            after_temp = after_destination.with_name(f".{after_destination.stem}.{os.getpid()}.tmp.ply")
             try:
-                cloud = load_point_cloud(source)
-                low = tuple(value - margin_m for value in bounds[0])
-                high = tuple(value + margin_m for value in bounds[1])
-                cropped = crop_point_cloud(cloud, low, high)
-                if len(cropped.points) == 0:
-                    raise RuntimeError("El area elegida no contiene puntos. Selecciona otra zona.")
+                before = crop_cloud_by_face_depth(load_point_cloud(before_source), bounds, depth_m)
+                after = crop_cloud_by_face_depth(load_point_cloud(after_source), bounds, depth_m)
+                if len(before.points) == 0 or len(after.points) == 0:
+                    raise RuntimeError("El box debe incluir puntos en ambas nubes.")
                 import open3d as o3d
 
-                if not o3d.io.write_point_cloud(str(destination), cropped):
-                    raise RuntimeError("Open3D no pudo guardar el archivo PLY recortado.")
+                if not o3d.io.write_point_cloud(str(before_temp), before):
+                    raise RuntimeError("Open3D no pudo guardar el recorte ANTES.")
+                if not o3d.io.write_point_cloud(str(after_temp), after):
+                    raise RuntimeError("Open3D no pudo guardar el recorte DESPUES.")
+                before_temp.replace(before_destination)
+                after_temp.replace(after_destination)
             except Exception as exc:
+                before_temp.unlink(missing_ok=True)
+                after_temp.unlink(missing_ok=True)
                 self._ui(self._on_test_crop_failed, str(exc))
                 return
-            self._ui(self._on_test_crop_done, str(destination), len(cropped.points))
+            self._ui(
+                self._on_test_crop_done,
+                str(before_destination),
+                str(after_destination),
+                len(before.points),
+                len(after.points),
+            )
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_test_crop_done(self, output_path: str, point_count: int) -> None:
-        self.test_crop_output_path = output_path
-        self.test_crop_choose_button.set_sensitive(True)
+    def _on_test_crop_done(self, before_path: str, after_path: str, before_count: int, after_count: int) -> None:
+        self.test_crop_output_paths = (before_path, after_path)
         self._refresh_test_crop_controls()
         self.test_crop_status_label.set_text(
-            f"Copia guardada: {Path(output_path).name} · {point_count:,} puntos. El original sigue intacto."
+            f"Par recortado guardado: {Path(before_path).name} ({before_count:,}) y "
+            f"{Path(after_path).name} ({after_count:,}). Los originales siguen intactos."
         )
-        self.test_crop_use_before_button.set_sensitive(True)
-        self.test_crop_use_after_button.set_sensitive(True)
 
     def _on_test_crop_failed(self, message: str) -> None:
-        self.test_crop_choose_button.set_sensitive(True)
         self._refresh_test_crop_controls()
-        self.test_crop_status_label.set_text("No se pudo guardar el recorte.")
-        self._show_error("Error al recortar la nube", message)
+        self.test_crop_status_label.set_text("No se pudieron guardar las dos nubes recortadas.")
+        self._show_error("Error al recortar el par", message)
 
-    def _use_test_crop(self, target: str) -> None:
-        if not self.test_crop_output_path or not Path(self.test_crop_output_path).is_file():
-            self._show_warning("No hay recorte guardado", "Recorta y guarda una copia antes de usarla.")
+    def _use_test_crop_pair(self) -> None:
+        if not self.test_crop_output_paths or not all(Path(p).is_file() for p in self.test_crop_output_paths):
+            self._show_warning("No hay par recortado", "Recorta y guarda ambas nubes antes de usarlas.")
             return
-        if target == "base":
-            self._set_base_path(self.test_crop_output_path)
-        else:
-            self._set_updated_path(self.test_crop_output_path)
+        self._set_base_path(self.test_crop_output_paths[0])
+        self._set_updated_path(self.test_crop_output_paths[1])
         self.stack.set_visible_child_name("medicion_rapida")
 
     # -- Pagina: Ajustes de analisis --------------------------------------------
@@ -3190,7 +3358,11 @@ class AuroraGUI:
 
     def _set_path_label(self, label: Gtk.Label, path: str) -> None:
         name = os.path.basename(path) if path else ""
-        label.set_text(name if name else "Sin seleccionar")
+        if name:
+            escaped_name = GLib.markup_escape_text(name)
+            label.set_markup(f'<span foreground="{COLOR_FILE_NAME}">{escaped_name}</span>')
+        else:
+            label.set_text("Sin seleccionar")
         label.set_tooltip_text(path or "")
 
     def _file_row(self, parent_box: Gtk.Box, initial_path: str, on_selected, info_text: str | None = None) -> Gtk.Label:
@@ -3869,26 +4041,42 @@ class AuroraGUI:
     def _generate_alerts(self) -> None:
         result = self._active_result()
         if result is None:
+            self.thickness_alert_label.hide()
             return
         try:
             low_mm, high_mm = self._band_thresholds_mm()
         except ValueError as exc:
-            self._show_warning("Umbrales de espesor invalidos", str(exc))
+            self.thickness_alert_label.set_markup(
+                f'<span foreground="{COLOR_WARN}"><b>Revisa los umbrales de espesor:</b> '
+                f'{GLib.markup_escape_text(str(exc))}</span>'
+            )
+            self.thickness_alert_label.set_no_show_all(False)
+            self.thickness_alert_label.show()
             return
         mean_mm = result.stats.mean * 1000
 
         if mean_mm < low_mm:
-            self._show_warning(
-                "Alerta de espesor (falta)",
-                f"El espesor medio ({mean_mm:.2f} mm) esta por debajo del umbral minimo ({low_mm} mm).\n"
-                "Falta aplicar mas shotcrete.",
+            message = (
+                f"Espesor medio: {mean_mm:.2f} mm, bajo el minimo de {low_mm} mm. "
+                "Falta aplicar shotcrete."
             )
         elif mean_mm >= high_mm:
-            self._show_warning(
-                "Alerta de espesor (exceso)",
-                f"El espesor medio ({mean_mm:.2f} mm) supera el umbral maximo ({high_mm} mm).\n"
-                "Exceso de shotcrete.",
+            message = (
+                f"Espesor medio: {mean_mm:.2f} mm, sobre el maximo de {high_mm} mm. "
+                "Exceso de shotcrete."
             )
+        else:
+            self.thickness_alert_label.set_text("")
+            self.thickness_alert_label.set_no_show_all(True)
+            self.thickness_alert_label.hide()
+            return
+
+        self.thickness_alert_label.set_markup(
+            f'<span foreground="{COLOR_WARN}"><b>Alerta de espesor:</b> '
+            f'{GLib.markup_escape_text(message)}</span>'
+        )
+        self.thickness_alert_label.set_no_show_all(False)
+        self.thickness_alert_label.show()
 
     def _generate_report(self) -> None:
         result = self._active_result()

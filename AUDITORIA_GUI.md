@@ -11,7 +11,7 @@ Revisión de la interfaz en `scripts/gui_gtk.py` para el propósito principal de
 | Guía de pose IMU | Mantener con límites explícitos | Guía al operador para volver a una pose mientras el Aurora conserva el tracking. Compara las poses guardadas; no aplica una transformación a las nubes. La comparación solo es válida dentro del mismo tracking. |
 | Alineación por puntos | Mantener como respaldo | Sirve cuando no se conserva el tracking o el sensor cambió de lugar. Requiere seleccionar los mismos puntos fijos en el mismo orden; sigue siendo un flujo avanzado. |
 | Segmentación | Mantener como opcional | Permite medir una zona específica y es necesaria para preparar algunos recortes locales para Delaunay. El área se elige sobre DESPUÉS y se aplica también a ANTES, por lo que ambas nubes deben compartir coordenadas. Al cambiar archivos, se descarta el recorte y se sincronizan las rutas visibles. |
-| Preparar nube de prueba | Añadir bajo Flujo de trabajo | Recorta una nube PLY individual de una habitación o escena grande con una caja XYZ, guarda una copia y permite asignarla directamente como ANTES o DESPUÉS. No reemplaza Segmentación: esta recorta el par alineado usando una región común. |
+| Preparar nube de prueba | Añadir bajo Flujo de trabajo | Permite cargar/ver ANTES y DESPUÉS, seleccionar una región sobre la vista superpuesta y guardar las dos nubes con el mismo box y profundidad. No alinea las nubes ni reemplaza Segmentación. |
 | Archivos ANTES / DESPUÉS | Mantener bajo Configuración | El selector duplicaba los botones de Medición rápida; queda como acceso secundario para administrar archivos ya existentes. |
 | Ajustes de análisis | Mantener bajo Configuración | La selección de zona, reducción de densidad, filtros e ICP afectan el cálculo, pero no hacen falta en el recorrido normal. ICP conserva su advertencia porque puede confundir el espesor con un error de registro. |
 | Visualización 3D | Mantener | Es la revisión visual del espesor y permite configurar umbrales e inspeccionar resultados. Los filtros de captura de un archivo y los filtros por frame de la vista en vivo son controles distintos. |
@@ -42,7 +42,7 @@ Revisión de la interfaz en `scripts/gui_gtk.py` para el propósito principal de
 - Al iniciar, los campos ANTES y DESPUÉS quedan vacíos y muestran “Sin seleccionar”; ya no aparentan tener cargados `base.ply` y `updated.ply` inexistentes.
 - En la barra superior, el menú queda a la izquierda y “Generar informe” a la derecha, separados para darles jerarquía visual. Se conserva la fuente global.
 - Los umbrales de color se validan antes de generar alertas o PDF; entradas no numéricas, infinitas o con orden inválido muestran un aviso en vez de interrumpir el callback. Se aceptan decimales con coma.
-- Se agregó **Preparar nube de prueba** bajo Segmentación: selecciona una sola nube, recorta una caja alineada a XYZ a partir de dos esquinas, guarda una copia y la asigna como ANTES o DESPUÉS sin tocar el original.
+- **Preparar nube de prueba** permite cargar cada etapa, inspeccionarlas por separado o superpuestas, marcar dos esquinas en el par y guardar ambas nubes recortadas con el mismo box, sin tocar los originales.
 - Estado, estadísticas, acciones de inspección, registro técnico e informe PDF se trasladaron desde la franja inferior a la sección **Resultados**. Los cálculos estándar y de malla muestran sus salidas ahí; cambiar los archivos invalida las estadísticas anteriores y desactiva el informe para evitar mezclar resultados y rutas.
 
 ## Prueba con las nubes de Downloads

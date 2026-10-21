@@ -82,6 +82,25 @@ def crop_point_cloud(
     return cloud.crop(bbox)
 
 
+def crop_cloud_by_face_depth(
+    cloud: o3d.geometry.PointCloud,
+    face_bounds: tuple[Vec3, Vec3],
+    depth_m: float,
+) -> o3d.geometry.PointCloud:
+    """Extrude a two-corner face selection along its smallest XYZ extent."""
+    if depth_m <= 0:
+        raise ValueError("La profundidad debe ser mayor que cero.")
+    low = np.asarray(face_bounds[0], dtype=np.float64)
+    high = np.asarray(face_bounds[1], dtype=np.float64)
+    if low.shape != (3,) or high.shape != (3,) or np.any(high < low):
+        raise ValueError("Los limites de la cara no son validos.")
+    depth_axis = int(np.argmin(high - low))
+    center = (low[depth_axis] + high[depth_axis]) / 2.0
+    low[depth_axis] = center - depth_m / 2.0
+    high[depth_axis] = center + depth_m / 2.0
+    return crop_point_cloud(cloud, tuple(low.tolist()), tuple(high.tolist()))
+
+
 def preprocess(
     cloud: o3d.geometry.PointCloud,
     voxel_size: float | None,
@@ -225,6 +244,28 @@ def show_point_cloud(
         coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
         vis.add_geometry(coord_frame)
     _apply_sdk_render_style(vis, cloud)
+    _start_at_sensor_pov(vis)
+    vis.run()
+    vis.destroy_window()
+
+
+def show_point_cloud_pair(
+    base_cloud: o3d.geometry.PointCloud,
+    updated_cloud: o3d.geometry.PointCloud,
+    window_name: str = "Aurora - Antes y despues (superpuestos)",
+) -> None:
+    """Display two unchanged clouds together, using colors to identify each stage."""
+    base_view = o3d.geometry.PointCloud(base_cloud)
+    updated_view = o3d.geometry.PointCloud(updated_cloud)
+    base_view.paint_uniform_color((0.68, 0.72, 0.78))
+    updated_view.paint_uniform_color((0.10, 0.72, 0.95))
+    coordinate_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(window_name=f"{window_name} - gris = ANTES, celeste = DESPUES")
+    vis.add_geometry(base_view)
+    vis.add_geometry(updated_view)
+    vis.add_geometry(coordinate_frame)
+    _apply_sdk_render_style(vis, base_view)
     _start_at_sensor_pov(vis)
     vis.run()
     vis.destroy_window()
@@ -1195,21 +1236,22 @@ def visualize(
         )
 
 
-def pick_crop_bounds(cloud: o3d.geometry.PointCloud, margin: float = 0.08) -> tuple[Vec3, Vec3] | None:
+def pick_crop_bounds(
+    cloud: o3d.geometry.PointCloud,
+    margin: float = 0.08,
+    exact_points: bool = False,
+    window_name: str = "Aurora - Shift+Click en 2 esquinas, luego cerrar (Q)",
+) -> tuple[Vec3, Vec3] | None:
     """
     Abre un visor 3D interactivo para elegir la region de interes (p. ej. la
     caja de prueba) sin escribir coordenadas a mano.
 
-    Uso en el visor: Shift + click izquierdo sobre 2 o mas puntos que
-    representen esquinas de la region deseada, despues cerrar la ventana
-    (tecla Q o el boton de cerrar). El margen se agrega alrededor de los
-    puntos elegidos para no cortar el borde real del objeto Y para que la
-    region siga incluyendo al objeto aunque este se haya desplazado entre
-    una nube y la otra (el margen debe ser mayor que el desplazamiento
-    esperado, p. ej. si el objeto se movio 5 cm, usar un margen >= 8-10 cm).
+    Uso en el visor: Shift + click izquierdo sobre exactamente dos esquinas
+    opuestas de una cara y despues cerrar la ventana (tecla Q o el boton de
+    cerrar). El margen opcional se agrega alrededor de los puntos elegidos.
     """
     vis = o3d.visualization.VisualizerWithEditing()
-    vis.create_window(window_name="Aurora - Shift+Click en 2 esquinas, luego cerrar (Q)")
+    vis.create_window(window_name=window_name)
     vis.add_geometry(cloud)
     _apply_sdk_render_style(vis, cloud)
     _start_at_sensor_pov(vis)
@@ -1217,7 +1259,7 @@ def pick_crop_bounds(cloud: o3d.geometry.PointCloud, margin: float = 0.08) -> tu
     vis.destroy_window()
 
     picked_indices = vis.get_picked_points()
-    if len(picked_indices) < 2:
+    if len(picked_indices) < 2 or (exact_points and len(picked_indices) != 2):
         return None
 
     points = np.asarray(cloud.points)
@@ -1225,6 +1267,26 @@ def pick_crop_bounds(cloud: o3d.geometry.PointCloud, margin: float = 0.08) -> tu
     crop_min = tuple((picked_points.min(axis=0) - margin).tolist())
     crop_max = tuple((picked_points.max(axis=0) + margin).tolist())
     return crop_min, crop_max
+
+
+def pick_crop_bounds_from_pair(
+    before: o3d.geometry.PointCloud,
+    after: o3d.geometry.PointCloud,
+) -> tuple[Vec3, Vec3] | None:
+    """Pick two corners on a colored before/after overlay and return XYZ bounds."""
+    before_view = o3d.geometry.PointCloud(before)
+    after_view = o3d.geometry.PointCloud(after)
+    before_view.paint_uniform_color((0.68, 0.72, 0.78))
+    after_view.paint_uniform_color((0.10, 0.72, 0.95))
+    combined = before_view + after_view
+    return pick_crop_bounds(
+        combined,
+        margin=0.0,
+        exact_points=True,
+        window_name=(
+            "Aurora - Gris=ANTES, celeste=DESPUES; marca 2 esquinas con Shift+Click y cierra (Q)"
+        ),
+    )
 
 
 def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
