@@ -49,6 +49,7 @@ class LiveViewer:
 
         self.aurora_connection: AuroraConnection | None = None
         self._pending_static_cloud: o3d.geometry.PointCloud | None = None
+        self._pending_static_colored_cloud: o3d.geometry.PointCloud | None = None
         self._pending_base_cloud: o3d.geometry.PointCloud | None = None
         self._last_live_points: np.ndarray | None = None
         self.live_max_distance_m: float | None = None
@@ -173,6 +174,23 @@ class LiveViewer:
         cloud.points = o3d.utility.Vector3dVector(points_xyz)
         with self._lock:
             self._pending_static_cloud = cloud
+            self._pending_static_colored_cloud = None
+            self.aurora_connection = None
+
+    def push_static_result(
+        self,
+        base_cloud: o3d.geometry.PointCloud,
+        colored_cloud: o3d.geometry.PointCloud,
+    ) -> None:
+        """Show a precomputed result cloud in the same viewer used for C2C/live data."""
+        base = o3d.geometry.PointCloud(base_cloud)
+        result = o3d.geometry.PointCloud(colored_cloud)
+        with self._lock:
+            self._base_cloud_initial = o3d.geometry.PointCloud(base)
+            self._distance_reference_cloud = o3d.geometry.PointCloud(base)
+            self._pending_base_cloud = base
+            self._pending_static_cloud = None
+            self._pending_static_colored_cloud = result
             self.aurora_connection = None
 
     def _apply_axis_transform(self, points_xyz: np.ndarray, invert_y: bool, invert_z: bool) -> np.ndarray:
@@ -222,8 +240,10 @@ class LiveViewer:
                 show = self.show_updated
                 connection = self.aurora_connection
                 pending_static = self._pending_static_cloud
+                pending_static_colored = self._pending_static_colored_cloud
                 pending_base = self._pending_base_cloud
                 self._pending_static_cloud = None
+                self._pending_static_colored_cloud = None
                 self._pending_base_cloud = None
                 live_max_distance_m = self.live_max_distance_m
                 live_cone_angle_deg = self.live_cone_angle_deg
@@ -235,6 +255,8 @@ class LiveViewer:
                 base_vis.points = pending_base.points
                 if pending_base.has_colors():
                     base_vis.colors = pending_base.colors
+                else:
+                    base_vis.colors = o3d.utility.Vector3dVector()
                 vis.update_geometry(base_vis)
                 self._stream_base_sent = False
 
@@ -247,7 +269,9 @@ class LiveViewer:
                 self._stream_base_sent = self._stream_server.broadcast_base(np.asarray(base_vis.points), base_colors)
 
             new_colored = None
-            if connection is not None:
+            if pending_static_colored is not None:
+                new_colored = pending_static_colored
+            elif connection is not None:
                 now = time.time()
                 if now - last_sensor_poll > 0.08:
                     points = read_frame_points(

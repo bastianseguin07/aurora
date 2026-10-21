@@ -2927,12 +2927,22 @@ class AuroraGUI:
     def _view_raycast_result(self) -> None:
         if not self.raycast_result:
             return
-        import open3d as o3d
+        try:
+            base_cloud = load_point_cloud(Path(self.base_path))
+        except Exception as exc:
+            self._show_error("No se pudo abrir la vista 3D", str(exc))
+            return
 
-        o3d.visualization.draw_geometries(
-            [self.raycast_result.heatmap_cloud],
-            window_name="Aurora - Raycasting (prueba): heatmap de espesor",
-        )
+        if self.viewer is None or not self.viewer.is_running():
+            self.viewer = LiveViewer(base_cloud, log=self._log)
+            self.viewer.start()
+            self.close_viewer_button.set_sensitive(True)
+
+        # Raycasting ya calculo los espesores sobre una malla, asi que entrega
+        # su heatmap directamente al visor compartido en vez de recalcular C2C.
+        self._apply_viewer_settings()
+        self.viewer.push_static_result(base_cloud, self.raycast_result.heatmap_cloud)
+        self._log("Vista 3D de resultados abierta.")
 
     def _view_raycast_meshes(self) -> None:
         if not self.raycast_result:
