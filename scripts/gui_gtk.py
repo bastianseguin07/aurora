@@ -44,9 +44,7 @@ from pointcloud_core import (  # noqa: E402
     build_subtle_overlay_cloud,
     compute_c2c_distance,
     compute_rigid_transform,
-    crop_point_cloud,
     crop_cloud_by_face_depth,
-    crop_cloud_by_quad_box,
     direction_word_pairs_for_axes,
     load_point_cloud,
     load_reference_photo,
@@ -56,7 +54,6 @@ from pointcloud_core import (  # noqa: E402
     pick_crop_bounds_from_pair,
     pick_landmark_points,
     pick_landmark_points_from_photo,
-    pick_quad_points,
     render_reference_photo_from_cloud,
     rigid_transform_rms_error,
     run_pipeline,
@@ -65,7 +62,6 @@ from pointcloud_core import (  # noqa: E402
     save_reference_pose,
     show_point_cloud,
     show_point_cloud_pair,
-    show_quad_box_preview,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -500,8 +496,7 @@ class AuroraGUI:
         self.stack.add_titled(self._build_imu_alignment_page(), "alineacion_imu", "Guia de pose IMU")
         self.stack.add_titled(self._build_comparison_page(), "comparacion", "Comparacion")
         self.stack.add_titled(self._build_alignment_page(), "alineacion", "Alineacion")
-        self.stack.add_titled(self._build_segmentation_page(), "segmentacion", "Segmentacion")
-        self.stack.add_titled(self._build_test_crop_page(), "recorte_prueba", "Preparar nube de prueba")
+        self.stack.add_titled(self._build_prepare_clouds_page(), "preparar_nubes", "Preparar nubes")
         self.stack.add_titled(self._build_processing_page(), "procesamiento", "Ajustes de analisis")
         self.stack.add_titled(self._build_visualization_page(), "visualizacion", "Visualizacion 3D")
         self.stack.add_titled(self._build_results_page(), "resultados", "Resultados")
@@ -513,8 +508,7 @@ class AuroraGUI:
             "alineacion_imu",
             "comparacion",
             "alineacion",
-            "segmentacion",
-            "recorte_prueba",
+            "preparar_nubes",
             "procesamiento",
             "visualizacion",
             "resultados",
@@ -627,8 +621,7 @@ class AuroraGUI:
         add_page("Captura", "captura")
         add_page("Guia de pose IMU (reposicionar sensor)", "alineacion_imu")
         add_page("Alineacion por puntos (respaldo)", "alineacion")
-        add_page("Segmentacion (opcional)", "segmentacion")
-        add_page("Preparar nube de prueba", "recorte_prueba")
+        add_page("Preparar nubes", "preparar_nubes")
 
         add_header("Configuracion")
         add_page("Archivos ANTES / DESPUES", "comparacion")
@@ -886,9 +879,6 @@ class AuroraGUI:
         advanced_button = Gtk.Button(label="Abrir ajustes avanzados")
         advanced_button.connect("clicked", lambda _b: self.stack.set_visible_child_name("procesamiento"))
         extra_row.pack_start(advanced_button, False, False, 0)
-        segmentation_button = Gtk.Button(label="Elegir una region del tunel")
-        segmentation_button.connect("clicked", lambda _b: self.stack.set_visible_child_name("segmentacion"))
-        extra_row.pack_start(segmentation_button, False, False, 0)
         page.pack_start(method_frame, False, True, 0)
 
         self._refresh_quick_status()
@@ -1588,48 +1578,6 @@ class AuroraGUI:
 
         return self._scrolled(page)
 
-    def _reset_segmentation_state(self, *, restore_paths: bool = True) -> bool:
-        """Forget a crop when its input pair changes; restore the original pair first."""
-        had_segmentation = self._segmentation_source_base_path is not None
-        if had_segmentation and restore_paths:
-            self.base_path = self._segmentation_source_base_path
-            self.updated_path = self._segmentation_source_updated_path
-            for name, path in (
-                ("base_path_label", self.base_path),
-                ("quick_base_path_label", self.base_path),
-                ("raycast_base_path_label", self.base_path),
-                ("updated_path_label", self.updated_path),
-                ("quick_updated_path_label", self.updated_path),
-                ("raycast_updated_path_label", self.updated_path),
-            ):
-                label = getattr(self, name, None)
-                if label is not None:
-                    self._set_path_label(label, path)
-
-        self._segmentation_source_base_path = None
-        self._segmentation_source_updated_path = None
-        self.segmentation_quad = None
-        if hasattr(self, "segmentation_quad_label"):
-            self.segmentation_quad_label.set_text("(ninguno)")
-        if hasattr(self, "segmentation_result_label"):
-            self.segmentation_result_label.set_text(
-                "La region debe elegirse de nuevo para este par de nubes." if had_segmentation else ""
-            )
-        if hasattr(self, "segmentation_paths_label"):
-            self.segmentation_paths_label.set_text("")
-        for name in ("view_segmented_base_button", "view_segmented_updated_button"):
-            button = getattr(self, name, None)
-            if button is not None:
-                button.set_sensitive(False)
-        self._refresh_segmentation_source_labels()
-        return had_segmentation
-
-    def _refresh_segmentation_source_labels(self) -> None:
-        if hasattr(self, "segmentation_updated_source_label"):
-            self._set_path_label(self.segmentation_updated_source_label, self.updated_path)
-        if hasattr(self, "segmentation_base_source_label"):
-            self._set_path_label(self.segmentation_base_source_label, self.base_path)
-
     def _invalidate_results(self) -> None:
         """Clear output tied to the previous pair so it cannot be reported as current."""
         self._result_generation += 1
@@ -1658,7 +1606,6 @@ class AuroraGUI:
             self.raycast_status_label.set_text("(nada calculado todavia)")
 
     def _set_base_path(self, path: str) -> None:
-        self._reset_segmentation_state()
         self._invalidate_results()
         self.base_path = path
         self.alignment_applied = False
@@ -1672,11 +1619,9 @@ class AuroraGUI:
                 self._set_path_label(label, path)
         if hasattr(self, "landmark_base_manual_photo_label"):
             self.landmark_base_manual_photo_label.set_text("")
-        self._refresh_segmentation_source_labels()
         self._refresh_quick_status()
 
     def _set_updated_path(self, path: str) -> None:
-        self._reset_segmentation_state()
         self._invalidate_results()
         self.updated_path = path
         self.alignment_applied = False
@@ -1690,7 +1635,6 @@ class AuroraGUI:
                 self._set_path_label(label, path)
         if hasattr(self, "landmark_updated_manual_photo_label"):
             self.landmark_updated_manual_photo_label.set_text("")
-        self._refresh_segmentation_source_labels()
         self._refresh_quick_status()
 
     # -- Pagina: Alineacion (Procrustes por puntos de referencia) ---------------
@@ -1700,9 +1644,6 @@ class AuroraGUI:
 
         self.landmarks_base: list | None = None
         self.landmarks_updated: list | None = None
-        self.alignment_rotation: np.ndarray | None = None
-        self.alignment_translation: np.ndarray | None = None
-        self._raw_updated_path: str | None = None
         self.landmark_base_manual_photo_path: str | None = None
         self.landmark_updated_manual_photo_path: str | None = None
 
@@ -1929,13 +1870,6 @@ class AuroraGUI:
             self._show_error("Error al calcular la alineacion", str(exc))
             return
 
-        # Se guardan ya calculadas (y la ruta cruda, previa a esta alineacion) para que
-        # la pestaña "Segmentacion" pueda ubicar un box en la nube con shotcrete sin
-        # tener que transformar la nube completa.
-        self.alignment_rotation = rotation
-        self.alignment_translation = translation
-        self._raw_updated_path = self.updated_path
-
         self.apply_alignment_button.set_sensitive(False)
         self.alignment_result_label.set_text("Aplicando...")
 
@@ -1966,7 +1900,6 @@ class AuroraGUI:
             label = getattr(self, name, None)
             if label is not None:
                 self._set_path_label(label, aligned_path)
-        self._refresh_segmentation_source_labels()
         self.quick_alignment_status.set_text(f"Alineacion aplicada (residual: {rms * 1000:.2f} mm)")
         self._refresh_quick_status()
         self._show_info(
@@ -1981,264 +1914,9 @@ class AuroraGUI:
         self.alignment_result_label.set_text("Error al aplicar la alineacion")
         self._show_error("Error", message)
 
-    # -- Pagina: Segmentacion -----------------------------------------------
+    # -- Pagina: preparar y recortar un par de nubes -----------------------------
 
-    def _build_segmentation_page(self) -> Gtk.Widget:
-        page = self._new_page()
-
-        self.segmentation_quad: np.ndarray | None = None
-        self._segmentation_source_base_path: str | None = None
-        self._segmentation_source_updated_path: str | None = None
-
-        info_frame, info_box = self._section("Recortar una region antes de analizar (opcional)")
-        note = Gtk.Label(
-            label=(
-                "Elegi 4 puntos (Shift+Click), en orden alrededor del perimetro, sobre la "
-                "nube CON shotcrete (la capturada despues), para marcar una region "
-                "cuadrada/rectangular (por ejemplo, un tramo especifico del tunel o una de "
-                "tus cajas de prueba). La app arma un 'box' 3D extruyendo esa region a lo "
-                "largo de su normal (el ancho del box es configurable abajo) y recorta las "
-                "DOS nubes (con shotcrete y original) a los puntos que caen dentro de ese "
-                "box, generando dos archivos .ply nuevos que el resto del analisis va a usar "
-                "en vez de las nubes completas.\n\n"
-                "La misma region (mismas coordenadas) se aplica tal cual a la nube original. "
-                "Esto asume que ambas nubes comparten el mismo sistema de coordenadas: si el "
-                "sensor se reubico entre una captura y otra, calcula la alineacion primero "
-                "(pestaña 'Alineacion') antes de segmentar; si no se movio, no hace falta."
-            ),
-            xalign=0,
-        )
-        note.set_line_wrap(True)
-        info_box.pack_start(note, False, False, 0)
-        page.pack_start(info_frame, False, True, 0)
-
-        step_frame, step_box = self._section("Paso 1: elegir la region y el ancho del box")
-        row = self._row(step_box)
-        row.pack_start(Gtk.Label(label="La region se marca sobre DESPUES:"), False, False, 0)
-        self.segmentation_updated_source_label = Gtk.Label(xalign=0)
-        self.segmentation_updated_source_label.set_hexpand(True)
-        self.segmentation_updated_source_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-        row.pack_start(self.segmentation_updated_source_label, True, True, 0)
-        row = self._row(step_box)
-        row.pack_start(Gtk.Label(label="El mismo box se aplica a ANTES:"), False, False, 0)
-        self.segmentation_base_source_label = Gtk.Label(xalign=0)
-        self.segmentation_base_source_label.set_hexpand(True)
-        self.segmentation_base_source_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-        row.pack_start(self.segmentation_base_source_label, True, True, 0)
-
-        self._refresh_segmentation_source_labels()
-
-        row = self._row(step_box)
-        pick_button = Gtk.Button(label="Elegir 4 puntos en el tunel con shotcrete...")
-        pick_button.set_tooltip_text(
-            "Shift+Click en las 4 esquinas de la region, en orden alrededor del perimetro, "
-            "despues cerrar la ventana."
-        )
-        pick_button.connect("clicked", lambda _b: self._pick_segmentation_quad())
-        row.pack_start(pick_button, False, False, 0)
-        self.segmentation_quad_label = Gtk.Label(label="(ninguno)")
-        row.pack_start(self.segmentation_quad_label, False, False, 0)
-
-        row = self._row(step_box)
-        row.pack_start(Gtk.Label(label="Ancho del box (cm):"), False, False, 0)
-        width_adjustment = Gtk.Adjustment(value=10.0, lower=1.0, upper=100.0, step_increment=1.0, page_increment=5.0)
-        self.segmentation_width_spin = Gtk.SpinButton(adjustment=width_adjustment, climb_rate=1.0, digits=1)
-        row.pack_start(self.segmentation_width_spin, False, False, 0)
-        row.pack_start(
-            self._info_button(
-                "Profundidad del box a lo largo de la normal de la region elegida, centrada "
-                "en ese plano (+/- la mitad del ancho para cada lado). Tiene que ser mayor "
-                "que el espesor de shotcrete esperado, para no cortar la superficie con "
-                "shotcrete que quedo mas cerca del sensor."
-            ),
-            False, False, 0,
-        )
-        page.pack_start(step_frame, False, True, 0)
-
-        apply_frame, apply_box = self._section("Paso 2: aplicar")
-        row = self._row(apply_box)
-        self.apply_segmentation_button = Gtk.Button(label="Aplicar segmentacion")
-        self.apply_segmentation_button.connect("clicked", lambda _b: self._apply_segmentation())
-        row.pack_start(self.apply_segmentation_button, False, False, 0)
-        clear_button = Gtk.Button(label="Quitar segmentacion (usar nube completa)")
-        clear_button.connect("clicked", lambda _b: self._clear_segmentation())
-        row.pack_start(clear_button, False, False, 0)
-
-        row = self._row(apply_box)
-        self.view_segmented_base_button = Gtk.Button(label="Ver nube segmentada: antes")
-        self.view_segmented_base_button.set_sensitive(False)
-        self.view_segmented_base_button.connect("clicked", lambda _b: self._view_segmented_cloud("base"))
-        row.pack_start(self.view_segmented_base_button, False, False, 0)
-        self.view_segmented_updated_button = Gtk.Button(label="Ver nube segmentada: despues")
-        self.view_segmented_updated_button.set_sensitive(False)
-        self.view_segmented_updated_button.connect("clicked", lambda _b: self._view_segmented_cloud("updated"))
-        row.pack_start(self.view_segmented_updated_button, False, False, 0)
-
-        self.segmentation_result_label = Gtk.Label(xalign=0)
-        self.segmentation_result_label.set_line_wrap(True)
-        apply_box.pack_start(self.segmentation_result_label, False, False, 0)
-        self.segmentation_paths_label = Gtk.Label(xalign=0)
-        self.segmentation_paths_label.set_line_wrap(True)
-        self.segmentation_paths_label.set_selectable(True)
-        apply_box.pack_start(self.segmentation_paths_label, False, False, 0)
-        page.pack_start(apply_frame, False, True, 0)
-
-        return self._scrolled(page)
-
-    def _pick_segmentation_quad(self) -> None:
-        path = Path(self.updated_path)
-        if not path.is_file():
-            self._show_error("Error", f"No se encontro el archivo:\n{path}")
-            return
-        try:
-            cloud = load_point_cloud(path)
-            points = pick_quad_points(
-                cloud,
-                "Tunel con shotcrete - Shift+Click en las 4 esquinas de la region, en orden, luego cerrar (Q)",
-            )
-        except Exception as exc:
-            self._show_error("Error al abrir el visor 3D", str(exc))
-            return
-
-        if points is None:
-            self._show_info(
-                "Seleccion invalida",
-                "Elegi exactamente 4 puntos (Shift+Click), en orden alrededor del perimetro, "
-                "antes de cerrar la ventana.",
-            )
-            return
-
-        self.segmentation_quad = points
-        self.segmentation_quad_label.set_text("4 puntos elegidos ✓")
-
-        width_m = self.segmentation_width_spin.get_value() / 100.0
-        try:
-            show_quad_box_preview(cloud, points, width_m, window_name="Aurora - Region elegida (despues, con shotcrete)")
-        except Exception as exc:
-            self._show_error("Error al mostrar la previsualizacion", str(exc))
-            return
-
-        try:
-            base_cloud = load_point_cloud(Path(self.base_path))
-            show_quad_box_preview(
-                base_cloud, points, width_m, window_name="Aurora - Misma region aplicada a la nube original (antes)"
-            )
-        except Exception as exc:
-            self._show_error("Error al mostrar la previsualizacion en la nube original", str(exc))
-
-    def _apply_segmentation(self) -> None:
-        if self.segmentation_quad is None:
-            self._show_warning("Falta la region", "Elegi los 4 puntos de la region primero.")
-            return
-
-        if self._segmentation_source_base_path is None:
-            self._segmentation_source_base_path = self.base_path
-            self._segmentation_source_updated_path = self.updated_path
-
-        width_m = self.segmentation_width_spin.get_value() / 100.0
-        quad = self.segmentation_quad
-        base_source = Path(self._segmentation_source_base_path)
-        updated_source = Path(self._segmentation_source_updated_path)
-
-        self.apply_segmentation_button.set_sensitive(False)
-        self.segmentation_result_label.set_text("Recortando...")
-
-        def worker():
-            try:
-                # La region se eligio sobre la nube con shotcrete; se aplica tal cual
-                # (mismas coordenadas) a la nube original, ambas en el mismo sistema
-                # de referencia (si el sensor no se movio, o si ya se aplico la
-                # alineacion previamente).
-                updated_cloud = load_point_cloud(updated_source)
-                updated_cropped = crop_cloud_by_quad_box(updated_cloud, quad, width_m)
-
-                base_cloud = load_point_cloud(base_source)
-                base_cropped = crop_cloud_by_quad_box(base_cloud, quad, width_m)
-
-                if len(base_cropped.points) == 0 or len(updated_cropped.points) == 0:
-                    raise RuntimeError(
-                        "El box elegido no contiene puntos en una de las dos nubes. "
-                        "Proba con otra region o con un ancho de box distinto."
-                    )
-
-                base_out = base_source.with_name(base_source.stem + "_segmento.ply")
-                updated_out = updated_source.with_name(updated_source.stem + "_segmento.ply")
-                import open3d as o3d
-
-                o3d.io.write_point_cloud(str(base_out), base_cropped)
-                o3d.io.write_point_cloud(str(updated_out), updated_cropped)
-            except Exception as exc:
-                self._ui(self._on_segmentation_failed, str(exc))
-                return
-            self._ui(
-                self._on_segmentation_done,
-                str(base_out),
-                str(updated_out),
-                len(base_cropped.points),
-                len(updated_cropped.points),
-            )
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_segmentation_done(self, base_out: str, updated_out: str, n_base: int, n_updated: int) -> None:
-        self.apply_segmentation_button.set_sensitive(True)
-        self._invalidate_results()
-        self.segmentation_result_label.set_text(f"Recorte: {n_base} / {n_updated} puntos (original/shotcrete)")
-        self.segmentation_paths_label.set_text(
-            f"Antes: {Path(base_out).name}\n  {base_out}\n"
-            f"Despues: {Path(updated_out).name}\n  {updated_out}"
-        )
-        self.base_path = base_out
-        self.updated_path = updated_out
-        for name, path in (
-            ("base_path_label", base_out),
-            ("quick_base_path_label", base_out),
-            ("raycast_base_path_label", base_out),
-            ("updated_path_label", updated_out),
-            ("quick_updated_path_label", updated_out),
-            ("raycast_updated_path_label", updated_out),
-        ):
-            label = getattr(self, name, None)
-            if label is not None:
-                self._set_path_label(label, path)
-        self._refresh_segmentation_source_labels()
-        self._hide_quick_mesh_result_actions()
-        self.view_segmented_base_button.set_sensitive(True)
-        self.view_segmented_updated_button.set_sensitive(True)
-        self._refresh_quick_status()
-        self._show_info(
-            "Segmentacion aplicada",
-            f"Nube original recortada: {n_base} puntos.\nNube con shotcrete recortada: {n_updated} puntos.\n\n"
-            f"Guardadas en:\n{base_out}\n{updated_out}\n\n"
-            "El resto del analisis (Ajustes, Visualizacion, Reporte) va a usar estas nubes recortadas.",
-        )
-
-    def _on_segmentation_failed(self, message: str) -> None:
-        self.apply_segmentation_button.set_sensitive(True)
-        self.segmentation_result_label.set_text("Error al recortar")
-        self._show_error("Error", message)
-
-    def _clear_segmentation(self) -> None:
-        if not self._reset_segmentation_state():
-            self._show_info("Nada que quitar", "Todavia no se aplico ninguna segmentacion.")
-            return
-        self.segmentation_result_label.set_text("Segmentacion quitada, usando la nube completa")
-        self._hide_quick_mesh_result_actions()
-        self._refresh_quick_status()
-
-    def _view_segmented_cloud(self, target: str) -> None:
-        path = self.base_path if target == "base" else self.updated_path
-        label = "Antes (segmentado)" if target == "base" else "Despues (segmentado)"
-        try:
-            cloud = load_point_cloud(Path(path))
-        except Exception as exc:
-            self._show_error("Error al abrir la nube segmentada", str(exc))
-            return
-        show_point_cloud(cloud, window_name=f"Aurora - {label}")
-
-    # -- Pagina: preparar una nube PLY de prueba --------------------------------
-
-    def _build_test_crop_page(self) -> Gtk.Widget:
+    def _build_prepare_clouds_page(self) -> Gtk.Widget:
         page = self._new_page()
         self.test_crop_before_path: str | None = None
         self.test_crop_after_path: str | None = None
@@ -2247,7 +1925,7 @@ class AuroraGUI:
         self.test_crop_output_dir_is_custom = False
         self.test_crop_bounds: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None
 
-        info_frame, info_box = self._section("Preparar un par de nubes de prueba")
+        info_frame, info_box = self._section("Preparar un par de nubes")
         note = Gtk.Label(
             label=(
                 "Carga las nubes ANTES y DESPUES, revisalas juntas y marca dos esquinas de una cara "
@@ -3023,7 +2701,7 @@ class AuroraGUI:
                 "Poisson reconstruye una superficie cerrada, pensado para una nube "
                 "completa. Delaunay triangula la proyeccion sobre el plano que mejor "
                 "ajusta la nube — pensado para un recorte casi-plano (pestaña "
-                "'Segmentacion'), no genera artefactos en los bordes abiertos."
+                "'Preparar nubes'), no genera artefactos en los bordes abiertos."
             ),
             xalign=0,
         )

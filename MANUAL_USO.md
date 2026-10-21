@@ -7,7 +7,7 @@ Guia de la interfaz GTK3 para medir diferencias entre nubes del tunel antes y de
 1. Abre **Medicion rapida**. Carga dos archivos `.ply` o captura las etapas ANTES y DESPUES desde los botones de esta pagina. La captura abre **Captura** y al guardarla queda asignada a la etapa elegida.
 2. Para capturas del Aurora, manten el sensor encendido y el mismo tracking entre tomas. La **Guia de pose IMU** ayuda a volver a la pose ANTES; solo compara la pose guardada, no registra ni transforma las nubes.
 3. Si las poses difieren, o no hay pose IMU y sabes que moviste el sensor, alinea DESPUES con **Alineacion por puntos**. Selecciona los mismos puntos fijos en ambas nubes y en el mismo orden. Si las dos nubes no comparten coordenadas y no hay alineacion, no calcules el espesor.
-4. Usa **Cloud-to-Cloud** para empezar. La reconstruccion **Poisson** o **Delaunay** es opcional y crea una superficie interpolada; no es una referencia independiente de verdad. Delaunay suele requerir un recorte local en **Segmentacion**.
+4. Usa **Cloud-to-Cloud** para empezar. La reconstruccion **Poisson** o **Delaunay** es opcional y crea una superficie interpolada; no es una referencia independiente de verdad. Delaunay suele requerir un recorte local con **Preparar nubes**.
 5. Pulsa **Calcular espesor**. Al terminar, **Resultados** muestra las estadisticas, el registro tecnico y las acciones de visualizacion. Desde ahi puedes generar el informe PDF.
 
 La GUI no precarga automaticamente capturas antiguas. Comprueba que los nombres de ANTES y DESPUES sean del mismo tramo y sesion.
@@ -40,15 +40,11 @@ Se usa si el sensor se movio entre las capturas o si no comparten coordenadas. E
 
 **Calcular alineacion y aplicar** calcula una transformacion rigida, guarda una nube DESPUES alineada y actualiza el archivo activo. El residual en milimetros indica el ajuste de los puntos elegidos, no garantiza por si mismo que toda la pared haya quedado bien registrada. Comprueba visualmente el resultado y no uses referencias cubiertas, movidas o mal identificadas.
 
-## Segmentacion (opcional)
-
-Recorta una zona del tunel para analizar solo un tramo o preparar una region local para Delaunay. La GUI muestra arriba los archivos activos: selecciona cuatro esquinas en la nube DESPUES y define el ancho del box; la misma region se aplica a ANTES. No hay un selector independiente en esta seccion para evitar que use un par distinto al de Medicion rapida. Ambas nubes deben compartir coordenadas; si el sensor se movio, primero aplica una alineacion valida. El recorte escribe nubes derivadas; **Quitar segmentacion** vuelve a las nubes completas. Si cambias cualquiera de los archivos despues de recortar, hay que elegir de nuevo la region.
-
-## Preparar nube de prueba
+## Preparar nubes
 
 Los nombres de archivos seleccionados se muestran en amarillo en esta sección, en **Medición rápida** y en **Archivos ANTES / DESPUÉS** para distinguirlos de las etiquetas.
 
-**Preparar nube de prueba** permite cargar ANTES y DESPUÉS, abrir cada nube por separado o ver el par superpuesto (gris = ANTES, celeste = DESPUÉS). Para recortar ambas, confirma que compartan coordenadas, pulsa **Ver ambas y elegir dos esquinas**, y marca con Shift+clic izquierdo dos esquinas opuestas de la misma cara. Aurora toma esa región de la vista combinada y aplica el mismo box a las dos nubes. Configura la profundidad y revisa el par recortado antes de guardarlo. Las dos copias se guardan en la carpeta elegida con nombres separados ANTES/DESPUÉS; los originales se conservan. **Usar el par recortado en Medición rápida** carga ambas copias juntas.
+**Preparar nubes** permite cargar ANTES y DESPUÉS, abrir cada nube por separado o ver el par superpuesto (gris = ANTES, celeste = DESPUÉS). Para recortar ambas, confirma que compartan coordenadas, pulsa **Ver ambas y elegir dos esquinas**, y marca con Shift+clic izquierdo dos esquinas opuestas de la misma cara. Aurora toma esa región de la vista combinada y aplica el mismo box a las dos nubes. Configura la profundidad y revisa el par recortado antes de guardarlo. Las dos copias se guardan en la carpeta elegida con nombres separados ANTES/DESPUÉS; los originales se conservan. **Usar el par recortado en Medición rápida** carga ambas copias juntas.
 
 La cara seleccionada debe estar aproximadamente alineada con los ejes XYZ; el método de dos puntos no calcula la orientación de una cara inclinada. La profundidad debe incluir el objeto deseado sin alcanzar objetos vecinos. Este flujo no alinea las capturas; si el sensor cambió de lugar, alinea el par antes de recortarlo.
 
@@ -74,4 +70,4 @@ Las paginas de comparacion embebida y raycasting se conservan como prototipos in
 python scripts/compare_point_clouds.py --base data/base.ply --updated data/updated.ply --visualize
 ```
 
-Consulta las opciones CLI en [README.md](README.md). La alineacion por puntos y la segmentacion por box estan disponibles en la GUI, no como opciones equivalentes de ese comando.
+Consulta las opciones CLI en [README.md](README.md). La alineacion por puntos y el recorte de pares estan disponibles en la GUI, no como opciones equivalentes de ese comando.

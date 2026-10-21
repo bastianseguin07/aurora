@@ -530,167 +530,6 @@ def pick_landmark_points_from_photo(
     return np.asarray(picked)
 
 
-def pick_quad_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np.ndarray | None:
-    """
-    Abre un visor 3D interactivo para elegir los 4 puntos que definen una
-    region cuadrada/rectangular sobre la superficie: Shift + click izquierdo
-    en las 4 esquinas, en orden alrededor del perimetro, despues cerrar la
-    ventana (Q). Arranca en el punto de vista del sensor. Devuelve None si
-    no se eligieron exactamente 4 puntos.
-    """
-    vis = o3d.visualization.VisualizerWithEditing()
-    vis.create_window(window_name=window_name)
-    vis.add_geometry(cloud)
-    _apply_sdk_render_style(vis, cloud)
-    _start_at_sensor_pov(vis)
-    vis.run()
-    vis.destroy_window()
-
-    picked_indices = vis.get_picked_points()
-    if len(picked_indices) != 4:
-        return None
-
-    points = np.asarray(cloud.points)
-    return points[picked_indices]
-
-
-def _points_in_polygon_2d(points_2d: np.ndarray, polygon_2d: np.ndarray) -> np.ndarray:
-    """Ray casting vectorizado: True para los puntos que caen dentro del poligono."""
-    x, y = points_2d[:, 0], points_2d[:, 1]
-    n = polygon_2d.shape[0]
-    inside = np.zeros(points_2d.shape[0], dtype=bool)
-    j = n - 1
-    for i in range(n):
-        xi, yi = polygon_2d[i]
-        xj, yj = polygon_2d[j]
-        crosses = (yi > y) != (yj > y)
-        x_intersect = (xj - xi) * (y - yi) / (yj - yi + 1e-15) + xi
-        inside ^= crosses & (x < x_intersect)
-        j = i
-    return inside
-
-
-def _quad_box_axes(quad_points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Centroide y ejes (u, v, normal) del box que representa la region.
-
-    En vez de usar el plano que mejor ajusta los 4 puntos clickeados (que
-    queda inclinado si el click no fue perfectamente parejo en algun eje),
-    el box se fuerza a quedar recto: se ajusta al eje global mas cercano a
-    la normal ajustada por SVD (X, Y o Z), y los otros dos ejes del box
-    quedan exactamente sobre los otros dos ejes globales. El resultado es
-    siempre un paralelepipedo alineado a los ejes, nunca inclinado, sin
-    importar la imprecision al elegir los puntos.
-    """
-    quad_points = np.asarray(quad_points, dtype=np.float64)
-    if quad_points.shape[0] != 4:
-        raise ValueError("Se necesitan exactamente 4 puntos para definir el box.")
-    centroid = quad_points.mean(axis=0)
-    _, _, vt = np.linalg.svd(quad_points - centroid)
-    raw_normal = vt[2]
-
-    axis_idx = int(np.argmax(np.abs(raw_normal)))
-    sign = 1.0 if raw_normal[axis_idx] >= 0 else -1.0
-    normal = np.zeros(3)
-    normal[axis_idx] = sign
-
-    x_axis, y_axis, z_axis = np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0])
-    if axis_idx == 2:  # normal ~ Z (el sensor mirando de frente, caso tipico)
-        u_axis, v_axis = x_axis, y_axis
-    elif axis_idx == 1:  # normal ~ Y (sensor mirando hacia arriba/abajo)
-        u_axis, v_axis = x_axis, z_axis
-    else:  # normal ~ X (sensor mirando de costado)
-        u_axis, v_axis = z_axis, y_axis
-
-    return centroid, u_axis, v_axis, normal
-
-
-def crop_cloud_by_quad_box(
-    cloud: o3d.geometry.PointCloud,
-    quad_points: np.ndarray,
-    depth_m: float,
-) -> o3d.geometry.PointCloud:
-    """
-    Recorta 'cloud' a un box 3D: la region delimitada por 'quad_points' (4
-    esquinas, en orden alrededor del perimetro) extruida +/- depth_m/2 a lo
-    largo de la normal del plano que mejor ajusta esos 4 puntos.
-    """
-    quad_points = np.asarray(quad_points, dtype=np.float64)
-    centroid, u_axis, v_axis, normal = _quad_box_axes(quad_points)
-
-    def to_local(points_3d: np.ndarray) -> np.ndarray:
-        rel = points_3d - centroid
-        return np.column_stack([rel @ u_axis, rel @ v_axis, rel @ normal])
-
-    quad_local_2d = to_local(quad_points)[:, :2]
-
-    points = np.asarray(cloud.points)
-    local = to_local(points)
-
-    inside_polygon = _points_in_polygon_2d(local[:, :2], quad_local_2d)
-    inside_depth = np.abs(local[:, 2]) <= (depth_m / 2.0)
-    mask = inside_polygon & inside_depth
-
-    cropped = o3d.geometry.PointCloud()
-    cropped.points = o3d.utility.Vector3dVector(points[mask])
-    if cloud.has_colors():
-        colors = np.asarray(cloud.colors)
-        cropped.colors = o3d.utility.Vector3dVector(colors[mask])
-    return cropped
-
-
-def build_quad_box_wireframe(
-    quad_points: np.ndarray,
-    depth_m: float,
-    color: tuple[float, float, float] = (1.0, 0.549, 0.0),
-) -> o3d.geometry.LineSet:
-    """
-    Arma el contorno (wireframe) del box 3D que usaria 'crop_cloud_by_quad_box'
-    con el mismo 'quad_points'/'depth_m', para previsualizar la region antes
-    de aplicar el recorte.
-    """
-    quad_points = np.asarray(quad_points, dtype=np.float64)
-    centroid, u_axis, v_axis, normal = _quad_box_axes(quad_points)
-    rel = quad_points - centroid
-    quad_local_2d = np.column_stack([rel @ u_axis, rel @ v_axis])
-    half_depth = depth_m / 2.0
-
-    corners = []
-    for sign in (-half_depth, half_depth):
-        for lu, lv in quad_local_2d:
-            corners.append(centroid + lu * u_axis + lv * v_axis + sign * normal)
-    corners = np.array(corners)
-
-    edges = [
-        (0, 1), (1, 2), (2, 3), (3, 0),  # cara del plano elegido
-        (4, 5), (5, 6), (6, 7), (7, 4),  # cara opuesta (a +depth_m)
-        (0, 4), (1, 5), (2, 6), (3, 7),  # aristas verticales
-    ]
-    line_set = o3d.geometry.LineSet()
-    line_set.points = o3d.utility.Vector3dVector(corners)
-    line_set.lines = o3d.utility.Vector2iVector(np.array(edges))
-    line_set.colors = o3d.utility.Vector3dVector(np.tile(np.array(color), (len(edges), 1)))
-    return line_set
-
-
-def show_quad_box_preview(
-    cloud: o3d.geometry.PointCloud,
-    quad_points: np.ndarray,
-    depth_m: float,
-    window_name: str = "Aurora - Region seleccionada (previsualizacion)",
-) -> None:
-    """Muestra la nube completa junto con el contorno del box 3D que se va a
-    recortar (naranja), para confirmar visualmente la region antes de
-    aplicar la segmentacion."""
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(window_name=window_name)
-    vis.add_geometry(cloud)
-    vis.add_geometry(build_quad_box_wireframe(quad_points, depth_m))
-    _apply_sdk_render_style(vis, cloud)
-    _start_at_sensor_pov(vis)
-    vis.run()
-    vis.destroy_window()
-
-
 def compute_c2c_distance(
     updated: o3d.geometry.PointCloud, base: o3d.geometry.PointCloud
 ) -> np.ndarray:
@@ -841,7 +680,7 @@ class RaycastPipelineParams:
     updated_origin: Vec3 | None = None
     # "poisson" (mesh_from_point_cloud, pensado para nubes completas) o
     # "delaunay" (mesh_from_point_cloud_delaunay, pensado para un recorte
-    # casi-plano, ver pestaña 'Segmentacion').
+    # casi-plano, ver pestaña 'Preparar nubes').
     mesh_method: str = "poisson"
     # "origin": raycast_thickness, un rayo por cada vertice desde la pose
     # guardada del sensor (ver base_origin/updated_origin arriba) — asume
@@ -901,8 +740,8 @@ def mesh_from_point_cloud(
 def fit_plane(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Centroide y ejes (u, v, normal) del plano que mejor ajusta 'points' via
-    PCA/SVD. A diferencia de '_quad_box_axes' (que fuerza la normal al eje
-    global mas cercano para armar un box de recorte recto), aca se usa la
+    PCA/SVD. El ajuste conserva la orientacion real del tramo en vez de forzar los ejes
+    del plano a los ejes globales. Aca se usa la
     normal cruda del ajuste — la mejor aproximacion al plano real, sin
     importar su orientacion respecto a los ejes del mundo. El signo de la
     normal es arbitrario; quien llama decide hacia donde orientarla.
@@ -924,7 +763,7 @@ def mesh_from_point_cloud_delaunay(
     la proyeccion (u, v) de cada punto sobre ese plano con
     'scipy.spatial.Delaunay', usando la posicion 3D real de cada punto para
     los vertices de la malla resultante. Pensada para un tramo de pared de
-    tunel ya recortado (pestaña 'Segmentacion'), no para una nube completa
+    tunel ya recortado (pestaña 'Preparar nubes'), no para una nube completa
     con curvatura fuerte — a diferencia de Poisson (mesh_from_point_cloud),
     no necesita una superficie cerrada/watertight ni normales orientadas,
     por lo que no genera artefactos en los bordes abiertos de un recorte.
