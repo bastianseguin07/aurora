@@ -17,6 +17,7 @@ qrcode = ">=7.4"
 pillow = ">=10"
 scipy = ">=1.10"
 matplotlib = ">=3.7"
+reportlab = ">=3.5"
 
 [tasks]
 gui = "python scripts/gui_gtk.py"

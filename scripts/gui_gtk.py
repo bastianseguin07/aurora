@@ -845,11 +845,41 @@ class AuroraGUI:
             self.quick_poisson_rb, "Delaunay"
         )
         mesh_row.pack_start(self.quick_delaunay_rb, False, False, 0)
+        mesh_detail_row = self._row(mesh_box)
+        mesh_detail_row.set_sensitive(False)
+        self.quick_mesh_check.connect(
+            "toggled", lambda check: mesh_detail_row.set_sensitive(check.get_active())
+        )
+        mesh_detail_row.pack_start(Gtk.Label(label="Profundidad Poisson:"), False, False, 0)
+        self.quick_poisson_depth = Gtk.SpinButton.new_with_range(5, 12, 1)
+        self.quick_poisson_depth.set_value(9)
+        self.quick_poisson_depth.set_tooltip_text(
+            "Menor profundidad genera una superficie menos detallada y puede reducir picos pequeños."
+        )
+        mesh_detail_row.pack_start(self.quick_poisson_depth, False, False, 0)
+        self.quick_smooth_check = Gtk.CheckButton(label="Suavizar malla (Taubin)")
+        self.quick_smooth_check.set_tooltip_text(
+            "Modifica la superficie usada para medir; compara el espesor con y sin suavizado."
+        )
+        mesh_detail_row.pack_start(self.quick_smooth_check, False, False, 0)
+        self.quick_smooth_iterations = Gtk.SpinButton.new_with_range(1, 30, 1)
+        self.quick_smooth_iterations.set_value(5)
+        self.quick_smooth_iterations.set_sensitive(False)
+        self.quick_smooth_check.connect(
+            "toggled", lambda check: self.quick_smooth_iterations.set_sensitive(check.get_active())
+        )
+        mesh_detail_row.pack_start(Gtk.Label(label="Iteraciones:"), False, False, 0)
+        mesh_detail_row.pack_start(self.quick_smooth_iterations, False, False, 0)
+        self.quick_delaunay_rb.connect(
+            "toggled", lambda button: self.quick_poisson_depth.set_sensitive(not button.get_active())
+        )
         mesh_explanation = Gtk.Label(
             label=(
                 "Activa la casilla para reconstruir las superficies antes de medir. Poisson suele "
                 "convenir para una captura completa; Delaunay, para una region local recortada. "
-                "Si la casilla queda desactivada, se usa Cloud-to-Cloud sin crear mallas."
+                "Si la casilla queda desactivada, se usa Cloud-to-Cloud sin crear mallas. "
+                "Bajar la profundidad Poisson o activar Taubin reduce irregularidades, pero "
+                "tambien puede cambiar el espesor calculado; deja Taubin apagado para medir sin suavizado."
             ),
             xalign=0,
         )
@@ -2849,6 +2879,10 @@ class AuroraGUI:
             updated_origin=updated_origin,
             mesh_method=mesh_method,
             ray_method=ray_method,
+            poisson_depth=int(self.quick_poisson_depth.get_value_as_int())
+            if self.quick_mesh_check.get_active() else 9,
+            mesh_smoothing_iterations=int(self.quick_smooth_iterations.get_value_as_int())
+            if self.quick_mesh_check.get_active() and self.quick_smooth_check.get_active() else 0,
         )
 
         self._invalidate_results()
@@ -2913,6 +2947,7 @@ class AuroraGUI:
         self._show_quick_mesh_result_actions()
         self._generate_alerts()
         self.stack.set_visible_child_name("resultados")
+        self._view_raycast_result()
 
     def _on_raycast_failure(self, message: str, generation: int) -> None:
         if generation != self._result_generation:
@@ -3782,20 +3817,28 @@ class AuroraGUI:
             return
 
         import datetime
+        from xml.sax.saxutils import escape
 
-        from reportlab.lib import colors as rl_colors
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.units import cm as rl_cm
-        from reportlab.platypus import (
-            Image,
-            Paragraph,
-            SimpleDocTemplate,
-            Spacer,
-            Table,
-            TableStyle,
-        )
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.enums import TA_CENTER
+        try:
+            from reportlab.lib import colors as rl_colors
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.units import cm as rl_cm
+            from reportlab.platypus import (
+                Image,
+                Paragraph,
+                SimpleDocTemplate,
+                Spacer,
+                Table,
+                TableStyle,
+            )
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER
+        except ImportError as exc:
+            self._show_error(
+                "Falta la dependencia del informe PDF",
+                f"No se pudo cargar ReportLab: {exc}. Reinstala las dependencias de Aurora.",
+            )
+            return
 
         default_dir = Path(self.output_dir)
         default_dir.mkdir(parents=True, exist_ok=True)
@@ -3844,8 +3887,8 @@ class AuroraGUI:
             Paragraph(status_text, status_style),
             Spacer(1, 6),
             Paragraph("1. Archivos analizados", h2_style),
-            Paragraph(f"<b>Nube base (original):</b> {self.base_path}", body_style),
-            Paragraph(f"<b>Nube actualizada (shotcrete):</b> {self.updated_path}", body_style),
+            Paragraph(f"<b>Nube base (original):</b> {escape(str(self.base_path))}", body_style),
+            Paragraph(f"<b>Nube actualizada (shotcrete):</b> {escape(str(self.updated_path))}", body_style),
             Paragraph(
                 f"<b>Metodo de calculo:</b> {'Raycasting con malla' if self._active_result_kind == 'raycast' else 'Cloud-to-Cloud'}",
                 body_style,
@@ -3935,7 +3978,11 @@ class AuroraGUI:
             topMargin=1.5 * rl_cm,
             bottomMargin=1.5 * rl_cm,
         )
-        doc.build(story)
+        try:
+            doc.build(story)
+        except Exception as exc:
+            self._show_error("No se pudo generar el informe PDF", str(exc))
+            return
 
         self._log(f"Informe generado: {report_path}")
         self._show_info("Informe generado", f"El informe (PDF) fue guardado en:\n{report_path}")

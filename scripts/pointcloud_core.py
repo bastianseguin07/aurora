@@ -692,6 +692,7 @@ class RaycastPipelineParams:
     # referencia aplicada de antemano).
     ray_method: str = "origin"
     delaunay_max_edge_trim_factor: float = 4.0
+    mesh_smoothing_iterations: int = 0
 
 
 @dataclass
@@ -735,6 +736,21 @@ def mesh_from_point_cloud(
     mesh.remove_degenerate_triangles()
     mesh.remove_unreferenced_vertices()
     return mesh
+
+
+def smooth_triangle_mesh(
+    mesh: o3d.geometry.TriangleMesh,
+    iterations: int = 0,
+) -> o3d.geometry.TriangleMesh:
+    """Apply optional Taubin smoothing without modifying the source mesh."""
+    result = o3d.geometry.TriangleMesh(mesh)
+    iterations = max(0, int(iterations))
+    if iterations:
+        result = result.filter_smooth_taubin(number_of_iterations=iterations)
+        result.remove_degenerate_triangles()
+        result.remove_unreferenced_vertices()
+        result.compute_vertex_normals()
+    return result
 
 
 def fit_plane(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -977,6 +993,7 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
         base_mesh = mesh_from_point_cloud_delaunay(base_cloud, params.delaunay_max_edge_trim_factor)
     else:
         base_mesh = mesh_from_point_cloud(base_cloud, params.poisson_depth, params.density_trim_quantile)
+    base_mesh = smooth_triangle_mesh(base_mesh, params.mesh_smoothing_iterations)
     log(f"  Malla base: {len(base_mesh.vertices)} vertices, {len(base_mesh.triangles)} triangulos")
 
     log(f"Reconstruyendo malla ({mesh_label}) de la nube actualizada...")
@@ -984,6 +1001,7 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
         updated_mesh = mesh_from_point_cloud_delaunay(updated_cloud, params.delaunay_max_edge_trim_factor)
     else:
         updated_mesh = mesh_from_point_cloud(updated_cloud, params.poisson_depth, params.density_trim_quantile)
+    updated_mesh = smooth_triangle_mesh(updated_mesh, params.mesh_smoothing_iterations)
     log(f"  Malla actualizada: {len(updated_mesh.vertices)} vertices, {len(updated_mesh.triangles)} triangulos")
 
     if params.ray_method == "normal":
