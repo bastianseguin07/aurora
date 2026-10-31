@@ -13,7 +13,7 @@ euclidiana no dirigida es la estimacion de espesor. Las nubes pueden venir de
 archivos `.ply` existentes o capturarse en vivo con un sensor **Slamtec
 Aurora** (LIDAR/SLAM) por WiFi.
 
-La aplicacion tiene una sola GUI de escritorio: `scripts/gui_gtk.py` (GTK3), ejecutada tanto en Ubuntu como en Windows. La logica de medicion vive en `scripts/pointcloud_core.py` y tambien la usa el CLI. Windows prepara GTK y Open3D en el entorno Pixi; Ubuntu usa GTK del sistema.
+La aplicacion tiene una sola GUI de escritorio: `scripts/gui_gtk.py` (GTK3), preparada para Ubuntu. La logica de medicion vive en `scripts/pointcloud_core.py` y tambien la usa el CLI.
 
 ## Comandos
 
@@ -21,10 +21,8 @@ No hay tests, linter ni build configurados en el repo.
 
 ```bash
 # Setup y ejecucion de la unica GUI GTK3
-./setup.sh                 # Ubuntu/macOS
+./setup.sh                 # Ubuntu
 ./venv/bin/python3 scripts/gui_gtk.py
-.\setup_gtk_windows.ps1   # Windows (Pixi)
-.\run_gtk_windows.ps1
 
 # CLI sin GUI (mismo pipeline, run_pipeline())
 python scripts/compare_point_clouds.py --base data/base.ply --updated data/updated.ply --visualize
@@ -36,7 +34,7 @@ python scripts/compare_point_clouds.py --base data/base.ply --updated data/updat
 `reportlab` (informe PDF), `websockets`
 (transmision en vivo), `qrcode[pil]` (QR de la transmision). Los bindings
 GTK3 (`gi`/PyGObject) NO estan en requirements.txt — vienen del sistema
-(`apt`/`brew`); el venv los hereda solo si se creo con `--system-site-packages`.
+(`apt`); el venv los hereda solo si se creo con `--system-site-packages`.
 
 ## Arquitectura
 
@@ -393,7 +391,7 @@ Cada pestaña tiene su `_build_*_page()`:
    de heatmap arcoiris; se controla con mouse (arrastrar = orbitar, rueda =
    zoom). Usa la API "clasica" de Open3D (`Visualizer`, `visible=False`) en
    vez de `OffscreenRenderer`, porque este ultimo no soporta headless en
-   Windows.
+   Ubuntu.
 
 9. **Raycasting (prueba)** (`_build_raycast_test_page`, L1975; pipeline en
    `pointcloud_core.run_raycast_pipeline`) — Seccion **experimental**, no
@@ -490,7 +488,7 @@ que traiga el `.ply`); ya no se fuerza `paint_uniform_color`.
   captura en particular no lo necesito (sensor sin cortes de tracking) — no
   es una señal para eliminar o deprecar la pestaña "Alineacion", que sigue
   siendo necesaria como respaldo.
-- `gui_gtk.py` es la unica GUI y corre en Ubuntu y Windows. Mantener las instrucciones de plataforma en README.md actualizadas; Windows usa Pixi y Ubuntu instala GTK desde apt.
+- `gui_gtk.py` es la única GUI, preparada para Ubuntu. Mantener las instrucciones de instalación en README.md actualizadas.
 - El repo es autocontenido: venv, scripts y `.ply` viven todos dentro de esta
   carpeta `Aurora`. Al capturar con el sensor conectado, cada `.ply` puede
   venir acompañado de un sidecar `<nombre>_ref.npz` (foto de referencia +

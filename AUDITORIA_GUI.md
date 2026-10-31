@@ -44,13 +44,13 @@ Revisión de la interfaz en `scripts/gui_gtk.py` para el propósito principal de
 - **Preparar nubes** permite cargar cada etapa, inspeccionarlas por separado o superpuestas, marcar dos esquinas en el par y guardar ambas nubes recortadas con el mismo box, sin tocar los originales.
 - Estado, estadísticas, acciones de inspección, registro técnico e informe PDF se trasladaron desde la franja inferior a la sección **Resultados**. Los cálculos estándar y de malla muestran sus salidas ahí; cambiar los archivos invalida las estadísticas anteriores y desactiva el informe para evitar mezclar resultados y rutas.
 
-## Prueba con las nubes de Downloads
+## Prueba previa con nubes de Downloads
 
 Se probaron `base_capturada_20261006_143616.ply` y `updated_capturada_20261006_143645.ply` (1.004.555 y 1.086.045 puntos). El flujo Medición rápida de la GUI mostró la confirmación de alineación faltante y, al continuar, completó el cálculo con voxel de 2 cm. El resultado fue media 2,11 cm, mediana 1,15 cm, P95 7,57 cm y máximo 43,85 cm. Los productos (CSV, histograma y heatmap PLY) se escribieron en una carpeta temporal, sin modificar los originales.
 
 Estos archivos no tienen sidecars de pose junto a ellos, por lo que no se pudo verificar si comparten sistema de coordenadas. La cola alta puede incluir falta de alineación, zonas no comunes, geometría de la caja o correspondencias de vecino más cercano; este resultado valida que el flujo corre, no que la medición sea correcta. La estimación Cloud-to-Cloud debe interpretarse sobre una zona común correctamente alineada y su resultado debe contrastarse con una medida conocida.
 
-También se abrió la GUI nativa de Windows para revisar la composición: la barra superior separa menú e informe, los nombres de archivos no simulan una carga inicial y el registro técnico está dentro de la superficie oscura del tema.
+La revisión visual de escritorio cubrió esta composición: la barra superior separa menú e informe, los nombres de archivos no simulan una carga inicial y el registro técnico está dentro de la superficie oscura del tema.
 
 ## Verificación pendiente en terreno
 

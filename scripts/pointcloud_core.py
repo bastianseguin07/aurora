@@ -353,6 +353,36 @@ def load_reference_pose(ply_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
     return data["position"], data["rpy_deg"]
 
 
+def compute_pose_relative_transform(
+    base_pose: tuple[np.ndarray, np.ndarray],
+    updated_pose: tuple[np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Calcula la rotacion (3x3) y traslacion (3,) necesarias para transformar puntos
+    de la nube 'updated' al sistema de coordenadas de la nube 'base',
+    usando las poses 6-DoF del sensor (SLAM/IMU).
+    """
+    base_pos, base_rpy = base_pose
+    upd_pos, upd_rpy = updated_pose
+
+    R_base = o3d.geometry.get_rotation_matrix_from_xyz(np.radians(np.asarray(base_rpy, dtype=np.float64)))
+    R_upd = o3d.geometry.get_rotation_matrix_from_xyz(np.radians(np.asarray(upd_rpy, dtype=np.float64)))
+
+    R_rel = R_base.T @ R_upd
+    t_rel = R_base.T @ (np.asarray(upd_pos, dtype=np.float64) - np.asarray(base_pos, dtype=np.float64))
+    return R_rel, t_rel
+
+
+def align_cloud_by_pose(
+    cloud: o3d.geometry.PointCloud,
+    base_pose: tuple[np.ndarray, np.ndarray],
+    updated_pose: tuple[np.ndarray, np.ndarray],
+) -> o3d.geometry.PointCloud:
+    """Aplica la transformacion relativa de pose a una copia de la nube."""
+    R_rel, t_rel = compute_pose_relative_transform(base_pose, updated_pose)
+    return apply_rigid_transform(cloud, R_rel, t_rel)
+
+
 def local_axes_from_rpy_deg(rpy_deg: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Ejes propios del sensor (adelante/derecha/arriba) expresados en el
     sistema de coordenadas mundo/mapa, a partir de su orientacion

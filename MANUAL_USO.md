@@ -1,6 +1,6 @@
 # Manual de uso — Aurora
 
-Guia de la interfaz GTK3 para medir diferencias entre nubes del tunel antes y despues de aplicar shotcrete. La GUI es la misma en Windows y Ubuntu. Consulta [README.md](README.md) para instalarla y [AUDITORIA_GUI.md](AUDITORIA_GUI.md) para los limites y decisiones del proyecto.
+Guia de la interfaz GTK3 para medir diferencias entre nubes del tunel antes y despues de aplicar shotcrete. La GUI está preparada para Ubuntu. Consulta [README.md](README.md) para instalarla y [AUDITORIA_GUI.md](AUDITORIA_GUI.md) para los limites y decisiones del proyecto.
 
 ## Medicion rapida
 
@@ -20,7 +20,7 @@ La interfaz calcula un par ANTES/DESPUES por vez y no mantiene un historial de c
 
 ## Captura
 
-Conecta la PC a la WiFi del Aurora y usa la direccion del sensor (por defecto `192.168.11.1`). Pulsa **Conectar** y espera el indicador conectado. **Capturar tunel original** asigna la toma a ANTES; **Capturar tunel con shotcrete** la asigna a DESPUES. Ambas capturan durante 15 segundos por defecto y luego piden donde guardar el `.ply`. **Detener captura** termina antes con los frames acumulados.
+Conecta la PC al Aurora por red y usa la direccion del sensor (por defecto `192.168.11.1`). Pulsa **Conectar** y espera el indicador conectado. **Capturar tunel original** asigna la toma a ANTES; **Capturar tunel con shotcrete** la asigna a DESPUES. Ambas capturan durante 15 segundos por defecto y luego piden donde guardar el `.ply`. **Detener captura** termina antes con los frames acumulados.
 
 En **Ajustes de captura (opcional)**, la persistencia minima por defecto es `0` (sin filtro de persistencia); valores mayores conservan puntos presentes en mas frames y pueden eliminar puntos reales si el sensor se mueve. El limite de campo de vision y la distancia maxima tambien descartan puntos: dejalos desactivados salvo que tengas claro que la zona de pared medida queda dentro del filtro. Revisa la toma con **Ver ultima captura**.
 

@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import os
 import math
+import cairo
 import queue
 import threading
 from pathlib import Path
 
-import cairo
 import gi
 
 gi.require_version("Gdk", "3.0")
@@ -44,12 +44,14 @@ from pointcloud_core import (  # noqa: E402
     build_subtle_overlay_cloud,
     compute_c2c_distance,
     compute_rigid_transform,
+    compute_pose_relative_transform,
     crop_cloud_by_face_depth,
     direction_word_pairs_for_axes,
     load_point_cloud,
     load_reference_photo,
     load_reference_photo_file,
     load_reference_pose,
+    reference_photo_path_for,
     pick_crop_bounds,
     pick_crop_bounds_from_pair,
     pick_landmark_points,
@@ -97,50 +99,109 @@ CSS = f"""
 window, .background {{
     background-color: {COLOR_BG};
     color: {COLOR_TEXT};
-    border-radius: 8px;
 }}
 
-window.csd {{
-    background-color: {COLOR_BG};
-    border: 1px solid {COLOR_BORDER};
-    border-radius: 8px;
+window.csd,
+window.csd decoration {{
+    border: none;
+    border-radius: 10px;
+    box-shadow: none;
+    background-image: none;
 }}
 
 box#aurora-shell {{
     background-color: {COLOR_BG};
-    border-radius: 8px;
+    border-radius: 10px;
 }}
 
 scrolledwindow#aurora-page-scroll,
 scrolledwindow#aurora-page-scroll viewport {{
     background-color: {COLOR_BG};
-    border-radius: 0 0 8px 0;
+    border: none;
+    border-radius: 0 0 9px 0;
 }}
 
 scrolledwindow#aurora-sidebar-scroll,
 scrolledwindow#aurora-sidebar-scroll viewport,
 list#aurora-sidebar-list {{
     background-color: {COLOR_CARD};
-    border-radius: 0 0 0 8px;
+    border-radius: 0 0 0 9px;
 }}
 
-headerbar {{
+box#aurora-titlebar {{
     background-color: {COLOR_CARD};
     background-image: none;
     color: {COLOR_TEXT};
-    border-bottom: 1px solid {COLOR_BORDER};
+    border: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     box-shadow: none;
     padding: 4px 8px;
-    border-radius: 8px 8px 0 0;
+    border-radius: 9px 9px 0 0;
 }}
 
-headerbar .title {{
-    color: {COLOR_TEXT};
-    font-weight: 700;
-}}
-
-headerbar .subtitle {{
+box#aurora-titlebar button {{
+    min-width: 42px;
+    min-height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 7px;
+    background-color: transparent;
     color: {COLOR_TEXT_MUTED};
+}}
+
+box#aurora-titlebar button:focus,
+box#aurora-titlebar button:focus-visible {{
+    outline: none;
+    box-shadow: none;
+    border-color: transparent;
+}}
+
+box#aurora-titlebar button:hover {{
+    background-color: rgba(255, 255, 255, 0.10);
+    background-image: none;
+    box-shadow: none;
+    border-color: transparent;
+    color: {COLOR_TEXT};
+}}
+
+box#aurora-titlebar button:active {{
+    background-color: rgba(255, 255, 255, 0.16);
+    background-image: none;
+    box-shadow: none;
+    border-color: transparent;
+    color: {COLOR_TEXT};
+}}
+
+box#aurora-titlebar button.close:hover {{
+    background-color: rgba(255, 255, 255, 0.10);
+}}
+
+window.maximized,
+window.fullscreen,
+window.maximized decoration,
+window.fullscreen decoration,
+window.maximized headerbar,
+window.fullscreen headerbar,
+window.maximized box#aurora-shell,
+window.fullscreen box#aurora-shell,
+window.maximized scrolledwindow#aurora-page-scroll,
+window.maximized scrolledwindow#aurora-page-scroll viewport,
+window.fullscreen scrolledwindow#aurora-page-scroll,
+window.fullscreen scrolledwindow#aurora-page-scroll viewport,
+window.maximized scrolledwindow#aurora-sidebar-scroll,
+window.maximized scrolledwindow#aurora-sidebar-scroll viewport,
+window.maximized list#aurora-sidebar-list,
+window.fullscreen scrolledwindow#aurora-sidebar-scroll,
+window.fullscreen scrolledwindow#aurora-sidebar-scroll viewport,
+window.fullscreen list#aurora-sidebar-list {{
+    border-radius: 0;
+    box-shadow: none;
+}}
+
+label#aurora-section-title {{
+    color: #94A3B8;
+    font-size: 11pt;
+    font-weight: 700;
 }}
 
 headerbar windowcontrols {{
@@ -190,83 +251,105 @@ headerbar windowcontrols button.titlebutton:active {{
 
 stacksidebar, list.sidebar {{
     background-color: {COLOR_CARD};
-    border-right: 1px solid {COLOR_BORDER};
-    padding-top: 12px;
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    padding-top: 8px;
 }}
 
-stacksidebar row {{
-    padding: 10px 6px;
-    min-height: 30px;
-    color: {COLOR_TEXT_MUTED};
-}}
-
-stacksidebar row:selected {{
-    background-color: rgba(255, 140, 0, 0.16);
-    border-left: 3px solid {COLOR_ACCENT};
-    color: {COLOR_TEXT};
-    font-weight: 600;
-}}
-
-stacksidebar row:hover {{
-    background-color: rgba(255, 255, 255, 0.04);
-}}
-
+/* Filas estándar de la barra lateral: borde grueso a la izquierda en color gris */
 list.sidebar row {{
-    background-color: rgba(255, 255, 255, 0.025);
-    color: {COLOR_TEXT_MUTED};
-    border-left: 3px solid rgba(142, 149, 165, 0.68);
-    border-top: 1px solid rgba(255, 255, 255, 0.025);
-    border-right: 1px solid rgba(255, 255, 255, 0.025);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.025);
-    border-radius: 6px;
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+    border: none;
+    border-left: 3px solid #3E4656;
+    border-radius: 4px;
     margin: 2px 8px;
     padding: 2px 0;
 }}
 
+/* Tipografía de filas: tamaño estrictamente 10pt */
 list.sidebar row label {{
-    color: {COLOR_TEXT_MUTED};
+    color: #94A3B8;
+    font-size: 10pt;
+    font-weight: 400;
 }}
 
-list.sidebar row:selected {{
-    background-color: rgba(86, 180, 197, 0.16);
-    border-left-color: {COLOR_ACCENT};
-}}
-
-list.sidebar row:selected label {{
-    color: {COLOR_TEXT};
-    font-weight: 600;
-}}
-
+/* Hover en items: SIN sombreado de fondo (transparente), solo ilumina el texto y el borde */
 list.sidebar row:hover {{
-    background-color: rgba(86, 180, 197, 0.10);
-    border-left-color: rgba(142, 149, 165, 0.72);
-}}
-
-list.sidebar row:selected:hover {{
-    border-left-color: {COLOR_ACCENT};
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+    border-left: 3px solid #64748B;
 }}
 
 list.sidebar row:hover label {{
-    color: {COLOR_TEXT};
+    color: #FFFFFF;
+    font-size: 10pt;
 }}
 
+/* Item seleccionado / activo: indicador cyan en el borde y fondo sutil */
+list.sidebar row:selected {{
+    background-color: rgba(86, 180, 197, 0.12);
+    border-left: 3px solid {COLOR_ACCENT};
+}}
+
+list.sidebar row:selected label {{
+    color: #FFFFFF;
+    font-weight: 700;
+    font-size: 10pt;
+}}
+
+list.sidebar row:selected:hover {{
+    background-color: rgba(86, 180, 197, 0.15);
+    border-left: 3px solid {COLOR_ACCENT};
+}}
+
+list.sidebar row:selected:hover label {{
+    color: #FFFFFF;
+    font-size: 10pt;
+}}
+
+/* Entrada principal: énfasis tipográfico sin borde adicional. */
+list.sidebar row.quick-nav label,
+list.sidebar row.quick-nav:hover label,
+list.sidebar row.quick-nav:selected label,
+list.sidebar row.quick-nav:selected:hover label {{
+    font-size: 12pt;
+    font-weight: 700;
+}}
+
+/* Encabezados de sección ('Flujo de trabajo', 'Configuración', 'Resultados'):
+   100% estáticos: no hover, no iluminación, no selección, sin bordes ni foco */
 list.sidebar row.sidebar-section-header,
-list.sidebar row.sidebar-section-header:hover {{
+list.sidebar row.sidebar-section-header:hover,
+list.sidebar row.sidebar-section-header:focus,
+list.sidebar row.sidebar-section-header:active,
+list.sidebar row.sidebar-section-header:selected {{
     background-color: transparent;
     background-image: none;
-    border-color: transparent;
+    border: none;
+    border-left: none;
+    box-shadow: none;
+    outline: none;
+    margin: 8px 8px 2px 8px;
+    padding: 0;
 }}
 
-list.sidebar row.quick-nav label {{
-    font-size: 12pt;
-    font-weight: 600;
+list.sidebar row.sidebar-section-header label,
+list.sidebar row.sidebar-section-header:hover label,
+list.sidebar row.sidebar-section-header:focus label,
+list.sidebar row.sidebar-section-header:active label,
+list.sidebar row.sidebar-section-header:selected label {{
+    color: #64748B;
+    font-size: 8pt;
+    font-weight: 700;
 }}
 
 frame {{
-    margin: 6px 2px;
+    margin: 8px 2px;
     background-color: {COLOR_CARD};
-    border: 1px solid {COLOR_BORDER};
-    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
 }}
 
 frame > label {{
@@ -287,41 +370,50 @@ label.dim-label {{
 }}
 
 button {{
-    background-color: #22252D;
+    background-color: #1E232E;
     background-image: none;
+    box-shadow: none;
     color: {COLOR_TEXT};
-    border: 1px solid {COLOR_BORDER};
-    border-radius: 4px;
-    padding: 10px 16px;
-    min-height: 28px;
-    transition: background-color 100ms ease;
+    border: 1px solid #2B3342;
+    border-radius: 6px;
+    padding: 8px 16px;
+    min-height: 30px;
+    font-weight: 500;
 }}
 
 button:hover {{
-    background-color: #2A2E38;
+    background-color: #1E232E;
+    background-image: none;
+    box-shadow: none;
     border-color: {COLOR_ACCENT};
+    color: #FFFFFF;
 }}
 
 button:active, button:checked {{
-    background-color: #171920;
+    background-color: #14171F;
+    background-image: none;
+    box-shadow: none;
+    border-color: {COLOR_ACCENT_DARK};
 }}
 
 button:disabled {{
-    color: {COLOR_TEXT_MUTED};
-    border-color: {COLOR_BORDER};
-    background-color: #1A1D24;
+    color: #555C6D;
+    border-color: #20242D;
+    background-color: #16181F;
 }}
 
 button.suggested-action {{
     background-color: {COLOR_ACCENT};
     background-image: none;
-    color: #0F1115;
+    color: #0A0D14;
     border: 1px solid {COLOR_ACCENT};
+    border-radius: 6px;
     font-weight: 700;
 }}
 
 button.suggested-action:hover {{
-    background-color: #73C8D5;
+    background-color: #6DC2D1;
+    border-color: #6DC2D1;
 }}
 
 button.suggested-action:active {{
@@ -329,18 +421,36 @@ button.suggested-action:active {{
 }}
 
 entry {{
-    background-color: #14161B;
+    background-color: #11141B;
     background-image: none;
     color: {COLOR_TEXT};
-    border: 1px solid {COLOR_BORDER};
-    border-radius: 4px;
-    padding: 8px 10px;
-    min-height: 24px;
-    font-family: "Consolas", "DejaVu Sans Mono", monospace;
+    border: 1px solid #282F3D;
+    border-radius: 6px;
+    padding: 7px 10px;
+    min-height: 26px;
+    font-family: "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
 }}
 
-entry:focus {{
-    border-color: {COLOR_ACCENT};
+entry:focus,
+spinbutton entry:focus,
+textview:focus {{
+    outline: none;
+    box-shadow: none;
+    border: 1px solid #596579;
+}}
+
+spinbutton:focus {{
+    outline: none;
+    box-shadow: none;
+}}
+
+spinbutton button,
+spinbutton button:hover,
+spinbutton button:focus,
+spinbutton button:active {{
+    outline: none;
+    box-shadow: none;
+    border-color: transparent;
 }}
 
 checkbutton, radiobutton {{
@@ -348,16 +458,60 @@ checkbutton, radiobutton {{
     min-height: 30px;
 }}
 
+/* Indicadores vectoriales y de alto contraste, independientes del tema GTK. */
 checkbutton check, radiobutton radio {{
     min-width: 20px;
     min-height: 20px;
-    border: 1px solid {COLOR_BORDER};
-    background-color: #14161B;
+    padding: 0;
+    color: transparent;
+    border: 2px solid #8B95A5;
+    background-color: #11141B;
+    background-image: none;
+    box-shadow: none;
+    -gtk-icon-shadow: none;
 }}
 
-checkbutton check:checked, radiobutton radio:checked {{
+checkbutton check {{
+    border-radius: 5px;
+}}
+
+radiobutton radio {{
+    border-radius: 50%;
+    transition: none;
+    animation: none;
+}}
+
+checkbutton check:hover, radiobutton radio:hover {{
+    border-color: #D5DCE7;
+    background-color: #1A202B;
+}}
+
+checkbutton check:checked {{
+    color: #081116;
+    border-color: #7DDBE7;
     background-color: {COLOR_ACCENT};
-    border-color: {COLOR_ACCENT};
+    background-image: none;
+    -gtk-icon-source: -gtk-icontheme("object-select-symbolic");
+}}
+
+radiobutton radio:checked {{
+    color: #081116;
+    border: 6px solid {COLOR_ACCENT};
+    background-color: #11141B;
+    background-image: none;
+    transition: none;
+    animation: none;
+}}
+
+checkbutton check:indeterminate {{
+    border-color: #7DDBE7;
+    background-color: {COLOR_ACCENT};
+}}
+
+checkbutton check:disabled, radiobutton radio:disabled {{
+    color: transparent;
+    border-color: #454C59;
+    background-color: #191C24;
 }}
 
 expander title {{
@@ -365,16 +519,24 @@ expander title {{
     font-weight: 600;
 }}
 
+.expander-content {{
+    background-color: {COLOR_CARD};
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-top: 6px;
+}}
+
 textview.technical-log, textview.technical-log text {{
-    background-color: #1A1D24;
+    background-color: #13151D;
     color: {COLOR_TEXT};
     font-family: "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
 }}
 
 scrolledwindow.technical-log {{
-    background-color: #1A1D24;
-    border: 1px solid {COLOR_BORDER};
-    border-radius: 6px;
+    background-color: {COLOR_CARD};
+    border: none;
+    border-radius: 8px;
 }}
 
 scrolledwindow, viewport {{
@@ -395,30 +557,38 @@ menubutton:hover {{
 
 popover {{
     background-color: {COLOR_CARD};
-    border: 1px solid {COLOR_BORDER};
+    border: 1px solid rgba(255, 255, 255, 0.08);
     color: {COLOR_TEXT};
+    border-radius: 8px;
 }}
 
 popover contents {{
     background-color: {COLOR_CARD};
     color: {COLOR_TEXT};
+    border-radius: 8px;
 }}
 
 .kpi-card {{
-    background-color: #14161B;
-    border: 1px solid {COLOR_BORDER};
-    border-radius: 6px;
+    background-color: #151821;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
     padding: 12px 18px;
     min-width: 120px;
 }}
 
 .kpi-value {{
-    font-family: "Consolas", "DejaVu Sans Mono", monospace;
+    font-family: "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
 }}
 
 .status-bar {{
-    background-color: #14161B;
-    border-top: 1px solid {COLOR_BORDER};
+    background-color: #12141A;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}}
+
+/* GTK themes draw a heavy blue focus halo by default; keep focus subtle across all pages. */
+*:focus {{
+    outline: none;
+    box-shadow: none;
 }}
 """.encode("utf-8")
 
@@ -429,7 +599,6 @@ class AuroraGUI:
         self.window.set_default_size(1440, 960)
         self.window.set_size_request(1120, 760)
         self.window.connect("destroy", self._on_close)
-        self.window.connect_after("draw", self._draw_rounded_window_corners)
 
         # No precargar resultados antiguos: el operador debe elegir el par que
         # corresponde a esta medicion y evitar comparar capturas de sesiones distintas.
@@ -460,9 +629,17 @@ class AuroraGUI:
     # ------------------------------------------------------------------ UI
 
     def _build_layout(self) -> None:
-        header_bar = Gtk.HeaderBar()
-        header_bar.set_show_close_button(True)
-        self.window.set_titlebar(header_bar)
+        self.window.set_decorated(False)
+        self.window.set_app_paintable(True)
+        self.window.connect_after("draw", self._draw_rounded_window_corners)
+        titlebar = Gtk.EventBox()
+        titlebar.set_visible_window(False)
+        titlebar.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        titlebar.connect("button-press-event", self._move_window_from_titlebar)
+        titlebar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        titlebar_box.set_name("aurora-titlebar")
+        titlebar_box.set_size_request(-1, 46)
+        titlebar.add(titlebar_box)
 
         self.sidebar_toggle_button = Gtk.Button()
         self.sidebar_toggle_button.get_style_context().add_class("sidebar-toggle")
@@ -476,10 +653,27 @@ class AuroraGUI:
         self.sidebar_toggle_button.set_tooltip_text("Ocultar menú lateral")
         self.sidebar_toggle_button.get_accessible().set_name("Mostrar u ocultar menú lateral")
         self.sidebar_toggle_button.connect("clicked", lambda _button: self._toggle_sidebar())
-        header_bar.pack_start(self.sidebar_toggle_button)
-
+        titlebar_box.pack_start(self.sidebar_toggle_button, False, False, 0)
+        self.section_title = Gtk.Label(label="Medición rápida")
+        self.section_title.set_hexpand(True)
+        self.section_title.set_halign(Gtk.Align.CENTER)
+        self.section_title.set_name("aurora-section-title")
+        titlebar_box.pack_start(self.section_title, True, True, 0)
+        for icon_name, tooltip, callback, style_class in (
+            ("window-minimize-symbolic", "Minimizar", lambda: self.window.iconify(), ""),
+            ("window-maximize-symbolic", "Maximizar o restaurar", self._toggle_maximize, ""),
+            ("window-close-symbolic", "Cerrar", self.window.close, "close"),
+        ):
+            button = Gtk.Button()
+            button.set_image(Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.BUTTON))
+            button.set_tooltip_text(tooltip)
+            if style_class:
+                button.get_style_context().add_class(style_class)
+            button.connect("clicked", lambda _button, cb=callback: cb())
+            titlebar_box.pack_end(button, False, False, 0)
         root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         root_box.set_name("aurora-shell")
+        root_box.pack_start(titlebar, False, False, 0)
         self.window.add(root_box)
 
         content_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
@@ -490,6 +684,7 @@ class AuroraGUI:
         self.stack.set_name("aurora-content")
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         self.stack.set_transition_duration(150)
+        self.stack.connect("notify::visible-child-name", self._update_section_title)
 
         self.stack.add_titled(self._build_quick_measurement_page(), "medicion_rapida", "Medicion rapida")
         self.stack.add_titled(self._build_capture_page(), "captura", "Captura")
@@ -541,13 +736,11 @@ class AuroraGUI:
 
     @staticmethod
     def _draw_rounded_window_corners(widget, cr) -> bool:
-        """Clear only the pixels outside a modest rounded window outline."""
         allocation = widget.get_allocation()
         width, height = allocation.width, allocation.height
-        radius = min(8.0, width / 2.0, height / 2.0)
+        radius = min(10.0, width / 2.0, height / 2.0)
         if width <= 0 or height <= 0 or radius <= 0:
             return False
-
         cr.save()
         cr.set_operator(cairo.OPERATOR_CLEAR)
         cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
@@ -567,6 +760,28 @@ class AuroraGUI:
         cr.fill()
         cr.restore()
         return False
+
+    def _toggle_maximize(self) -> None:
+        if self.window.is_maximized():
+            self.window.unmaximize()
+        else:
+            self.window.maximize()
+
+    def _move_window_from_titlebar(self, _widget, event) -> bool:
+        if event.type == Gdk.EventType.BUTTON_PRESS and event.button == 1:
+            if event.get_click_count()[1] == 2:
+                self._toggle_maximize()
+            else:
+                self.window.begin_move_drag(
+                    event.button, int(event.x_root), int(event.y_root), event.time
+                )
+            return True
+        return False
+
+    def _update_section_title(self, stack, _pspec) -> None:
+        child = stack.get_visible_child()
+        if child is not None:
+            self.section_title.set_text((stack.child_get_property(child, "title") or "").upper())
 
     def _toggle_sidebar(self) -> None:
         is_visible = self.sidebar_revealer.get_reveal_child()
@@ -589,27 +804,26 @@ class AuroraGUI:
             row = Gtk.ListBoxRow()
             row.set_selectable(False)
             row.set_activatable(False)
+            row.set_can_focus(False)
             row.get_style_context().add_class("sidebar-section-header")
             label = Gtk.Label(xalign=0)
-            label.set_markup(f'<small><b>{GLib.markup_escape_text(text)}</b></small>')
-            label.get_style_context().add_class("dim-label")
-            label.set_margin_start(12)
-            label.set_margin_top(12)
+            label.set_text(text.upper())
+            label.set_margin_start(16)
+            label.set_margin_top(8)
             label.set_margin_bottom(2)
             row.add(label)
             listbox.add(row)
 
         def add_page(title: str, stack_name: str) -> None:
             row = Gtk.ListBoxRow()
-            is_quick_page = stack_name == "medicion_rapida"
-            label = Gtk.Label(label=title, xalign=0)
-            if is_quick_page:
+            row.set_can_focus(False)
+            if stack_name == "medicion_rapida":
                 row.get_style_context().add_class("quick-nav")
-                label.set_halign(Gtk.Align.FILL)
+            label = Gtk.Label(label=title, xalign=0)
             label.set_margin_start(16)
             label.set_margin_end(12)
-            label.set_margin_top(8)
-            label.set_margin_bottom(8)
+            label.set_margin_top(7)
+            label.set_margin_bottom(7)
             row.add(label)
             row.stack_name = stack_name
             listbox.add(row)
@@ -734,8 +948,9 @@ class AuroraGUI:
 
         log_frame, log_box = self._section("Registro del calculo")
         log_expander = Gtk.Expander(label="Detalles tecnicos")
-        log_expander.set_expanded(False)
+        log_expander.set_expanded(True)
         log_scroller = Gtk.ScrolledWindow()
+        log_scroller.get_style_context().add_class("expander-content")
         log_scroller.set_min_content_height(220)
         log_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.log_view = Gtk.TextView()
@@ -796,9 +1011,19 @@ class AuroraGUI:
         )
         note.set_line_wrap(True)
         files_box.pack_start(note, False, False, 0)
-        self.quick_connect_hint = Gtk.Button(label="Configurar o conectar el sensor Aurora")
-        self.quick_connect_hint.connect("clicked", lambda _b: self.stack.set_visible_child_name("captura"))
-        files_box.pack_start(self.quick_connect_hint, False, False, 0)
+        sensor_row = self._row(files_box)
+        sensor_row.pack_start(Gtk.Label(label="Sensor Aurora · IP:", xalign=0), False, False, 0)
+        self.quick_sensor_address_entry = Gtk.Entry()
+        self.quick_sensor_address_entry.set_text("192.168.11.1")
+        self.quick_sensor_address_entry.set_width_chars(16)
+        self.quick_sensor_address_entry.connect("changed", self._sync_sensor_address)
+        sensor_row.pack_start(self.quick_sensor_address_entry, False, False, 0)
+        self.quick_connect_button = Gtk.Button(label="Conectar sensor")
+        self.quick_connect_button.connect("clicked", lambda _b: self._toggle_sensor_connection())
+        sensor_row.pack_start(self.quick_connect_button, False, False, 0)
+        self.quick_sensor_status_label = Gtk.Label()
+        self.quick_sensor_status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  Desconectado')
+        sensor_row.pack_start(self.quick_sensor_status_label, False, False, 0)
         page.pack_start(files_frame, False, True, 0)
 
         align_frame, align_box = self._section("2. Verificacion de pose IMU")
@@ -831,6 +1056,7 @@ class AuroraGUI:
         mesh_expander = Gtk.Expander(label="Opcional · crear malla para medir el espesor")
         mesh_expander.set_expanded(False)
         mesh_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        mesh_box.get_style_context().add_class("expander-content")
         self.quick_mesh_check = Gtk.CheckButton(label="Usar una malla para calcular el espesor")
         mesh_box.pack_start(self.quick_mesh_check, False, False, 0)
         mesh_row = self._row(mesh_box)
@@ -955,17 +1181,36 @@ class AuroraGUI:
                 position_error_cm > self.IMU_POSITION_TOLERANCE_CM
                 or max_rotation_error > self.IMU_ROTATION_TOLERANCE_DEG
             ):
-                self.alignment_applied = False
-                self._show_warning(
-                    "Las poses IMU son distintas",
-                    f"Las capturas difieren {position_error_cm:.1f} cm y "
-                    f"{max_rotation_error:.1f} grados. La guia IMU solo ayuda a volver a la "
-                    "pose de ANTES; no transforma las nubes. Como ya tienes las dos capturas, "
-                    "alinea la de DESPUES con puntos fijos antes de calcular.",
+                dialog = Gtk.MessageDialog(
+                    transient_for=self.window,
+                    flags=0,
+                    message_type=Gtk.MessageType.QUESTION,
+                    buttons=Gtk.ButtonsType.NONE,
+                    text="Diferencia de posición del sensor detectada",
                 )
-                self.stack.set_visible_child_name("alineacion")
-                return
-            self.alignment_applied = True
+                dialog.format_secondary_text(
+                    f"El sensor se desplazo {position_error_cm:.1f} cm y roto {max_rotation_error:.1f}° entre ambas tomas.\n\n"
+                    "¿Deseas compensar este movimiento automaticamente por software usando el tracking del sensor antes de calcular?"
+                )
+                dialog.add_button("Cancelar", Gtk.ResponseType.CANCEL)
+                dialog.add_button("Alinear manualmente...", Gtk.ResponseType.REJECT)
+                dialog.add_button("Compensar por pose y calcular", Gtk.ResponseType.ACCEPT)
+                response = dialog.run()
+                dialog.destroy()
+
+                if response == Gtk.ResponseType.ACCEPT:
+                    success = self._apply_pose_alignment(interactive=False)
+                    if not success:
+                        return
+                    self.alignment_applied = True
+                elif response == Gtk.ResponseType.REJECT:
+                    self.alignment_applied = False
+                    self.stack.set_visible_child_name("alineacion")
+                    return
+                else:
+                    return
+            else:
+                self.alignment_applied = True
 
         self.quick_status_label.set_text("Calculando... puedes seguir el progreso en Detalles tecnicos.")
         if self.quick_mesh_check.get_active():
@@ -1016,12 +1261,11 @@ class AuroraGUI:
                 else:
                     self.quick_alignment_status.set_text(
                         f"Poses distintas: {position_error_cm:.1f} cm y "
-                        f"{max_rotation_error:.1f} grados. Usa alineacion por puntos si ya capturaste ambas."
+                        f"{max_rotation_error:.1f}°. Se puede compensar por software al calcular."
                     )
                     self.quick_status_label.set_text(
-                        "La diferencia de pose puede contaminar el espesor. Si aun no aplicaste shotcrete, "
-                        "vuelve a la pose de ANTES con la guia IMU y captura de nuevo; si ya tienes ambas "
-                        "capturas, alinealas por puntos fijos."
+                        "Diferencia de pose detectada. Al presionar 'Calcular espesor' podrás "
+                        "compensarla automáticamente por software sin marcar puntos manuales."
                     )
             else:
                 if self.alignment_applied:
@@ -1059,6 +1303,7 @@ class AuroraGUI:
         self.sensor_address_entry = Gtk.Entry()
         self.sensor_address_entry.set_text("192.168.11.1")
         self.sensor_address_entry.set_width_chars(16)
+        self.sensor_address_entry.connect("changed", self._sync_sensor_address)
         row.pack_start(self.sensor_address_entry, False, False, 0)
         self.connect_button = Gtk.Button(label="Conectar")
         self.connect_button.connect("clicked", lambda _b: self._toggle_sensor_connection())
@@ -1124,8 +1369,9 @@ class AuroraGUI:
         row.pack_start(self.capture_status_label, False, False, 0)
 
         capture_options_expander = Gtk.Expander(label="Ajustes de captura (opcional)")
+        capture_options_expander.set_expanded(True)
         capture_options_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        capture_options_box.set_margin_top(8)
+        capture_options_box.get_style_context().add_class("expander-content")
         capture_options_expander.add(capture_options_box)
         sensor_box.pack_start(capture_options_expander, False, False, 0)
 
@@ -1189,8 +1435,9 @@ class AuroraGUI:
         )
 
         live_tools_expander = Gtk.Expander(label="Herramientas de vista en vivo (opcional)")
+        live_tools_expander.set_expanded(True)
         live_tools_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        live_tools_box.set_margin_top(8)
+        live_tools_box.get_style_context().add_class("expander-content")
         live_tools_expander.add(live_tools_box)
         sensor_box.pack_start(live_tools_expander, False, False, 0)
 
@@ -1309,10 +1556,13 @@ class AuroraGUI:
 
         def add_axis_row(row_idx: int, title: str, swatch_color: str | None = None) -> Gtk.Label:
             title_label = Gtk.Label(xalign=0)
-            swatch = f'<span foreground="{swatch_color}">■</span> ' if swatch_color else ""
+            swatch = f'<span foreground="{swatch_color}">●</span> ' if swatch_color else ""
             title_label.set_markup(f"{swatch}{GLib.markup_escape_text(title)}")
+            title_label.set_size_request(150, -1)
             grid.attach(title_label, 0, row_idx, 1, 1)
-            value_label = Gtk.Label(label="—", xalign=0)
+            value_label = Gtk.Label(label="", xalign=0)
+            value_label.set_width_chars(14)
+            value_label.set_xalign(0.0)
             grid.attach(value_label, 1, row_idx, 1, 1)
             return value_label
 
@@ -1325,10 +1575,13 @@ class AuroraGUI:
             "yaw": add_axis_row(5, "Rotacion (yaw):"),
         }
 
-        row = self._row(guide_box)
-        row.pack_start(Gtk.Label(label="Distancia total:"), False, False, 0)
-        self.imu_total_distance_label = Gtk.Label(label="—")
-        row.pack_start(self.imu_total_distance_label, False, False, 0)
+        total_row = self._row(guide_box)
+        total_caption = Gtk.Label(label="Distancia total:", xalign=0)
+        total_caption.set_size_request(150, -1)
+        total_row.pack_start(total_caption, False, False, 0)
+        self.imu_total_distance_label = Gtk.Label(label="", xalign=0)
+        self.imu_total_distance_label.set_width_chars(14)
+        total_row.pack_start(self.imu_total_distance_label, False, False, 0)
 
         page.pack_start(guide_frame, False, True, 0)
 
@@ -1417,10 +1670,10 @@ class AuroraGUI:
 
         def add_row(row_idx: int, title: str, swatch_color: str | None = None) -> Gtk.Label:
             title_label = Gtk.Label(xalign=0)
-            swatch = f'<span foreground="{swatch_color}">■</span> ' if swatch_color else ""
+            swatch = f'<span foreground="{swatch_color}">●</span> ' if swatch_color else ""
             title_label.set_markup(f"<span size='large'>{swatch}{GLib.markup_escape_text(title)}</span>")
             grid.attach(title_label, 0, row_idx, 1, 1)
-            value_label = Gtk.Label(label="—", xalign=0)
+            value_label = Gtk.Label(label="", xalign=0)
             grid.attach(value_label, 1, row_idx, 1, 1)
             return value_label
 
@@ -1438,7 +1691,9 @@ class AuroraGUI:
 
         total_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         total_row.pack_start(Gtk.Label(label="Distancia total:"), False, False, 0)
-        total_label = Gtk.Label(label="—")
+        total_caption = Gtk.Label(label="Distancia total:")
+        total_row.pack_start(total_caption, False, False, 0)
+        total_label = Gtk.Label(label="")
         total_row.pack_start(total_label, False, False, 0)
         box.pack_start(total_row, False, False, 0)
         self.imu_hud_total_distance_label = total_label
@@ -1484,13 +1739,13 @@ class AuroraGUI:
     def _set_imu_guide_disabled(self, message: str) -> None:
         self.imu_guide_status_label.set_text(message)
         for label in self.imu_axis_labels.values():
-            label.set_text("—")
-        self.imu_total_distance_label.set_text("—")
+            label.set_text("")
+        self.imu_total_distance_label.set_text("")
         if self.imu_hud_labels is not None:
             self.imu_hud_status_label.set_text(message)
             for label in self.imu_hud_labels.values():
-                label.set_text("—")
-            self.imu_hud_total_distance_label.set_text("—")
+                label.set_text("")
+            self.imu_hud_total_distance_label.set_text("")
 
     def _start_imu_poll(self) -> None:
         if self.imu_poll_source_id is not None:
@@ -1699,7 +1954,26 @@ class AuroraGUI:
         info_box.pack_start(note, False, False, 0)
         page.pack_start(info_frame, False, True, 0)
 
-        step_frame, step_box = self._section("Paso 1: elegir los mismos puntos en ambas nubes")
+        pose_frame, pose_box = self._section("Opción rápida: Alineación automática por Pose IMU/SLAM")
+        pose_desc = Gtk.Label(
+            label=(
+                "Si ambas capturas conservan el tracking del sensor, el sistema puede compensar "
+                "automáticamente los centímetros o grados que se haya movido el trípode sin necesidad de marcar puntos a mano."
+            ),
+            xalign=0,
+        )
+        pose_desc.set_line_wrap(True)
+        pose_box.pack_start(pose_desc, False, False, 0)
+
+        pose_row = self._row(pose_box)
+        self.apply_pose_alignment_btn = Gtk.Button(label="Compensar movimiento automáticamente por pose")
+        self.apply_pose_alignment_btn.connect("clicked", lambda _b: self._apply_pose_alignment(interactive=True))
+        pose_row.pack_start(self.apply_pose_alignment_btn, False, False, 0)
+        self.pose_alignment_status_label = Gtk.Label(label="")
+        pose_row.pack_start(self.pose_alignment_status_label, False, False, 0)
+        page.pack_start(pose_frame, False, True, 0)
+
+        step_frame, step_box = self._section("Método alternativo: marcar puntos fijos (respaldo)")
 
         row = self._row(step_box)
         pick_base_button = Gtk.Button(label="1. Elegir puntos en el tunel original...")
@@ -1775,26 +2049,20 @@ class AuroraGUI:
         return self._scrolled(page)
 
     def _load_manual_reference_photo(self, which: str) -> None:
-        native, path = self._windows_native_file_dialog(
-            "open",
-            "Seleccionar foto de referencia (_ref.npz)",
-            filetypes=(("Foto de referencia (*_ref.npz)", "*_ref.npz"), ("Archivos NPZ", "*.npz")),
-        )
-        if not native:
-            dialog = Gtk.FileChooserDialog(
+        dialog = Gtk.FileChooserDialog(
                 title="Seleccionar foto de referencia (_ref.npz)",
                 parent=self.window,
                 action=Gtk.FileChooserAction.OPEN,
-            )
-            dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Abrir", Gtk.ResponseType.OK)
-            filter_npz = Gtk.FileFilter()
-            filter_npz.set_name("Foto de referencia (*_ref.npz)")
-            filter_npz.add_pattern("*.npz")
-            dialog.add_filter(filter_npz)
-            path = None
-            if dialog.run() == Gtk.ResponseType.OK:
-                path = dialog.get_filename()
-            dialog.destroy()
+        )
+        dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Abrir", Gtk.ResponseType.OK)
+        filter_npz = Gtk.FileFilter()
+        filter_npz.set_name("Foto de referencia (*_ref.npz)")
+        filter_npz.add_pattern("*.npz")
+        dialog.add_filter(filter_npz)
+        path = None
+        if dialog.run() == Gtk.ResponseType.OK:
+            path = dialog.get_filename()
+        dialog.destroy()
         if not path:
             return
 
@@ -1944,6 +2212,84 @@ class AuroraGUI:
         self.alignment_result_label.set_text("Error al aplicar la alineacion")
         self._show_error("Error", message)
 
+    def _apply_pose_alignment(self, interactive: bool = True) -> bool:
+        base_file = Path(self.base_path)
+        updated_file = Path(self.updated_path)
+        if not base_file.is_file() or not updated_file.is_file():
+            if interactive:
+                self._show_error("Archivos no encontrados", "Verifica que ambas nubes estén seleccionadas.")
+            return False
+
+        base_pose = load_reference_pose(base_file)
+        updated_pose = load_reference_pose(updated_file)
+
+        if base_pose is None or updated_pose is None:
+            if interactive:
+                self._show_error(
+                    "Faltan datos de pose",
+                    "Uno o ambos archivos .ply no tienen archivo de pose (_pose.npz) asociado.\n\n"
+                    "Para usar la compensación automática, las capturas deben haberse realizado "
+                    "con el sensor Aurora conectado.",
+                )
+            return False
+
+        try:
+            R_rel, t_rel = compute_pose_relative_transform(base_pose, updated_pose)
+            dist_cm = float(np.linalg.norm(t_rel)) * 100.0
+            cos_angle = float(np.clip((np.trace(R_rel) - 1.0) / 2.0, -1.0, 1.0))
+            rot_deg = float(np.degrees(np.arccos(cos_angle)))
+
+            cloud = load_point_cloud(updated_file)
+            aligned = apply_rigid_transform(cloud, R_rel, t_rel)
+            aligned_path = updated_file.with_name(updated_file.stem + "_alineado_pose.ply")
+            import open3d as o3d
+            o3d.io.write_point_cloud(str(aligned_path), aligned)
+
+            # Guardar pose de la base para la nueva nube alineada para reflejar que ya coinciden
+            save_reference_pose(aligned_path, base_pose[0], base_pose[1])
+
+            # Copiar foto de referencia si existe
+            ref_photo_src = reference_photo_path_for(updated_file)
+            if ref_photo_src.exists():
+                ref_photo_dst = reference_photo_path_for(aligned_path)
+                try:
+                    import shutil
+                    shutil.copyfile(ref_photo_src, ref_photo_dst)
+                except Exception:
+                    pass
+
+            self._invalidate_results()
+            self.alignment_applied = True
+            self.updated_path = str(aligned_path)
+            self._set_path_label(self.updated_path_label, str(aligned_path))
+            for name in ("raycast_updated_path_label", "quick_updated_path_label"):
+                label = getattr(self, name, None)
+                if label is not None:
+                    self._set_path_label(label, str(aligned_path))
+
+            msg = f"Compensación aplicada: {dist_cm:.1f} cm y {rot_deg:.1f}° corregidos."
+            if hasattr(self, "quick_alignment_status"):
+                self.quick_alignment_status.set_text(f"Alineación por pose aplicada ({dist_cm:.1f} cm)")
+            if hasattr(self, "pose_alignment_status_label"):
+                self.pose_alignment_status_label.set_text(f"✓ {msg}")
+            self._refresh_quick_status()
+            self._log(f"Alineación por pose completada: {msg} (guardado en {aligned_path.name})")
+
+            if interactive:
+                self._show_info(
+                    "Alineación por pose aplicada",
+                    f"Se compensó el movimiento del sensor exitosamente:\n\n"
+                    f"• Desplazamiento compensado: {dist_cm:.1f} cm\n"
+                    f"• Rotación compensada: {rot_deg:.1f}°\n\n"
+                    f"Nube alineada guardada como:\n{aligned_path.name}\n\n"
+                    "Medición rápida ya usa esta nube alineada.",
+                )
+            return True
+        except Exception as exc:
+            if interactive:
+                self._show_error("Error al compensar pose", str(exc))
+            return False
+
     # -- Pagina: preparar y recortar un par de nubes -----------------------------
 
     def _build_prepare_clouds_page(self) -> Gtk.Widget:
@@ -2013,11 +2359,11 @@ class AuroraGUI:
 
         row = self._row(bounds_box)
         row.pack_start(Gtk.Label(label="Profundidad del box (cm):"), False, False, 0)
-        depth_adjustment = Gtk.Adjustment(
-            value=10.0, lower=1.0, upper=100.0, step_increment=1.0, page_increment=5.0
-        )
-        self.test_crop_depth_spin = Gtk.SpinButton(adjustment=depth_adjustment, climb_rate=1.0, digits=1)
-        self.test_crop_depth_spin.connect("value-changed", lambda _spin: self._on_test_crop_depth_changed())
+        self.test_crop_depth_spin = Gtk.Entry()
+        self.test_crop_depth_spin.set_text("10.0")
+        self.test_crop_depth_spin.set_width_chars(8)
+        self.test_crop_depth_spin.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        self.test_crop_depth_spin.connect("changed", lambda _entry: self._on_test_crop_depth_changed())
         row.pack_start(self.test_crop_depth_spin, False, False, 0)
         self.test_crop_preview_button = Gtk.Button(label="Vista previa del box")
         self.test_crop_preview_button.connect("clicked", lambda _button: self._preview_test_crop_bounds())
@@ -2075,6 +2421,16 @@ class AuroraGUI:
 
         return self._scrolled(page)
 
+    def _get_test_crop_depth_m(self) -> float:
+        value_text = self.test_crop_depth_spin.get_text().strip().replace(",", ".")
+        try:
+            value_cm = float(value_text)
+        except ValueError as exc:
+            raise ValueError("Introduce una profundidad numérica entre 1 y 100 cm.") from exc
+        if not np.isfinite(value_cm) or not 1.0 <= value_cm <= 100.0:
+            raise ValueError("La profundidad debe estar entre 1 y 100 cm.")
+        return value_cm / 100.0
+
     def _on_test_crop_depth_changed(self) -> None:
         if self.test_crop_bounds is None:
             return
@@ -2114,19 +2470,18 @@ class AuroraGUI:
             self.test_crop_output_dir_label.set_tooltip_text(str(self.test_crop_output_dir))
 
     def _choose_test_crop_output_dir(self) -> None:
-        native, path = self._windows_native_file_dialog("folder", "Elegir carpeta para los dos recortes")
-        if not native:
-            dialog = Gtk.FileChooserDialog(
+        dialog = Gtk.FileChooserDialog(
                 title="Elegir carpeta para los dos recortes",
                 parent=self.window,
                 action=Gtk.FileChooserAction.SELECT_FOLDER,
-            )
-            dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Seleccionar", Gtk.ResponseType.OK)
-            if self.test_crop_output_dir and self.test_crop_output_dir.is_dir():
-                dialog.set_current_folder(str(self.test_crop_output_dir))
-            if dialog.run() == Gtk.ResponseType.OK:
-                path = dialog.get_filename()
-            dialog.destroy()
+        )
+        dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Seleccionar", Gtk.ResponseType.OK)
+        if self.test_crop_output_dir and self.test_crop_output_dir.is_dir():
+            dialog.set_current_folder(str(self.test_crop_output_dir))
+        path = None
+        if dialog.run() == Gtk.ResponseType.OK:
+            path = dialog.get_filename()
+        dialog.destroy()
         if path:
             self.test_crop_output_dir = Path(path)
             self.test_crop_output_dir_is_custom = True
@@ -2199,8 +2554,8 @@ class AuroraGUI:
     def _preview_test_crop_bounds(self) -> None:
         if self.test_crop_bounds is None:
             return
-        depth_m = self.test_crop_depth_spin.get_value() / 100.0
         try:
+            depth_m = self._get_test_crop_depth_m()
             before, after = self._load_test_crop_pair()
             before_cut = crop_cloud_by_face_depth(before, self.test_crop_bounds, depth_m)
             after_cut = crop_cloud_by_face_depth(after, self.test_crop_bounds, depth_m)
@@ -2241,7 +2596,11 @@ class AuroraGUI:
             index += 1
 
         bounds = self.test_crop_bounds
-        depth_m = self.test_crop_depth_spin.get_value() / 100.0
+        try:
+            depth_m = self._get_test_crop_depth_m()
+        except ValueError as exc:
+            self._show_error("Profundidad no válida", str(exc))
+            return
         for button in (
             self.test_crop_choose_before_button,
             self.test_crop_choose_after_button,
@@ -2343,8 +2702,9 @@ class AuroraGUI:
 
     def _build_advanced_expander_page2(self) -> tuple[Gtk.Widget, Gtk.Box]:
         expander = Gtk.Expander(label="Opciones avanzadas")
-        expander.set_expanded(False)
+        expander.set_expanded(True)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.get_style_context().add_class("expander-content")
         box.set_margin_start(4)
         box.set_margin_top(10)
         box.set_margin_bottom(4)
@@ -2451,17 +2811,17 @@ class AuroraGUI:
 
         row = self._row(color_box)
         self.color_continuous_rb = Gtk.RadioButton.new_with_label_from_widget(None, "Escala continua")
-        self.color_continuous_rb.connect("toggled", lambda _b: self._on_color_mode_changed())
+        self.color_continuous_rb.connect("toggled", lambda button: self._on_color_mode_changed() if button.get_active() else None)
         row.pack_start(self.color_continuous_rb, False, False, 0)
         self.color_banded_rb = Gtk.RadioButton.new_with_label_from_widget(
             self.color_continuous_rb, "3 niveles de color"
         )
-        self.color_banded_rb.connect("toggled", lambda _b: self._on_color_mode_changed())
+        self.color_banded_rb.connect("toggled", lambda button: self._on_color_mode_changed() if button.get_active() else None)
         row.pack_start(self.color_banded_rb, False, False, 0)
         self.color_six_bands_rb = Gtk.RadioButton.new_with_label_from_widget(
             self.color_continuous_rb, "6 niveles (espesor objetivo)"
         )
-        self.color_six_bands_rb.connect("toggled", lambda _b: self._on_color_mode_changed())
+        self.color_six_bands_rb.connect("toggled", lambda button: self._on_color_mode_changed() if button.get_active() else None)
         row.pack_start(self.color_six_bands_rb, False, False, 0)
         row.pack_start(
             self._info_button(
@@ -2479,7 +2839,7 @@ class AuroraGUI:
         )
 
         self.band_revealer = Gtk.Revealer()
-        self.band_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self.band_revealer.set_transition_type(Gtk.RevealerTransitionType.NONE)
         band_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         band_row.pack_start(Gtk.Label(label="Hasta este espesor = verde (mm):"), False, False, 0)
         self.band_low_entry = Gtk.Entry()
@@ -2495,7 +2855,7 @@ class AuroraGUI:
         color_box.pack_start(self.band_revealer, False, False, 0)
 
         self.six_bands_revealer = Gtk.Revealer()
-        self.six_bands_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self.six_bands_revealer.set_transition_type(Gtk.RevealerTransitionType.NONE)
         six_bands_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         six_bands_row.pack_start(Gtk.Label(label="Espesor objetivo (cm):"), False, False, 0)
         self.target_thickness_entry = Gtk.Entry()
@@ -2513,9 +2873,10 @@ class AuroraGUI:
 
         self.color_banded_rb.set_active(True)  # despues de crear los revealers: dispara _on_color_mode_changed
 
-        advanced_frame, advanced_box = Gtk.Expander(label="Opciones avanzadas"), None
-        advanced_frame.set_expanded(False)
+        advanced_frame = Gtk.Expander(label="Opciones avanzadas")
+        advanced_frame.set_expanded(True)
         adv_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        adv_inner.get_style_context().add_class("expander-content")
         adv_inner.set_margin_start(4)
         adv_inner.set_margin_top(10)
         advanced_frame.add(adv_inner)
@@ -3109,14 +3470,6 @@ class AuroraGUI:
         return label
 
     def _run_open_file_dialog(self) -> str | None:
-        native, path = self._windows_native_file_dialog(
-            "open",
-            "Seleccionar archivo .ply",
-            filetypes=(("Nubes de puntos PLY", "*.ply"), ("Todos los archivos", "*.*")),
-        )
-        if native:
-            return path
-
         dialog = Gtk.FileChooserDialog(
             title="Seleccionar archivo .ply", parent=self.window, action=Gtk.FileChooserAction.OPEN
         )
@@ -3132,13 +3485,6 @@ class AuroraGUI:
         return path
 
     def _browse_output_dir(self) -> None:
-        native, path = self._windows_native_file_dialog("folder", "Seleccionar carpeta de salida")
-        if native:
-            if path:
-                self.output_dir = path
-                self._set_path_label(self.output_dir_label, path)
-            return
-
         dialog = Gtk.FileChooserDialog(
             title="Seleccionar carpeta de salida", parent=self.window, action=Gtk.FileChooserAction.SELECT_FOLDER
         )
@@ -3149,18 +3495,6 @@ class AuroraGUI:
         dialog.destroy()
 
     def _save_file_dialog(self, title: str, initial_dir: Path, initial_name: str) -> str | None:
-        native, path = self._windows_native_file_dialog(
-            "save",
-            title,
-            initialdir=str(initial_dir),
-            initialfile=initial_name,
-            defaultextension=".ply",
-            filetypes=(("Nube de puntos PLY", "*.ply"), ("Todos los archivos", "*.*")),
-            confirmoverwrite=True,
-        )
-        if native:
-            return path
-
         dialog = Gtk.FileChooserDialog(title=title, parent=self.window, action=Gtk.FileChooserAction.SAVE)
         dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Guardar", Gtk.ResponseType.OK)
         dialog.set_do_overwrite_confirmation(True)
@@ -3171,39 +3505,6 @@ class AuroraGUI:
             path = dialog.get_filename()
         dialog.destroy()
         return path
-
-    def _windows_native_file_dialog(self, action: str, title: str, **options) -> tuple[bool, str | None]:
-        """Usa el selector comun de Windows; en otros sistemas se conserva GTK."""
-        if os.name != "nt":
-            return False, None
-        root = None
-        try:
-            import tkinter as tk
-            from tkinter import filedialog
-
-            root = tk.Tk()
-            root.withdraw()
-            root.update_idletasks()
-            options["parent"] = root
-            options["title"] = title
-            if action == "open":
-                selected = filedialog.askopenfilename(**options)
-            elif action == "folder":
-                selected = filedialog.askdirectory(**options)
-            elif action == "save":
-                selected = filedialog.asksaveasfilename(**options)
-            else:
-                raise ValueError(f"Tipo de selector desconocido: {action}")
-            return True, selected or None
-        except Exception as exc:
-            self._log(f"No se pudo abrir el selector nativo de Windows; se usara GTK: {exc}")
-            return False, None
-        finally:
-            if root is not None:
-                try:
-                    root.destroy()
-                except Exception:
-                    pass
 
     def _show_error(self, title: str, message: str) -> None:
         dialog = Gtk.MessageDialog(
@@ -3264,14 +3565,30 @@ class AuroraGUI:
 
     # ------------------------------------------------------------ Sensor
 
+    def _sync_sensor_address(self, source_entry) -> None:
+        if not hasattr(self, "sensor_address_entry") or not hasattr(self, "quick_sensor_address_entry"):
+            return
+        target = self.quick_sensor_address_entry if source_entry is self.sensor_address_entry else self.sensor_address_entry
+        if target.get_text() != source_entry.get_text():
+            target.set_text(source_entry.get_text())
+
+    def _set_sensor_ui_state(self, connected: bool, connecting: bool = False) -> None:
+        button_text = "Conectando..." if connecting else ("Desconectar" if connected else "Conectar sensor")
+        status = "Conectando..." if connecting else ("Conectado" if connected else "Desconectado")
+        color = COLOR_WARN if connecting else (COLOR_OK if connected else COLOR_ERROR)
+        for button in (self.connect_button, self.quick_connect_button):
+            button.set_label(button_text)
+            button.set_sensitive(not connecting)
+        for label in (self.sensor_status_label, self.quick_sensor_status_label):
+            label.set_markup(f'<span foreground="{color}">●</span>  {status}')
+
     def _toggle_sensor_connection(self) -> None:
         if self.sensor_connection is not None:
             self._disconnect_sensor()
             return
 
         address = self.sensor_address_entry.get_text().strip()
-        self.connect_button.set_sensitive(False)
-        self.sensor_status_label.set_markup(f'<span foreground="{COLOR_WARN}">●</span>  Conectando...')
+        self._set_sensor_ui_state(False, connecting=True)
 
         def worker():
             try:
@@ -3284,9 +3601,7 @@ class AuroraGUI:
 
     def _on_sensor_connected(self, connection) -> None:
         self.sensor_connection = connection
-        self.connect_button.set_label("Desconectar")
-        self.connect_button.set_sensitive(True)
-        self.sensor_status_label.set_markup(f'<span foreground="{COLOR_OK}">●</span>  Conectado')
+        self._set_sensor_ui_state(True)
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
         self.start_live_capture_button.set_sensitive(True)
@@ -3299,8 +3614,7 @@ class AuroraGUI:
         self._log(f"Conectado al sensor Aurora en {self.sensor_address_entry.get_text()}.")
 
     def _on_sensor_connect_failed(self, exc: Exception) -> None:
-        self.connect_button.set_sensitive(True)
-        self.sensor_status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  Desconectado')
+        self._set_sensor_ui_state(False)
         self._show_error("Error de conexion", str(exc))
 
     def _disconnect_sensor(self) -> None:
@@ -3311,8 +3625,7 @@ class AuroraGUI:
         except Exception as exc:
             self._log(f"Aviso al desconectar: {exc}")
         self.sensor_connection = None
-        self.connect_button.set_label("Conectar")
-        self.sensor_status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  Desconectado')
+        self._set_sensor_ui_state(False)
         self.capture_base_button.set_sensitive(False)
         self.capture_updated_button.set_sensitive(False)
         self.stop_capture_button.set_sensitive(False)
@@ -3542,20 +3855,16 @@ class AuroraGUI:
             self._show_info("Sin frame disponible", "Aun no hay nube en vivo para guardar.")
             return
 
-        native, target_dir = self._windows_native_file_dialog(
-            "folder", "Seleccionar carpeta para guardar nubes en vivo"
-        )
-        if not native:
-            dialog = Gtk.FileChooserDialog(
+        dialog = Gtk.FileChooserDialog(
                 title="Seleccionar carpeta para guardar nubes en vivo",
                 parent=self.window,
                 action=Gtk.FileChooserAction.SELECT_FOLDER,
-            )
-            dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Seleccionar", Gtk.ResponseType.OK)
-            target_dir = None
-            if dialog.run() == Gtk.ResponseType.OK:
-                target_dir = dialog.get_filename()
-            dialog.destroy()
+        )
+        dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Seleccionar", Gtk.ResponseType.OK)
+        target_dir = None
+        if dialog.run() == Gtk.ResponseType.OK:
+            target_dir = dialog.get_filename()
+        dialog.destroy()
         if not target_dir:
             self._log("Guardado de nubes en vivo cancelado.")
             return
@@ -4208,7 +4517,8 @@ class AuroraGUI:
                 aurora_sensor.disconnect(self.sensor_connection)
             except Exception:
                 pass
-        Gtk.main_quit()
+        if Gtk.main_level() > 0:
+            Gtk.main_quit()
 
 
 def main() -> None:
@@ -4226,7 +4536,6 @@ def main() -> None:
     rgba_visual = Gdk.Screen.get_default().get_rgba_visual()
     if rgba_visual is not None:
         window.set_visual(rgba_visual)
-        window.set_app_paintable(True)
     window.set_title("Aurora — Medicion de espesor de shotcrete")
     AuroraGUI(window)
     window.show_all()

@@ -8,12 +8,7 @@ exactamente el patron del ejemplo oficial 'examples/dense_point_cloud.py'
 del repositorio. Antes de confiar en el flujo completo, probalo primero
 con el sensor conectado.
 
-Instalacion del SDK (no esta en PyPI, hay que compilarlo):
-    git clone --recursive https://github.com/Slamtec/py_aurora_remote.git
-    cd py_aurora_remote
-    pip install -r requirements-dev.txt
-    python tools/build_package.py --platforms win64
-    pip install wheels/slamtec_aurora_python_sdk_win64-2.1.1-py3-none-any.whl
+Instalacion del SDK: ver la seccion correspondiente del README del proyecto.
 """
 
 from __future__ import annotations
@@ -39,25 +34,11 @@ def _import_sdk():
             DEPTHCAM_FRAME_TYPE_POINT3D,
         )
         from slamtec_aurora_sdk.exceptions import AuroraSDKError
-    except ImportError:
-        import sys
-        from pathlib import Path
-        root_dir = Path(__file__).resolve().parent.parent
-        bindings_dir = root_dir / "python_bindings"
-        if str(bindings_dir) not in sys.path:
-            sys.path.insert(0, str(bindings_dir))
-        try:
-            from slamtec_aurora_sdk import (
-                AuroraSDK,
-                ENHANCED_IMAGE_TYPE_DEPTH,
-                DEPTHCAM_FRAME_TYPE_POINT3D,
-            )
-            from slamtec_aurora_sdk.exceptions import AuroraSDKError
-        except ImportError as exc:
-            raise AuroraNotAvailable(
-                "No se encontro el SDK de Slamtec Aurora (paquete 'slamtec_aurora_sdk'). "
-                "Revisa la seccion de instalacion del sensor en el README."
-            ) from exc
+    except ImportError as exc:
+        raise AuroraNotAvailable(
+            "No se encontro el SDK de Slamtec Aurora en el entorno Python activo. "
+            "Instalalo siguiendo la seccion del sensor en el README."
+        ) from exc
     return AuroraSDK, ENHANCED_IMAGE_TYPE_DEPTH, DEPTHCAM_FRAME_TYPE_POINT3D, AuroraSDKError
 
 
