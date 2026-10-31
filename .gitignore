@@ -2,8 +2,10 @@ venv/
 __pycache__/
 *.pyc
 
-# Nubes de puntos y resultados generados (binarios/pesados, no versionar)
+# Nubes de puntos, fotos de referencia y resultados generados
+# (binarios/pesados, y las fotos son del sitio real capturado - no versionar)
 data/**/*.ply
+data/**/*.npz
 !data/.gitkeep
 output/*
 !output/.gitkeep

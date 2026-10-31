@@ -8,12 +8,7 @@ exactamente el patron del ejemplo oficial 'examples/dense_point_cloud.py'
 del repositorio. Antes de confiar en el flujo completo, probalo primero
 con el sensor conectado.
 
-Instalacion del SDK (no esta en PyPI, hay que compilarlo):
-    git clone --recursive https://github.com/Slamtec/py_aurora_remote.git
-    cd py_aurora_remote
-    pip install -r requirements-dev.txt
-    python tools/build_package.py --platforms win64
-    pip install wheels/slamtec_aurora_python_sdk_win64-2.1.1-py3-none-any.whl
+Instalacion del SDK: ver la seccion correspondiente del README del proyecto.
 """
 
 from __future__ import annotations
@@ -39,25 +34,11 @@ def _import_sdk():
             DEPTHCAM_FRAME_TYPE_POINT3D,
         )
         from slamtec_aurora_sdk.exceptions import AuroraSDKError
-    except ImportError:
-        import sys
-        from pathlib import Path
-        root_dir = Path(__file__).resolve().parent.parent
-        bindings_dir = root_dir / "python_bindings"
-        if str(bindings_dir) not in sys.path:
-            sys.path.insert(0, str(bindings_dir))
-        try:
-            from slamtec_aurora_sdk import (
-                AuroraSDK,
-                ENHANCED_IMAGE_TYPE_DEPTH,
-                DEPTHCAM_FRAME_TYPE_POINT3D,
-            )
-            from slamtec_aurora_sdk.exceptions import AuroraSDKError
-        except ImportError as exc:
-            raise AuroraNotAvailable(
-                "No se encontro el SDK de Slamtec Aurora (paquete 'slamtec_aurora_sdk'). "
-                "Revisa la seccion de instalacion del sensor en el README."
-            ) from exc
+    except ImportError as exc:
+        raise AuroraNotAvailable(
+            "No se encontro el SDK de Slamtec Aurora en el entorno Python activo. "
+            "Instalalo siguiendo la seccion del sensor en el README."
+        ) from exc
     return AuroraSDK, ENHANCED_IMAGE_TYPE_DEPTH, DEPTHCAM_FRAME_TYPE_POINT3D, AuroraSDKError
 
 
@@ -101,6 +82,30 @@ def disconnect(connection: AuroraConnection) -> None:
     finally:
         connection.sdk.disconnect()
         connection.sdk.release()
+
+
+@dataclass
+class SensorPose:
+    position: np.ndarray  # (x, y, z) en metros, mismo frame que las nubes crudas
+    rpy_deg: np.ndarray  # (roll, pitch, yaw) en grados
+    timestamp_ns: int
+
+
+def get_current_pose(connection: AuroraConnection) -> SensorPose:
+    """Pose actual del sensor (posicion + orientacion) segun el tracking
+    visual-inercial (SLAM+IMU) del Aurora, en el mismo sistema de coordenadas
+    que las nubes crudas que devuelve read_frame_points. Se usa para guiar al
+    usuario a devolver el sensor a la posicion donde capturo la nube base
+    (pestana 'Alineacion IMU'), sin necesidad de recorrer toda la nube."""
+    try:
+        position, rpy, timestamp_ns = connection.sdk.get_current_pose(use_se3=False)
+    except Exception as exc:
+        raise RuntimeError(f"No se pudo obtener la posicion actual del sensor: {exc}") from exc
+    return SensorPose(
+        position=np.array(position, dtype=np.float64),
+        rpy_deg=np.degrees(np.array(rpy, dtype=np.float64)),
+        timestamp_ns=int(timestamp_ns),
+    )
 
 
 def read_frame_points(
@@ -332,6 +337,64 @@ def read_frame_points_and_colors(
         colors = colors[idx]
 
     return points, colors
+
+
+def capture_reference_frame(
+    connection: AuroraConnection,
+    timeout_ms: int = 300,
+    max_distance_m: float | None = None,
+) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    """
+    Captura un unico frame "de referencia": la foto de camara tal cual la ve
+    el sensor, mas un grid 3D (alto x ancho x 3) con el punto correspondiente
+    a cada pixel del frame de profundidad (NaN donde no hay profundidad
+    valida). Sirve para elegir puntos de referencia sobre la foto en vez de
+    sobre la nube de puntos cruda, para el caso en que un punto (ej. la
+    punta de un perno) se ve claro en la foto pero el sensor de profundidad
+    no llega a resolverlo como puntos 3D limpios (objeto muy fino).
+
+    Devuelve (None, None) si no hay frame organizado o no hay imagen de
+    camara disponible (best-effort: no debe romper la captura principal).
+    """
+    _, _, DEPTHCAM_FRAME_TYPE_POINT3D, _ = _import_sdk()
+    sdk = connection.sdk
+
+    if not sdk.enhanced_imaging.wait_depth_camera_next_frame(timeout_ms):
+        return None, None
+
+    frame = sdk.enhanced_imaging.peek_depth_camera_frame(DEPTHCAM_FRAME_TYPE_POINT3D)
+    if frame is None or not frame.data:
+        return None, None
+
+    points = frame.to_point3d_array()
+    if points is None or len(points) == 0:
+        return None, None
+
+    width, height = frame.width, frame.height
+    if len(points) != width * height:
+        return None, None  # necesitamos un grid organizado para mapear pixel -> punto
+
+    camera_image = None
+    if hasattr(frame, "timestamp_ns") and frame.timestamp_ns > 0:
+        try:
+            camera_image = sdk.enhanced_imaging.peek_depth_camera_related_rectified_image(frame.timestamp_ns)
+        except Exception:
+            camera_image = None
+
+    img_rgb = _extract_camera_rgb_image(camera_image) if camera_image is not None else None
+    if img_rgb is None:
+        return None, None
+
+    point_grid = points.reshape(height, width, 3).astype(np.float32)
+    valid = ~np.all(point_grid == 0, axis=2)
+    valid &= np.all(np.isfinite(point_grid), axis=2)
+    distance = np.linalg.norm(point_grid, axis=2)
+    max_range = max_distance_m if (max_distance_m is not None and max_distance_m > 0) else 50.0
+    valid &= (distance > 0.1) & (distance < max_range)
+    point_grid[~valid] = np.nan
+
+    image_uint8 = np.clip(img_rgb * 255.0, 0, 255).astype(np.uint8)
+    return image_uint8, point_grid
 
 
 def _voxel_keys(points: np.ndarray, voxel_size: float) -> np.ndarray:

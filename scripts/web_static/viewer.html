@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Aurora - Vista 3D en vivo</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #0f1115; overflow: hidden; touch-action: none; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #status {
+    position: fixed; top: 8px; left: 8px; padding: 6px 10px; border-radius: 6px;
+    background: rgba(0,0,0,0.55); color: #e6e6e6; font: 13px/1.3 sans-serif; z-index: 10;
+  }
+  #status.ok { color: #34c759; }
+  #status.err { color: #ff3b30; }
+  #hint {
+    position: fixed; bottom: 8px; left: 8px; right: 8px; text-align: center;
+    color: #9aa0a6; font: 12px/1.3 sans-serif; z-index: 10; pointer-events: none;
+  }
+  #settingsToggle {
+    position: fixed; top: 8px; right: 8px; z-index: 20;
+    width: 40px; height: 40px; border-radius: 20px; border: none;
+    background: rgba(0,0,0,0.55); color: #e6e6e6; font-size: 18px; line-height: 1;
+    cursor: pointer;
+  }
+  #settingsPanel {
+    position: fixed; top: 56px; right: 8px; z-index: 20; width: 220px;
+    background: rgba(15,17,21,0.92); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px; padding: 12px; color: #e6e6e6; font: 13px/1.4 sans-serif;
+    display: none;
+  }
+  #settingsPanel.open { display: block; }
+  #settingsPanel label { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; gap: 8px; }
+  #settingsPanel input[type="range"] { flex: 1; }
+  #settingsPanel input[type="color"] { width: 44px; height: 26px; border: none; background: none; padding: 0; }
+  #settingsPanel button {
+    width: 100%; margin-top: 6px; padding: 7px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.06); color: #e6e6e6; font: 13px sans-serif; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="status">Conectando...</div>
+<div id="hint">Arrastra un dedo para orbitar - dos dedos para acercar/alejar</div>
+<button id="settingsToggle" title="Opciones de vista">&#9881;</button>
+<div id="settingsPanel">
+  <label>Color de fondo <input type="color" id="optBgColor" /></label>
+  <label>Tamano punto (base) <input type="range" id="optSizeBase" min="1" max="6" step="0.5" /></label>
+  <label>Tamano punto (en vivo) <input type="range" id="optSizeLive" min="1" max="8" step="0.5" /></label>
+  <label>Mostrar tunel original <input type="checkbox" id="optShowBase" /></label>
+  <label>Mostrar resultado en vivo <input type="checkbox" id="optShowLive" /></label>
+  <button id="optResetView">Centrar vista</button>
+  <button id="optResetDefaults">Restaurar valores por defecto</button>
+</div>
+<script>
+(function () {
+  "use strict";
+
+  const WS_PORT = {{WS_PORT}};
+  const canvas = document.getElementById("gl");
+  const statusEl = document.getElementById("status");
+  const gl = canvas.getContext("webgl", { antialias: true }) || canvas.getContext("experimental-webgl");
+  if (!gl) {
+    statusEl.textContent = "Este navegador no soporta WebGL.";
+    statusEl.className = "err";
+    return;
+  }
+
+  // ---------------------------------------------------------------- Shaders
+  const vsSource = `
+    attribute vec3 aPosition;
+    attribute vec3 aColor;
+    uniform mat4 uViewProj;
+    uniform float uPointSize;
+    varying vec3 vColor;
+    void main() {
+      gl_Position = uViewProj * vec4(aPosition, 1.0);
+      gl_PointSize = uPointSize;
+      vColor = aColor;
+    }
+  `;
+  const fsSource = `
+    precision mediump float;
+    varying vec3 vColor;
+    void main() {
+      vec2 d = gl_PointCoord - vec2(0.5);
+      if (dot(d, d) > 0.25) discard;
+      gl_FragColor = vec4(vColor, 1.0);
+    }
+  `;
+
+  function compileShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      throw new Error("Error de shader: " + gl.getShaderInfoLog(shader));
+    }
+    return shader;
+  }
+
+  const program = gl.createProgram();
+  gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vsSource));
+  gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fsSource));
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw new Error("Error de link: " + gl.getProgramInfoLog(program));
+  }
+  gl.useProgram(program);
+
+  const aPosition = gl.getAttribLocation(program, "aPosition");
+  const aColor = gl.getAttribLocation(program, "aColor");
+  const uViewProj = gl.getUniformLocation(program, "uViewProj");
+  const uPointSize = gl.getUniformLocation(program, "uPointSize");
+
+  // -------------------------------------------------------------- Geometry
+  function makeCloudBuffers() {
+    return {
+      posBuf: gl.createBuffer(),
+      colorBuf: gl.createBuffer(),
+      count: 0,
+    };
+  }
+  const baseCloud = makeCloudBuffers();
+  const liveCloud = makeCloudBuffers();
+  let haveBounds = false;
+  let center = [0, 0, 0];
+  let sceneRadius = 1.0;
+
+  function updateCloud(cloud, positions, colors) {
+    cloud.count = positions.length / 3;
+    gl.bindBuffer(gl.ARRAY_BUFFER, cloud.posBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, cloud.colorBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, colors, gl.DYNAMIC_DRAW);
+  }
+
+  function fitCameraTo(positions) {
+    if (positions.length === 0) return;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < positions.length; i += 3) {
+      const x = positions[i], y = positions[i + 1], z = positions[i + 2];
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    }
+    center = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
+    const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+    sceneRadius = Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz) / 2, 0.05);
+    distance = sceneRadius * 2.4;
+    haveBounds = true;
+  }
+
+  // ------------------------------------------------------------ Camera/orbit
+  let yaw = Math.PI * 0.25;
+  let pitch = 0.35;
+  let distance = 2.0;
+
+  function mat4Perspective(fovy, aspect, near, far) {
+    const f = 1.0 / Math.tan(fovy / 2);
+    const out = new Float32Array(16);
+    out[0] = f / aspect; out[5] = f; out[11] = -1;
+    out[10] = (far + near) / (near - far);
+    out[14] = (2 * far * near) / (near - far);
+    return out;
+  }
+
+  function mat4LookAt(eye, target, up) {
+    function sub(a, b) { return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; }
+    function norm(a) { const l = Math.hypot(a[0],a[1],a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; }
+    function cross(a, b) { return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; }
+    const zAxis = norm(sub(eye, target));
+    const xAxis = norm(cross(up, zAxis));
+    const yAxis = cross(zAxis, xAxis);
+    const out = new Float32Array(16);
+    out[0]=xAxis[0]; out[1]=yAxis[0]; out[2]=zAxis[0]; out[3]=0;
+    out[4]=xAxis[1]; out[5]=yAxis[1]; out[6]=zAxis[1]; out[7]=0;
+    out[8]=xAxis[2]; out[9]=yAxis[2]; out[10]=zAxis[2]; out[11]=0;
+    out[12]=-(xAxis[0]*eye[0]+xAxis[1]*eye[1]+xAxis[2]*eye[2]);
+    out[13]=-(yAxis[0]*eye[0]+yAxis[1]*eye[1]+yAxis[2]*eye[2]);
+    out[14]=-(zAxis[0]*eye[0]+zAxis[1]*eye[1]+zAxis[2]*eye[2]);
+    out[15]=1;
+    return out;
+  }
+
+  function mat4Multiply(a, b) {
+    const out = new Float32Array(16);
+    for (let i = 0; i < 4; i++) {
+      for (let j = 0; j < 4; j++) {
+        let sum = 0;
+        for (let k = 0; k < 4; k++) sum += a[k * 4 + j] * b[i * 4 + k];
+        out[i * 4 + j] = sum;
+      }
+    }
+    return out;
+  }
+
+  function computeViewProj() {
+    const eye = [
+      center[0] + distance * Math.cos(pitch) * Math.sin(yaw),
+      center[1] + distance * Math.sin(pitch),
+      center[2] + distance * Math.cos(pitch) * Math.cos(yaw),
+    ];
+    const view = mat4LookAt(eye, center, [0, 1, 0]);
+    const aspect = canvas.width / canvas.height || 1;
+    const proj = mat4Perspective(Math.PI / 3.2, aspect, Math.max(sceneRadius * 0.01, 0.01), sceneRadius * 20 + 10);
+    return mat4Multiply(proj, view);
+  }
+
+  // ------------------------------------------------------------- Pointer input
+  let lastX = 0, lastY = 0, dragging = false;
+  let lastPinchDist = null;
+
+  function pointerDown(x, y) { dragging = true; lastX = x; lastY = y; }
+  function pointerMove(x, y) {
+    if (!dragging) return;
+    const dx = x - lastX, dy = y - lastY;
+    lastX = x; lastY = y;
+    yaw -= dx * 0.008;
+    pitch = Math.max(-1.5, Math.min(1.5, pitch + dy * 0.008));
+  }
+  function pointerUp() { dragging = false; }
+  function zoomBy(factor) {
+    distance = Math.max(sceneRadius * 0.05, Math.min(sceneRadius * 20, distance * factor));
+  }
+
+  canvas.addEventListener("mousedown", (e) => pointerDown(e.clientX, e.clientY));
+  window.addEventListener("mousemove", (e) => pointerMove(e.clientX, e.clientY));
+  window.addEventListener("mouseup", pointerUp);
+  canvas.addEventListener("wheel", (e) => { e.preventDefault(); zoomBy(1 + e.deltaY * 0.001); }, { passive: false });
+
+  canvas.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    if (e.touches.length === 1) {
+      pointerDown(e.touches[0].clientX, e.touches[0].clientY);
+    } else if (e.touches.length === 2) {
+      dragging = false;
+      lastPinchDist = touchDist(e.touches);
+    }
+  }, { passive: false });
+
+  canvas.addEventListener("touchmove", (e) => {
+    e.preventDefault();
+    if (e.touches.length === 1) {
+      pointerMove(e.touches[0].clientX, e.touches[0].clientY);
+    } else if (e.touches.length === 2) {
+      const d = touchDist(e.touches);
+      if (lastPinchDist) zoomBy(lastPinchDist / d);
+      lastPinchDist = d;
+    }
+  }, { passive: false });
+
+  canvas.addEventListener("touchend", (e) => {
+    e.preventDefault();
+    dragging = false;
+    lastPinchDist = null;
+  }, { passive: false });
+
+  function touchDist(touches) {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.hypot(dx, dy);
+  }
+
+  // ---------------------------------------------------------------- Opciones
+  const DEFAULT_SETTINGS = {
+    bgColor: "#0f1115",
+    sizeBase: 2.0,
+    sizeLive: 3.0,
+    showBase: true,
+    showLive: true,
+  };
+  const SETTINGS_KEY = "aurora_viewer_settings";
+
+  function loadSettings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+      if (saved && typeof saved === "object") return Object.assign({}, DEFAULT_SETTINGS, saved);
+    } catch (e) { /* ignora valores corruptos y usa los por defecto */ }
+    return Object.assign({}, DEFAULT_SETTINGS);
+  }
+  function saveSettings() {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  }
+  function hexToRgb01(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  }
+
+  const settings = loadSettings();
+
+  const settingsToggle = document.getElementById("settingsToggle");
+  const settingsPanel = document.getElementById("settingsPanel");
+  const optBgColor = document.getElementById("optBgColor");
+  const optSizeBase = document.getElementById("optSizeBase");
+  const optSizeLive = document.getElementById("optSizeLive");
+  const optShowBase = document.getElementById("optShowBase");
+  const optShowLive = document.getElementById("optShowLive");
+  const optResetView = document.getElementById("optResetView");
+  const optResetDefaults = document.getElementById("optResetDefaults");
+
+  function applySettingsToInputs() {
+    optBgColor.value = settings.bgColor;
+    optSizeBase.value = settings.sizeBase;
+    optSizeLive.value = settings.sizeLive;
+    optShowBase.checked = settings.showBase;
+    optShowLive.checked = settings.showLive;
+  }
+  applySettingsToInputs();
+
+  settingsToggle.addEventListener("click", () => settingsPanel.classList.toggle("open"));
+  optBgColor.addEventListener("input", () => { settings.bgColor = optBgColor.value; saveSettings(); });
+  optSizeBase.addEventListener("input", () => { settings.sizeBase = parseFloat(optSizeBase.value); saveSettings(); });
+  optSizeLive.addEventListener("input", () => { settings.sizeLive = parseFloat(optSizeLive.value); saveSettings(); });
+  optShowBase.addEventListener("change", () => { settings.showBase = optShowBase.checked; saveSettings(); });
+  optShowLive.addEventListener("change", () => { settings.showLive = optShowLive.checked; saveSettings(); });
+  optResetView.addEventListener("click", () => {
+    yaw = Math.PI * 0.25;
+    pitch = 0.35;
+    if (haveBounds) distance = sceneRadius * 2.4;
+  });
+  optResetDefaults.addEventListener("click", () => {
+    Object.assign(settings, DEFAULT_SETTINGS);
+    applySettingsToInputs();
+    saveSettings();
+  });
+
+  // -------------------------------------------------------------- Resizing
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = canvas.clientWidth * dpr;
+    canvas.height = canvas.clientHeight * dpr;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // ---------------------------------------------------------------- Render
+  function drawCloud(cloud, pointSize) {
+    if (cloud.count === 0) return;
+    gl.bindBuffer(gl.ARRAY_BUFFER, cloud.posBuf);
+    gl.enableVertexAttribArray(aPosition);
+    gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, cloud.colorBuf);
+    gl.enableVertexAttribArray(aColor);
+    gl.vertexAttribPointer(aColor, 3, gl.FLOAT, false, 0, 0);
+    gl.uniform1f(uPointSize, pointSize);
+    gl.drawArrays(gl.POINTS, 0, cloud.count);
+  }
+
+  function render() {
+    const bg = hexToRgb01(settings.bgColor);
+    gl.clearColor(bg[0], bg[1], bg[2], 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+    const vp = computeViewProj();
+    gl.uniformMatrix4fv(uViewProj, false, vp);
+    if (settings.showBase) drawCloud(baseCloud, settings.sizeBase);
+    if (settings.showLive) drawCloud(liveCloud, settings.sizeLive);
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+
+  // ----------------------------------------------------------------- Socket
+  const MSG_BASE = 1;
+  const MSG_LIVE = 2;
+
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(proto + "://" + location.hostname + ":" + WS_PORT + "/");
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = () => { statusEl.textContent = "Conectado - esperando datos..."; statusEl.className = "ok"; };
+    ws.onclose = () => {
+      statusEl.textContent = "Desconectado, reintentando...";
+      statusEl.className = "err";
+      setTimeout(connect, 1500);
+    };
+    ws.onerror = () => { ws.close(); };
+
+    ws.onmessage = (event) => {
+      const buf = event.data;
+      const view = new DataView(buf);
+      const msgType = view.getUint32(0, true);
+      const count = view.getUint32(4, true);
+      const posOffset = 8;
+      const colorOffset = posOffset + count * 3 * 4;
+      const positions = new Float32Array(buf, posOffset, count * 3);
+      const colors = new Float32Array(buf, colorOffset, count * 3);
+
+      if (msgType === MSG_BASE) {
+        updateCloud(baseCloud, positions, colors);
+        fitCameraTo(positions);
+      } else if (msgType === MSG_LIVE) {
+        updateCloud(liveCloud, positions, colors);
+        if (!haveBounds && positions.length > 0) fitCameraTo(positions);
+      }
+      statusEl.textContent = "En vivo (" + baseCloud.count + " + " + liveCloud.count + " puntos)";
+      statusEl.className = "ok";
+    };
+  }
+  connect();
+})();
+</script>
+</body>
+</html>

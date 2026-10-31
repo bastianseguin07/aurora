@@ -4,12 +4,8 @@ de prueba), a diferencia de live_viewer.py que abre una ventana de Open3D
 aparte. Muestra la nube base y una superposicion con un resaltado sutil
 (gris -> ambar tenue) donde la nube actualizada difiere de la base.
 
-Nota tecnica: el renderizador nuevo de Open3D (open3d.visualization.rendering
-.OffscreenRenderer, basado en Filament) NO soporta modo headless en Windows
-("EGL Headless is not supported on this platform" - confirmado en pruebas).
-Por eso este modulo usa la API "clasica" (o3d.visualization.Visualizer con
-create_window(visible=False) + capture_screen_float_buffer), que si funciona
-en Windows y Linux por igual (es la misma API que ya usa live_viewer.py).
+Este modulo usa la API clasica de Open3D (Visualizer con ventana oculta y
+capture_screen_float_buffer), igual que live_viewer.py.
 
 El mouse controla la camara sobre el widget:
     - Arrastrar con click izquierdo: orbitar

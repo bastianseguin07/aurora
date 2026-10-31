@@ -16,6 +16,8 @@ Ejecutar con:
 from __future__ import annotations
 
 import os
+import math
+import cairo
 import queue
 import threading
 from pathlib import Path
@@ -24,51 +26,74 @@ import gi
 
 gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango  # noqa: E402
 
 import numpy as np  # noqa: E402
 
 import aurora_sensor  # noqa: E402
 from embedded_viewer import EmbeddedComparisonViewer  # noqa: E402
+from live_stream_server import make_qr_image  # noqa: E402
 from live_viewer import LiveViewer  # noqa: E402
+from pose_alignment_viewer import PoseAlignmentViewer  # noqa: E402
 from pointcloud_core import (  # noqa: E402
     PipelineParams,
+    RaycastPipelineParams,
     SIX_BAND_COLORS,
     SIX_BAND_LABELS,
     apply_rigid_transform,
     build_subtle_overlay_cloud,
     compute_c2c_distance,
     compute_rigid_transform,
-    crop_cloud_by_quad_box,
+    compute_pose_relative_transform,
+    crop_cloud_by_face_depth,
+    direction_word_pairs_for_axes,
     load_point_cloud,
+    load_reference_photo,
+    load_reference_photo_file,
+    load_reference_pose,
+    reference_photo_path_for,
     pick_crop_bounds,
+    pick_crop_bounds_from_pair,
     pick_landmark_points,
-    pick_quad_points,
+    pick_landmark_points_from_photo,
+    render_reference_photo_from_cloud,
     rigid_transform_rms_error,
     run_pipeline,
+    run_raycast_pipeline,
+    save_reference_photo,
+    save_reference_pose,
     show_point_cloud,
-    show_quad_box_preview,
+    show_point_cloud_pair,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 # Paleta "Dark Industrial" - estados de sensor/pipeline.
 COLOR_OK = "#34C759"
 COLOR_ERROR = "#FF3B30"
 COLOR_WARN = "#FFCC00"
+COLOR_FILE_NAME = "#FFD54F"
+
+# Un color por eje (cian/magenta/amarillo) para la guia de alineacion IMU —
+# deben coincidir con AXIS_COLORS en pose_alignment_viewer.py, asi el
+# tramo de flecha en la vista 3D se puede relacionar de un vistazo con su
+# numero correspondiente en el panel/HUD.
+AXIS_HUD_COLORS = {"x": "#22D3EE", "y": "#E879F9", "z": "#FACC15"}
 
 # Paleta base del tema.
 COLOR_BG = "#0F1115"
 COLOR_CARD = "#1A1D24"
 COLOR_BORDER = "#2E3440"
-COLOR_ACCENT = "#FF8C00"
-COLOR_ACCENT_DARK = "#CC7000"
+COLOR_ACCENT = "#56B4C5"
+COLOR_ACCENT_DARK = "#3B91A1"
 COLOR_TEXT = "#F8F9FA"
 COLOR_TEXT_MUTED = "#8E95A5"
 
 CSS = f"""
 * {{
     font-family: "Inter", "Roboto", "Segoe UI", sans-serif;
+    font-size: 10pt;
 }}
 
 window, .background {{
@@ -76,52 +101,255 @@ window, .background {{
     color: {COLOR_TEXT};
 }}
 
-headerbar {{
+window.csd,
+window.csd decoration {{
+    border: none;
+    border-radius: 10px;
+    box-shadow: none;
+    background-image: none;
+}}
+
+box#aurora-shell {{
+    background-color: {COLOR_BG};
+    border-radius: 10px;
+}}
+
+scrolledwindow#aurora-page-scroll,
+scrolledwindow#aurora-page-scroll viewport {{
+    background-color: {COLOR_BG};
+    border: none;
+    border-radius: 0 0 9px 0;
+}}
+
+scrolledwindow#aurora-sidebar-scroll,
+scrolledwindow#aurora-sidebar-scroll viewport,
+list#aurora-sidebar-list {{
+    background-color: {COLOR_CARD};
+    border-radius: 0 0 0 9px;
+}}
+
+box#aurora-titlebar {{
     background-color: {COLOR_CARD};
     background-image: none;
     color: {COLOR_TEXT};
-    border-bottom: 1px solid {COLOR_BORDER};
+    border: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     box-shadow: none;
     padding: 4px 8px;
+    border-radius: 9px 9px 0 0;
 }}
 
-headerbar .title {{
+box#aurora-titlebar button {{
+    min-width: 42px;
+    min-height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 7px;
+    background-color: transparent;
+    color: {COLOR_TEXT_MUTED};
+}}
+
+box#aurora-titlebar button:focus,
+box#aurora-titlebar button:focus-visible {{
+    outline: none;
+    box-shadow: none;
+    border-color: transparent;
+}}
+
+box#aurora-titlebar button:hover {{
+    background-color: rgba(255, 255, 255, 0.10);
+    background-image: none;
+    box-shadow: none;
+    border-color: transparent;
     color: {COLOR_TEXT};
+}}
+
+box#aurora-titlebar button:active {{
+    background-color: rgba(255, 255, 255, 0.16);
+    background-image: none;
+    box-shadow: none;
+    border-color: transparent;
+    color: {COLOR_TEXT};
+}}
+
+box#aurora-titlebar button.close:hover {{
+    background-color: rgba(255, 255, 255, 0.10);
+}}
+
+window.maximized,
+window.fullscreen,
+window.maximized decoration,
+window.fullscreen decoration,
+window.maximized headerbar,
+window.fullscreen headerbar,
+window.maximized box#aurora-shell,
+window.fullscreen box#aurora-shell,
+window.maximized scrolledwindow#aurora-page-scroll,
+window.maximized scrolledwindow#aurora-page-scroll viewport,
+window.fullscreen scrolledwindow#aurora-page-scroll,
+window.fullscreen scrolledwindow#aurora-page-scroll viewport,
+window.maximized scrolledwindow#aurora-sidebar-scroll,
+window.maximized scrolledwindow#aurora-sidebar-scroll viewport,
+window.maximized list#aurora-sidebar-list,
+window.fullscreen scrolledwindow#aurora-sidebar-scroll,
+window.fullscreen scrolledwindow#aurora-sidebar-scroll viewport,
+window.fullscreen list#aurora-sidebar-list {{
+    border-radius: 0;
+    box-shadow: none;
+}}
+
+label#aurora-section-title {{
+    color: #94A3B8;
+    font-size: 11pt;
     font-weight: 700;
 }}
 
-headerbar .subtitle {{
+headerbar windowcontrols {{
+    padding: 0;
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    box-shadow: none;
+}}
+
+headerbar button.sidebar-toggle,
+headerbar button.titlebutton,
+headerbar windowcontrols button.titlebutton,
+headerbar .titlebutton {{
+    min-width: 32px;
+    min-height: 32px;
+    padding: 0;
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    border-radius: 6px;
+    box-shadow: none;
     color: {COLOR_TEXT_MUTED};
+    outline: none;
 }}
 
-stacksidebar {{
-    background-color: {COLOR_CARD};
-    border-right: 1px solid {COLOR_BORDER};
-    font-size: 1.02em;
+headerbar button.sidebar-toggle {{
+    min-width: 40px;
+    min-height: 32px;
+    border-radius: 8px;
 }}
 
-stacksidebar row {{
-    padding: 10px 6px;
-    min-height: 30px;
-    color: {COLOR_TEXT_MUTED};
-}}
-
-stacksidebar row:selected {{
-    background-color: rgba(255, 140, 0, 0.16);
-    border-left: 3px solid {COLOR_ACCENT};
+headerbar button.sidebar-toggle:hover,
+headerbar button.titlebutton:hover,
+headerbar windowcontrols button.titlebutton:hover,
+headerbar .titlebutton:hover {{
+    background-color: rgba(255, 255, 255, 0.08);
     color: {COLOR_TEXT};
-    font-weight: 600;
 }}
 
-stacksidebar row:hover {{
-    background-color: rgba(255, 255, 255, 0.04);
+headerbar button.titlebutton:active,
+headerbar windowcontrols button.titlebutton:active {{
+    background-color: rgba(255, 255, 255, 0.14);
+    background-image: none;
+    box-shadow: none;
+}}
+
+stacksidebar, list.sidebar {{
+    background-color: {COLOR_CARD};
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    padding-top: 8px;
+}}
+
+/* Filas estándar de la barra lateral: borde grueso a la izquierda en color gris */
+list.sidebar row {{
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+    border: none;
+    border-left: 3px solid #3E4656;
+    border-radius: 4px;
+    margin: 2px 8px;
+    padding: 2px 0;
+}}
+
+/* Tipografía de filas: tamaño estrictamente 10pt */
+list.sidebar row label {{
+    color: #94A3B8;
+    font-size: 10pt;
+    font-weight: 400;
+}}
+
+/* Hover en items: SIN sombreado de fondo (transparente), solo ilumina el texto y el borde */
+list.sidebar row:hover {{
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+    border-left: 3px solid #64748B;
+}}
+
+list.sidebar row:hover label {{
+    color: #FFFFFF;
+    font-size: 10pt;
+}}
+
+/* Item seleccionado / activo: indicador cyan en el borde y fondo sutil */
+list.sidebar row:selected {{
+    background-color: rgba(86, 180, 197, 0.12);
+    border-left: 3px solid {COLOR_ACCENT};
+}}
+
+list.sidebar row:selected label {{
+    color: #FFFFFF;
+    font-weight: 700;
+    font-size: 10pt;
+}}
+
+list.sidebar row:selected:hover {{
+    background-color: rgba(86, 180, 197, 0.15);
+    border-left: 3px solid {COLOR_ACCENT};
+}}
+
+list.sidebar row:selected:hover label {{
+    color: #FFFFFF;
+    font-size: 10pt;
+}}
+
+/* Entrada principal: énfasis tipográfico sin borde adicional. */
+list.sidebar row.quick-nav label,
+list.sidebar row.quick-nav:hover label,
+list.sidebar row.quick-nav:selected label,
+list.sidebar row.quick-nav:selected:hover label {{
+    font-size: 12pt;
+    font-weight: 700;
+}}
+
+/* Encabezados de sección ('Flujo de trabajo', 'Configuración', 'Resultados'):
+   100% estáticos: no hover, no iluminación, no selección, sin bordes ni foco */
+list.sidebar row.sidebar-section-header,
+list.sidebar row.sidebar-section-header:hover,
+list.sidebar row.sidebar-section-header:focus,
+list.sidebar row.sidebar-section-header:active,
+list.sidebar row.sidebar-section-header:selected {{
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    border-left: none;
+    box-shadow: none;
+    outline: none;
+    margin: 8px 8px 2px 8px;
+    padding: 0;
+}}
+
+list.sidebar row.sidebar-section-header label,
+list.sidebar row.sidebar-section-header:hover label,
+list.sidebar row.sidebar-section-header:focus label,
+list.sidebar row.sidebar-section-header:active label,
+list.sidebar row.sidebar-section-header:selected label {{
+    color: #64748B;
+    font-size: 8pt;
+    font-weight: 700;
 }}
 
 frame {{
-    margin: 6px 2px;
+    margin: 8px 2px;
     background-color: {COLOR_CARD};
-    border: 1px solid {COLOR_BORDER};
-    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
 }}
 
 frame > label {{
@@ -142,41 +370,50 @@ label.dim-label {{
 }}
 
 button {{
-    background-color: #22252D;
+    background-color: #1E232E;
     background-image: none;
+    box-shadow: none;
     color: {COLOR_TEXT};
-    border: 1px solid {COLOR_BORDER};
-    border-radius: 4px;
-    padding: 10px 16px;
-    min-height: 28px;
-    transition: background-color 100ms ease;
+    border: 1px solid #2B3342;
+    border-radius: 6px;
+    padding: 8px 16px;
+    min-height: 30px;
+    font-weight: 500;
 }}
 
 button:hover {{
-    background-color: #2A2E38;
+    background-color: #1E232E;
+    background-image: none;
+    box-shadow: none;
     border-color: {COLOR_ACCENT};
+    color: #FFFFFF;
 }}
 
 button:active, button:checked {{
-    background-color: #171920;
+    background-color: #14171F;
+    background-image: none;
+    box-shadow: none;
+    border-color: {COLOR_ACCENT_DARK};
 }}
 
 button:disabled {{
-    color: {COLOR_TEXT_MUTED};
-    border-color: {COLOR_BORDER};
-    background-color: #1A1D24;
+    color: #555C6D;
+    border-color: #20242D;
+    background-color: #16181F;
 }}
 
 button.suggested-action {{
     background-color: {COLOR_ACCENT};
     background-image: none;
-    color: #0F1115;
+    color: #0A0D14;
     border: 1px solid {COLOR_ACCENT};
+    border-radius: 6px;
     font-weight: 700;
 }}
 
 button.suggested-action:hover {{
-    background-color: #FFA033;
+    background-color: #6DC2D1;
+    border-color: #6DC2D1;
 }}
 
 button.suggested-action:active {{
@@ -184,18 +421,36 @@ button.suggested-action:active {{
 }}
 
 entry {{
-    background-color: #14161B;
+    background-color: #11141B;
     background-image: none;
     color: {COLOR_TEXT};
-    border: 1px solid {COLOR_BORDER};
-    border-radius: 4px;
-    padding: 8px 10px;
-    min-height: 24px;
-    font-family: "Consolas", "DejaVu Sans Mono", monospace;
+    border: 1px solid #282F3D;
+    border-radius: 6px;
+    padding: 7px 10px;
+    min-height: 26px;
+    font-family: "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
 }}
 
-entry:focus {{
-    border-color: {COLOR_ACCENT};
+entry:focus,
+spinbutton entry:focus,
+textview:focus {{
+    outline: none;
+    box-shadow: none;
+    border: 1px solid #596579;
+}}
+
+spinbutton:focus {{
+    outline: none;
+    box-shadow: none;
+}}
+
+spinbutton button,
+spinbutton button:hover,
+spinbutton button:focus,
+spinbutton button:active {{
+    outline: none;
+    box-shadow: none;
+    border-color: transparent;
 }}
 
 checkbutton, radiobutton {{
@@ -203,16 +458,60 @@ checkbutton, radiobutton {{
     min-height: 30px;
 }}
 
+/* Indicadores vectoriales y de alto contraste, independientes del tema GTK. */
 checkbutton check, radiobutton radio {{
     min-width: 20px;
     min-height: 20px;
-    border: 1px solid {COLOR_BORDER};
-    background-color: #14161B;
+    padding: 0;
+    color: transparent;
+    border: 2px solid #8B95A5;
+    background-color: #11141B;
+    background-image: none;
+    box-shadow: none;
+    -gtk-icon-shadow: none;
 }}
 
-checkbutton check:checked, radiobutton radio:checked {{
+checkbutton check {{
+    border-radius: 5px;
+}}
+
+radiobutton radio {{
+    border-radius: 50%;
+    transition: none;
+    animation: none;
+}}
+
+checkbutton check:hover, radiobutton radio:hover {{
+    border-color: #D5DCE7;
+    background-color: #1A202B;
+}}
+
+checkbutton check:checked {{
+    color: #081116;
+    border-color: #7DDBE7;
     background-color: {COLOR_ACCENT};
-    border-color: {COLOR_ACCENT};
+    background-image: none;
+    -gtk-icon-source: -gtk-icontheme("object-select-symbolic");
+}}
+
+radiobutton radio:checked {{
+    color: #081116;
+    border: 6px solid {COLOR_ACCENT};
+    background-color: #11141B;
+    background-image: none;
+    transition: none;
+    animation: none;
+}}
+
+checkbutton check:indeterminate {{
+    border-color: #7DDBE7;
+    background-color: {COLOR_ACCENT};
+}}
+
+checkbutton check:disabled, radiobutton radio:disabled {{
+    color: transparent;
+    border-color: #454C59;
+    background-color: #191C24;
 }}
 
 expander title {{
@@ -220,10 +519,24 @@ expander title {{
     font-weight: 600;
 }}
 
-textview, textview text {{
-    background-color: #0B0C0F;
+.expander-content {{
+    background-color: {COLOR_CARD};
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-top: 6px;
+}}
+
+textview.technical-log, textview.technical-log text {{
+    background-color: #13151D;
     color: {COLOR_TEXT};
-    font-family: "Consolas", "DejaVu Sans Mono", monospace;
+    font-family: "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
+}}
+
+scrolledwindow.technical-log {{
+    background-color: {COLOR_CARD};
+    border: none;
+    border-radius: 8px;
 }}
 
 scrolledwindow, viewport {{
@@ -244,30 +557,38 @@ menubutton:hover {{
 
 popover {{
     background-color: {COLOR_CARD};
-    border: 1px solid {COLOR_BORDER};
+    border: 1px solid rgba(255, 255, 255, 0.08);
     color: {COLOR_TEXT};
+    border-radius: 8px;
 }}
 
 popover contents {{
     background-color: {COLOR_CARD};
     color: {COLOR_TEXT};
+    border-radius: 8px;
 }}
 
 .kpi-card {{
-    background-color: #14161B;
-    border: 1px solid {COLOR_BORDER};
-    border-radius: 6px;
+    background-color: #151821;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
     padding: 12px 18px;
     min-width: 120px;
 }}
 
 .kpi-value {{
-    font-family: "Consolas", "DejaVu Sans Mono", monospace;
+    font-family: "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
 }}
 
 .status-bar {{
-    background-color: #14161B;
-    border-top: 1px solid {COLOR_BORDER};
+    background-color: #12141A;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}}
+
+/* GTK themes draw a heavy blue focus halo by default; keep focus subtle across all pages. */
+*:focus {{
+    outline: none;
+    box-shadow: none;
 }}
 """.encode("utf-8")
 
@@ -275,12 +596,14 @@ popover contents {{
 class AuroraGUI:
     def __init__(self, window: Gtk.Window) -> None:
         self.window = window
-        self.window.set_default_size(1050, 820)
-        self.window.set_size_request(880, 660)
+        self.window.set_default_size(1440, 960)
+        self.window.set_size_request(1120, 760)
         self.window.connect("destroy", self._on_close)
 
-        self.base_path = str(PROJECT_ROOT / "data" / "base.ply")
-        self.updated_path = str(PROJECT_ROOT / "data" / "updated.ply")
+        # No precargar resultados antiguos: el operador debe elegir el par que
+        # corresponde a esta medicion y evitar comparar capturas de sesiones distintas.
+        self.base_path = ""
+        self.updated_path = ""
         self.output_dir = str(PROJECT_ROOT / "output")
 
         self.sensor_connection = None
@@ -288,8 +611,15 @@ class AuroraGUI:
         self.last_base_capture_path: str | None = None
         self.last_updated_capture_path: str | None = None
         self.result = None
+        self.raycast_result = None
+        self._active_result_kind: str | None = None
+        self._result_generation = 0
         self.alignment_applied = False
         self.viewer: LiveViewer | None = None
+        self.pose_viewer: PoseAlignmentViewer | None = None
+        self.imu_hud_window: Gtk.Window | None = None
+        self.imu_hud_labels: dict[str, Gtk.Label] | None = None
+        self.imu_hud_status_label: Gtk.Label | None = None
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.worker_thread: threading.Thread | None = None
 
@@ -299,31 +629,51 @@ class AuroraGUI:
     # ------------------------------------------------------------------ UI
 
     def _build_layout(self) -> None:
-        header_bar = Gtk.HeaderBar()
-        header_bar.set_show_close_button(True)
-        header_bar.set_title("Aurora")
-        header_bar.set_subtitle("Medicion de espesor de shotcrete")
-        self.window.set_titlebar(header_bar)
+        self.window.set_decorated(False)
+        self.window.set_app_paintable(True)
+        self.window.connect_after("draw", self._draw_rounded_window_corners)
+        titlebar = Gtk.EventBox()
+        titlebar.set_visible_window(False)
+        titlebar.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        titlebar.connect("button-press-event", self._move_window_from_titlebar)
+        titlebar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        titlebar_box.set_name("aurora-titlebar")
+        titlebar_box.set_size_request(-1, 46)
+        titlebar.add(titlebar_box)
 
-        self.run_button = Gtk.Button(label="▶  Calcular espesor")
-        self.run_button.set_tooltip_text(
-            "Compara las dos nubes de puntos y calcula el espesor de shotcrete. "
-            "El resultado se muestra automaticamente en 3D."
-        )
-        self.run_button.get_style_context().add_class("suggested-action")
-        self.run_button.connect("clicked", lambda _b: self._run_pipeline_clicked())
-        header_bar.pack_start(self.run_button)
-
-        self.generate_report_button = Gtk.Button(label="Generar informe")
-        self.generate_report_button.set_tooltip_text(
-            "Exporta un informe en Markdown con las estadisticas y el estado (dentro/fuera de "
-            "los umbrales configurados en Visualizacion 3D)."
-        )
-        self.generate_report_button.set_sensitive(False)
-        self.generate_report_button.connect("clicked", lambda _b: self._generate_report())
-        header_bar.pack_start(self.generate_report_button)
-
+        self.sidebar_toggle_button = Gtk.Button()
+        self.sidebar_toggle_button.get_style_context().add_class("sidebar-toggle")
+        self.sidebar_toggle_button.set_relief(Gtk.ReliefStyle.NONE)
+        menu_icon = Gtk.DrawingArea()
+        menu_icon.set_size_request(20, 20)
+        menu_icon.set_halign(Gtk.Align.CENTER)
+        menu_icon.set_valign(Gtk.Align.CENTER)
+        menu_icon.connect("draw", self._draw_sidebar_menu_icon)
+        self.sidebar_toggle_button.add(menu_icon)
+        self.sidebar_toggle_button.set_tooltip_text("Ocultar menú lateral")
+        self.sidebar_toggle_button.get_accessible().set_name("Mostrar u ocultar menú lateral")
+        self.sidebar_toggle_button.connect("clicked", lambda _button: self._toggle_sidebar())
+        titlebar_box.pack_start(self.sidebar_toggle_button, False, False, 0)
+        self.section_title = Gtk.Label(label="Medición rápida")
+        self.section_title.set_hexpand(True)
+        self.section_title.set_halign(Gtk.Align.CENTER)
+        self.section_title.set_name("aurora-section-title")
+        titlebar_box.pack_start(self.section_title, True, True, 0)
+        for icon_name, tooltip, callback, style_class in (
+            ("window-minimize-symbolic", "Minimizar", lambda: self.window.iconify(), ""),
+            ("window-maximize-symbolic", "Maximizar o restaurar", self._toggle_maximize, ""),
+            ("window-close-symbolic", "Cerrar", self.window.close, "close"),
+        ):
+            button = Gtk.Button()
+            button.set_image(Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.BUTTON))
+            button.set_tooltip_text(tooltip)
+            if style_class:
+                button.get_style_context().add_class(style_class)
+            button.connect("clicked", lambda _button, cb=callback: cb())
+            titlebar_box.pack_end(button, False, False, 0)
         root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        root_box.set_name("aurora-shell")
+        root_box.pack_start(titlebar, False, False, 0)
         self.window.add(root_box)
 
         content_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
@@ -331,34 +681,228 @@ class AuroraGUI:
         root_box.pack_start(content_box, True, True, 0)
 
         self.stack = Gtk.Stack()
+        self.stack.set_name("aurora-content")
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         self.stack.set_transition_duration(150)
+        self.stack.connect("notify::visible-child-name", self._update_section_title)
 
-        sidebar = Gtk.StackSidebar()
-        sidebar.set_stack(self.stack)
-        content_box.pack_start(sidebar, False, False, 0)
-        content_box.pack_start(self.stack, True, True, 0)
-
+        self.stack.add_titled(self._build_quick_measurement_page(), "medicion_rapida", "Medicion rapida")
         self.stack.add_titled(self._build_capture_page(), "captura", "Captura")
+        self.stack.add_titled(self._build_imu_alignment_page(), "alineacion_imu", "Guia de pose IMU")
         self.stack.add_titled(self._build_comparison_page(), "comparacion", "Comparacion")
         self.stack.add_titled(self._build_alignment_page(), "alineacion", "Alineacion")
-        self.stack.add_titled(self._build_segmentation_page(), "segmentacion", "Segmentacion")
+        self.stack.add_titled(self._build_prepare_clouds_page(), "preparar_nubes", "Preparar nubes")
         self.stack.add_titled(self._build_processing_page(), "procesamiento", "Ajustes de analisis")
         self.stack.add_titled(self._build_visualization_page(), "visualizacion", "Visualizacion 3D")
+        self.stack.add_titled(self._build_results_page(), "resultados", "Resultados")
         self.stack.add_titled(self._build_embedded_test_page(), "prueba_embebida", "Comparacion (prueba)")
+        self.stack.add_titled(self._build_raycast_test_page(), "prueba_raycasting", "Raycasting (prueba)")
+        for page_name in (
+            "medicion_rapida",
+            "captura",
+            "alineacion_imu",
+            "comparacion",
+            "alineacion",
+            "preparar_nubes",
+            "procesamiento",
+            "visualizacion",
+            "resultados",
+            "prueba_embebida",
+            "prueba_raycasting",
+        ):
+            page = self.stack.get_child_by_name(page_name)
+            if page is not None:
+                page.set_name("aurora-page-scroll")
 
-        result_frame, result_box = self._section("Resultado")
-        result_frame.get_style_context().add_class("status-bar")
+        self.sidebar = self._build_sidebar()
+        self.sidebar_revealer = Gtk.Revealer()
+        self.sidebar_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_LEFT)
+        self.sidebar_revealer.set_transition_duration(180)
+        self.sidebar_revealer.set_reveal_child(True)
+        self.sidebar_revealer.add(self.sidebar)
+        content_box.pack_start(self.sidebar_revealer, False, False, 0)
+        content_box.pack_start(self.stack, True, True, 0)
 
-        status_row = self._row(result_box)
+    @staticmethod
+    def _draw_sidebar_menu_icon(_widget, cr) -> bool:
+        cr.set_source_rgba(0.88, 0.92, 0.96, 1.0)
+        cr.set_line_width(1.8)
+        cr.set_line_cap(1)  # cairo.LINE_CAP_ROUND
+        for y in (5, 10, 15):
+            cr.move_to(2, y)
+            cr.line_to(18, y)
+        cr.stroke()
+        return False
+
+    @staticmethod
+    def _draw_rounded_window_corners(widget, cr) -> bool:
+        allocation = widget.get_allocation()
+        width, height = allocation.width, allocation.height
+        radius = min(10.0, width / 2.0, height / 2.0)
+        if width <= 0 or height <= 0 or radius <= 0:
+            return False
+        cr.save()
+        cr.set_operator(cairo.OPERATOR_CLEAR)
+        cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
+        cr.new_path()
+        cr.rectangle(0, 0, width, height)
+        cr.new_sub_path()
+        cr.move_to(radius, 0)
+        cr.line_to(width - radius, 0)
+        cr.arc(width - radius, radius, radius, -math.pi / 2, 0)
+        cr.line_to(width, height - radius)
+        cr.arc(width - radius, height - radius, radius, 0, math.pi / 2)
+        cr.line_to(radius, height)
+        cr.arc(radius, height - radius, radius, math.pi / 2, math.pi)
+        cr.line_to(0, radius)
+        cr.arc(radius, radius, radius, math.pi, 3 * math.pi / 2)
+        cr.close_path()
+        cr.fill()
+        cr.restore()
+        return False
+
+    def _toggle_maximize(self) -> None:
+        if self.window.is_maximized():
+            self.window.unmaximize()
+        else:
+            self.window.maximize()
+
+    def _move_window_from_titlebar(self, _widget, event) -> bool:
+        if event.type == Gdk.EventType.BUTTON_PRESS and event.button == 1:
+            if event.get_click_count()[1] == 2:
+                self._toggle_maximize()
+            else:
+                self.window.begin_move_drag(
+                    event.button, int(event.x_root), int(event.y_root), event.time
+                )
+            return True
+        return False
+
+    def _update_section_title(self, stack, _pspec) -> None:
+        child = stack.get_visible_child()
+        if child is not None:
+            self.section_title.set_text((stack.child_get_property(child, "title") or "").upper())
+
+    def _toggle_sidebar(self) -> None:
+        is_visible = self.sidebar_revealer.get_reveal_child()
+        self.sidebar_revealer.set_reveal_child(not is_visible)
+        self.sidebar_toggle_button.set_tooltip_text(
+            "Mostrar menú lateral" if is_visible else "Ocultar menú lateral"
+        )
+
+    def _build_sidebar(self) -> Gtk.Widget:
+        """Barra lateral propia (en vez de Gtk.StackSidebar) para poder agrupar las
+        pestanas por proposito: flujo de trabajo (pasos secuenciales, algunos
+        opcionales) vs. configuracion (no son pasos, ajustan como se calcula/ve el
+        resultado) vs. experimental."""
+        listbox = Gtk.ListBox()
+        listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        listbox.get_style_context().add_class("sidebar")
+        self._sidebar_rows: dict[str, Gtk.ListBoxRow] = {}
+
+        def add_header(text: str) -> None:
+            row = Gtk.ListBoxRow()
+            row.set_selectable(False)
+            row.set_activatable(False)
+            row.set_can_focus(False)
+            row.get_style_context().add_class("sidebar-section-header")
+            label = Gtk.Label(xalign=0)
+            label.set_text(text.upper())
+            label.set_margin_start(16)
+            label.set_margin_top(8)
+            label.set_margin_bottom(2)
+            row.add(label)
+            listbox.add(row)
+
+        def add_page(title: str, stack_name: str) -> None:
+            row = Gtk.ListBoxRow()
+            row.set_can_focus(False)
+            if stack_name == "medicion_rapida":
+                row.get_style_context().add_class("quick-nav")
+            label = Gtk.Label(label=title, xalign=0)
+            label.set_margin_start(16)
+            label.set_margin_end(12)
+            label.set_margin_top(7)
+            label.set_margin_bottom(7)
+            row.add(label)
+            row.stack_name = stack_name
+            listbox.add(row)
+            self._sidebar_rows[stack_name] = row
+
+        add_page("Medicion rapida", "medicion_rapida")
+
+        add_header("Flujo de trabajo")
+        add_page("Captura", "captura")
+        add_page("Guia de pose IMU (reposicionar sensor)", "alineacion_imu")
+        add_page("Alineacion por puntos (respaldo)", "alineacion")
+        add_page("Preparar nubes", "preparar_nubes")
+
+        add_header("Configuracion")
+        add_page("Archivos ANTES / DESPUES", "comparacion")
+        add_page("Ajustes de analisis", "procesamiento")
+        add_page("Visualizacion 3D", "visualizacion")
+
+        add_header("Resultados")
+        add_page("Resultados del calculo", "resultados")
+
+        def on_row_selected(_listbox, row) -> None:
+            if row is not None and getattr(row, "stack_name", None):
+                self.stack.set_visible_child_name(row.stack_name)
+
+        listbox.connect("row-selected", on_row_selected)
+        listbox.select_row(self._sidebar_rows["medicion_rapida"])
+
+        def on_stack_page_changed(stack: Gtk.Stack, _pspec) -> None:
+            name = stack.get_visible_child_name()
+            row = self._sidebar_rows.get(name)
+            if row is not None and listbox.get_selected_row() is not row:
+                listbox.select_row(row)
+            if name == "alineacion_imu":
+                self._refresh_imu_reference()
+                self._start_imu_poll()
+            else:
+                self._stop_imu_poll()
+            if name == "prueba_raycasting":
+                self._set_path_label(self.raycast_base_path_label, self.base_path)
+                self._set_path_label(self.raycast_updated_path_label, self.updated_path)
+            if name == "comparacion":
+                self._set_path_label(self.base_path_label, self.base_path)
+                self._set_path_label(self.updated_path_label, self.updated_path)
+
+        self.stack.connect("notify::visible-child-name", on_stack_page_changed)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_name("aurora-sidebar-scroll")
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        listbox.set_name("aurora-sidebar-list")
+        scroller.set_size_request(240, -1)
+        scroller.add(listbox)
+        return scroller
+
+    def _build_results_page(self) -> Gtk.Widget:
+        page = self._new_page()
+
+        status_frame, status_box = self._section("Estado del analisis")
+        status_frame.get_style_context().add_class("status-bar")
+        status_row = self._row(status_box)
         self.status_spinner = Gtk.Spinner()
         self.status_spinner.set_no_show_all(True)
         self.status_spinner.set_visible(False)
         status_row.pack_start(self.status_spinner, False, False, 0)
-        self.status_label = Gtk.Label(label="Todavia no se calculo ningun resultado.")
-        self.status_label.set_xalign(0)
-        status_row.pack_start(self.status_label, False, False, 0)
+        self.status_label = Gtk.Label(label="Todavia no se calculo ningun resultado.", xalign=0)
+        self.status_label.set_hexpand(True)
+        status_row.pack_start(self.status_label, True, True, 0)
+        self.generate_report_button = Gtk.Button(label="Generar informe PDF")
+        self.generate_report_button.get_style_context().add_class("suggested-action")
+        self.generate_report_button.set_tooltip_text(
+            "Exporta las estadisticas, umbrales y archivos de la ultima medicion a un PDF."
+        )
+        self.generate_report_button.set_sensitive(False)
+        self.generate_report_button.connect("clicked", lambda _b: self._generate_report())
+        status_row.pack_end(self.generate_report_button, False, False, 0)
+        page.pack_start(status_frame, False, True, 0)
 
+        stats_frame, stats_box = self._section("Estadisticas de espesor")
         self.cards_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24)
         self.cards_row.set_halign(Gtk.Align.CENTER)
         self.cards_row.set_margin_top(8)
@@ -376,24 +920,376 @@ class AuroraGUI:
         self.cards_row.pack_start(card, False, False, 0)
         card, self.stat_p95 = self._stat_card("Percentil 95")
         self.cards_row.pack_start(card, False, False, 0)
-        result_box.pack_start(self.cards_row, False, False, 0)
+        stats_box.pack_start(self.cards_row, False, False, 0)
+        self.thickness_alert_label = Gtk.Label(xalign=0)
+        self.thickness_alert_label.set_line_wrap(True)
+        self.thickness_alert_label.set_margin_top(8)
+        self.thickness_alert_label.set_margin_bottom(8)
+        self.thickness_alert_label.set_no_show_all(True)
+        self.thickness_alert_label.hide()
+        stats_box.pack_start(self.thickness_alert_label, False, True, 0)
+        self.results_empty_label = Gtk.Label(
+            label="Al terminar una medicion, aqui apareceran las estadisticas y el acceso al informe.",
+            xalign=0,
+        )
+        self.results_empty_label.set_line_wrap(True)
+        stats_box.pack_start(self.results_empty_label, False, False, 4)
+        self.open_result_viewer_button = Gtk.Button(label="Abrir vista 3D")
+        self.open_result_viewer_button.set_sensitive(False)
+        self.open_result_viewer_button.connect("clicked", lambda _b: self._open_active_result_visualization())
+        stats_box.pack_start(self.open_result_viewer_button, False, False, 4)
+        self.result_mesh_actions = self._row(stats_box)
+        self.result_mesh_actions.set_no_show_all(True)
+        self.result_mesh_inspect_button = Gtk.Button(label="Inspeccionar mallas 3D")
+        self.result_mesh_inspect_button.connect("clicked", lambda _b: self._view_raycast_meshes())
+        self.result_mesh_actions.pack_start(self.result_mesh_inspect_button, False, False, 0)
+        self.result_mesh_actions.hide()
+        page.pack_start(stats_frame, False, True, 0)
 
+        log_frame, log_box = self._section("Registro del calculo")
         log_expander = Gtk.Expander(label="Detalles tecnicos")
-        log_expander.set_expanded(False)
+        log_expander.set_expanded(True)
         log_scroller = Gtk.ScrolledWindow()
-        log_scroller.set_min_content_height(130)
+        log_scroller.get_style_context().add_class("expander-content")
+        log_scroller.set_min_content_height(220)
         log_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.log_view = Gtk.TextView()
+        self.log_view.get_style_context().add_class("technical-log")
         self.log_view.set_editable(False)
         self.log_view.set_monospace(True)
         self.log_view.set_left_margin(6)
+        self.log_view.set_right_margin(6)
         self.log_view.set_top_margin(6)
+        self.log_view.set_bottom_margin(6)
+        self.log_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.log_buffer = self.log_view.get_buffer()
+        log_scroller.get_style_context().add_class("technical-log")
         log_scroller.add(self.log_view)
         log_expander.add(log_scroller)
-        result_box.pack_start(log_expander, False, True, 6)
+        log_box.pack_start(log_expander, False, True, 0)
+        page.pack_start(log_frame, False, True, 0)
 
-        root_box.pack_start(result_frame, False, True, 8)
+        return self._scrolled(page)
+
+    def _build_quick_measurement_page(self) -> Gtk.Widget:
+        """Flujo guiado de entrada para operadores nuevos; delega en los flujos existentes."""
+        page = self._new_page()
+
+        files_frame, files_box = self._section("1. Selecciona o captura las dos etapas")
+        self.quick_base_path_label = Gtk.Label(xalign=0)
+        self.quick_base_path_label.set_hexpand(True)
+        self._set_path_label(self.quick_base_path_label, self.base_path)
+        row = self._row(files_box)
+        row.pack_start(Gtk.Label(label="ANTES  ·  tunel original", xalign=0), False, False, 0)
+        row.pack_start(self.quick_base_path_label, True, True, 0)
+        load_base = Gtk.Button(label="Cargar .ply")
+        load_base.connect("clicked", lambda _b: self._quick_choose_cloud("base"))
+        row.pack_start(load_base, False, False, 0)
+        capture_base = Gtk.Button(label="Capturar antes")
+        capture_base.connect("clicked", lambda _b: self._quick_capture("base"))
+        row.pack_start(capture_base, False, False, 0)
+
+        self.quick_updated_path_label = Gtk.Label(xalign=0)
+        self.quick_updated_path_label.set_hexpand(True)
+        self._set_path_label(self.quick_updated_path_label, self.updated_path)
+        row = self._row(files_box)
+        row.pack_start(Gtk.Label(label="DESPUES  ·  tunel con shotcrete", xalign=0), False, False, 0)
+        row.pack_start(self.quick_updated_path_label, True, True, 0)
+        load_updated = Gtk.Button(label="Cargar .ply")
+        load_updated.connect("clicked", lambda _b: self._quick_choose_cloud("updated"))
+        row.pack_start(load_updated, False, False, 0)
+        capture_updated = Gtk.Button(label="Capturar despues")
+        capture_updated.connect("clicked", lambda _b: self._quick_capture("updated"))
+        row.pack_start(capture_updated, False, False, 0)
+        note = Gtk.Label(
+            label=(
+                "Las capturas pueden hacerse en momentos distintos. Para conservar la misma referencia, "
+                "mantene el Aurora encendido y con tracking entre capturas; despues de capturar ANTES, "
+                "usa la guia IMU para volver a esa pose antes de capturar DESPUES."
+            ),
+            xalign=0,
+        )
+        note.set_line_wrap(True)
+        files_box.pack_start(note, False, False, 0)
+        sensor_row = self._row(files_box)
+        sensor_row.pack_start(Gtk.Label(label="Sensor Aurora · IP:", xalign=0), False, False, 0)
+        self.quick_sensor_address_entry = Gtk.Entry()
+        self.quick_sensor_address_entry.set_text("192.168.11.1")
+        self.quick_sensor_address_entry.set_width_chars(16)
+        self.quick_sensor_address_entry.connect("changed", self._sync_sensor_address)
+        sensor_row.pack_start(self.quick_sensor_address_entry, False, False, 0)
+        self.quick_connect_button = Gtk.Button(label="Conectar sensor")
+        self.quick_connect_button.connect("clicked", lambda _b: self._toggle_sensor_connection())
+        sensor_row.pack_start(self.quick_connect_button, False, False, 0)
+        self.quick_sensor_status_label = Gtk.Label()
+        self.quick_sensor_status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  Desconectado')
+        sensor_row.pack_start(self.quick_sensor_status_label, False, False, 0)
+        page.pack_start(files_frame, False, True, 0)
+
+        align_frame, align_box = self._section("2. Verificacion de pose IMU")
+        align_note = Gtk.Label(
+            label=(
+                "Antes de capturar DESPUES, vuelve con el sensor a la posicion y orientacion de ANTES "
+                "siguiendo la guia IMU. La app verifica las poses guardadas junto a ambas capturas; "
+                "esto requiere mantener encendido el Aurora y conservar el mismo tracking. La IMU "
+                "comprueba proximidad de pose; no transforma ni registra las nubes por software."
+            ),
+            xalign=0,
+        )
+        align_note.set_line_wrap(True)
+        align_box.pack_start(align_note, False, False, 0)
+        self.quick_alignment_status = Gtk.Label(label="Alineacion no aplicada", xalign=0)
+        align_box.pack_start(self.quick_alignment_status, False, False, 0)
+        align_button = Gtk.Button(label="Abrir guia para reposicionar el sensor")
+        align_button.connect("clicked", lambda _b: self.stack.set_visible_child_name("alineacion_imu"))
+        align_box.pack_start(align_button, False, False, 0)
+        page.pack_start(align_frame, False, True, 0)
+
+        method_frame, method_box = self._section("3. Calcula el espesor")
+        method_note = Gtk.Label(
+            label="Recomendado para empezar: Cloud-to-Cloud. Calcula distancias entre superficies sin reconstruir mallas.",
+            xalign=0,
+        )
+        method_note.set_line_wrap(True)
+        method_box.pack_start(method_note, False, False, 0)
+
+        mesh_expander = Gtk.Expander(label="Opcional · crear malla para medir el espesor")
+        mesh_expander.set_expanded(False)
+        mesh_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        mesh_box.get_style_context().add_class("expander-content")
+        self.quick_mesh_check = Gtk.CheckButton(label="Usar una malla para calcular el espesor")
+        mesh_box.pack_start(self.quick_mesh_check, False, False, 0)
+        mesh_row = self._row(mesh_box)
+        mesh_row.set_sensitive(False)
+        self.quick_mesh_check.connect(
+            "toggled", lambda check: mesh_row.set_sensitive(check.get_active())
+        )
+        mesh_row.pack_start(Gtk.Label(label="Metodo de malla:"), False, False, 0)
+        self.quick_poisson_rb = Gtk.RadioButton.new_with_label_from_widget(None, "Poisson")
+        mesh_row.pack_start(self.quick_poisson_rb, False, False, 0)
+        self.quick_delaunay_rb = Gtk.RadioButton.new_with_label_from_widget(
+            self.quick_poisson_rb, "Delaunay"
+        )
+        mesh_row.pack_start(self.quick_delaunay_rb, False, False, 0)
+        mesh_detail_row = self._row(mesh_box)
+        mesh_detail_row.set_sensitive(False)
+        self.quick_mesh_check.connect(
+            "toggled", lambda check: mesh_detail_row.set_sensitive(check.get_active())
+        )
+        mesh_detail_row.pack_start(Gtk.Label(label="Profundidad Poisson:"), False, False, 0)
+        self.quick_poisson_depth = Gtk.SpinButton.new_with_range(5, 12, 1)
+        self.quick_poisson_depth.set_value(9)
+        self.quick_poisson_depth.set_tooltip_text(
+            "Menor profundidad genera una superficie menos detallada y puede reducir picos pequeños."
+        )
+        mesh_detail_row.pack_start(self.quick_poisson_depth, False, False, 0)
+        self.quick_smooth_check = Gtk.CheckButton(label="Suavizar malla (Taubin)")
+        self.quick_smooth_check.set_tooltip_text(
+            "Modifica la superficie usada para medir; compara el espesor con y sin suavizado."
+        )
+        mesh_detail_row.pack_start(self.quick_smooth_check, False, False, 0)
+        self.quick_smooth_iterations = Gtk.SpinButton.new_with_range(1, 30, 1)
+        self.quick_smooth_iterations.set_value(5)
+        self.quick_smooth_iterations.set_sensitive(False)
+        self.quick_smooth_check.connect(
+            "toggled", lambda check: self.quick_smooth_iterations.set_sensitive(check.get_active())
+        )
+        mesh_detail_row.pack_start(Gtk.Label(label="Iteraciones:"), False, False, 0)
+        mesh_detail_row.pack_start(self.quick_smooth_iterations, False, False, 0)
+        self.quick_delaunay_rb.connect(
+            "toggled", lambda button: self.quick_poisson_depth.set_sensitive(not button.get_active())
+        )
+        mesh_explanation = Gtk.Label(
+            label=(
+                "Activa la casilla para reconstruir las superficies antes de medir. Poisson suele "
+                "convenir para una captura completa; Delaunay, para una region local recortada. "
+                "Si la casilla queda desactivada, se usa Cloud-to-Cloud sin crear mallas. "
+                "Bajar la profundidad Poisson o activar Taubin reduce irregularidades, pero "
+                "tambien puede cambiar el espesor calculado; deja Taubin apagado para medir sin suavizado."
+            ),
+            xalign=0,
+        )
+        mesh_explanation.set_line_wrap(True)
+        mesh_box.pack_start(mesh_explanation, False, False, 0)
+        mesh_expander.add(mesh_box)
+        method_box.pack_start(mesh_expander, False, False, 0)
+
+        self.quick_calculate_button = Gtk.Button(label="Calcular espesor")
+        self.quick_calculate_button.get_style_context().add_class("suggested-action")
+        self.quick_calculate_button.connect("clicked", lambda _b: self._quick_calculate())
+        method_box.pack_start(self.quick_calculate_button, False, False, 0)
+        self.quick_status_label = Gtk.Label(label="Carga las nubes antes y despues para comenzar.", xalign=0)
+        self.quick_status_label.set_line_wrap(True)
+        method_box.pack_start(self.quick_status_label, False, False, 0)
+
+        self.quick_mesh_result_row = self._row(method_box)
+        self.quick_mesh_result_row.set_no_show_all(True)
+        self.quick_mesh_result_button = Gtk.Button(label="Ir a resultados de malla")
+        self.quick_mesh_result_button.connect(
+            "clicked", lambda _b: self.stack.set_visible_child_name("resultados")
+        )
+        self.quick_mesh_result_row.pack_start(self.quick_mesh_result_button, False, False, 0)
+        self._hide_quick_mesh_result_actions()
+
+        extra_row = self._row(method_box)
+        advanced_button = Gtk.Button(label="Abrir ajustes avanzados")
+        advanced_button.connect("clicked", lambda _b: self.stack.set_visible_child_name("procesamiento"))
+        extra_row.pack_start(advanced_button, False, False, 0)
+        page.pack_start(method_frame, False, True, 0)
+
+        self._refresh_quick_status()
+        return self._scrolled(page)
+
+    def _quick_choose_cloud(self, target: str) -> None:
+        path = self._run_open_file_dialog()
+        if not path:
+            return
+        if target == "base":
+            self._set_base_path(path)
+        else:
+            self._set_updated_path(path)
+        self._refresh_quick_status()
+
+    def _quick_capture(self, target: str) -> None:
+        if self.sensor_connection is None:
+            self.stack.set_visible_child_name("captura")
+            self._show_info(
+                "Conecta el sensor",
+                "Conecta el Aurora en la pestaña Captura. Luego vuelve a Medicion rapida para iniciar la captura.",
+            )
+            return
+        self.stack.set_visible_child_name("captura")
+        self._capture_clicked(target)
+
+    def _quick_calculate(self) -> None:
+        if not self.base_path or not Path(self.base_path).is_file():
+            self._show_warning("Falta la captura ANTES", "Carga un archivo .ply o captura el tunel antes del shotcrete.")
+            return
+        if not self.updated_path or not Path(self.updated_path).is_file():
+            self._show_warning("Falta la captura DESPUES", "Carga un archivo .ply o captura el tunel con shotcrete.")
+            return
+
+        self._hide_quick_mesh_result_actions()
+
+        base_pose = load_reference_pose(Path(self.base_path))
+        updated_pose = load_reference_pose(Path(self.updated_path))
+        if base_pose is not None and updated_pose is not None:
+            position_error_cm = float(np.linalg.norm(base_pose[0] - updated_pose[0])) * 100.0
+            rotation_error_deg = ((base_pose[1] - updated_pose[1] + 180.0) % 360.0) - 180.0
+            max_rotation_error = float(np.max(np.abs(rotation_error_deg)))
+            if (
+                position_error_cm > self.IMU_POSITION_TOLERANCE_CM
+                or max_rotation_error > self.IMU_ROTATION_TOLERANCE_DEG
+            ):
+                dialog = Gtk.MessageDialog(
+                    transient_for=self.window,
+                    flags=0,
+                    message_type=Gtk.MessageType.QUESTION,
+                    buttons=Gtk.ButtonsType.NONE,
+                    text="Diferencia de posición del sensor detectada",
+                )
+                dialog.format_secondary_text(
+                    f"El sensor se desplazo {position_error_cm:.1f} cm y roto {max_rotation_error:.1f}° entre ambas tomas.\n\n"
+                    "¿Deseas compensar este movimiento automaticamente por software usando el tracking del sensor antes de calcular?"
+                )
+                dialog.add_button("Cancelar", Gtk.ResponseType.CANCEL)
+                dialog.add_button("Alinear manualmente...", Gtk.ResponseType.REJECT)
+                dialog.add_button("Compensar por pose y calcular", Gtk.ResponseType.ACCEPT)
+                response = dialog.run()
+                dialog.destroy()
+
+                if response == Gtk.ResponseType.ACCEPT:
+                    success = self._apply_pose_alignment(interactive=False)
+                    if not success:
+                        return
+                    self.alignment_applied = True
+                elif response == Gtk.ResponseType.REJECT:
+                    self.alignment_applied = False
+                    self.stack.set_visible_child_name("alineacion")
+                    return
+                else:
+                    return
+            else:
+                self.alignment_applied = True
+
+        self.quick_status_label.set_text("Calculando... puedes seguir el progreso en Detalles tecnicos.")
+        if self.quick_mesh_check.get_active():
+            self.raycast_mesh_poisson_rb.set_active(self.quick_poisson_rb.get_active())
+            self.raycast_mesh_delaunay_rb.set_active(self.quick_delaunay_rb.get_active())
+            self.raycast_ray_normal_rb.set_active(True)
+            self._run_raycast_clicked()
+        else:
+            self._run_pipeline_clicked()
+
+    def _hide_quick_mesh_result_actions(self) -> None:
+        row = getattr(self, "quick_mesh_result_row", None)
+        if row is None:
+            return
+        row.set_no_show_all(True)
+        row.hide()
+
+    def _show_quick_mesh_result_actions(self) -> None:
+        row = getattr(self, "quick_mesh_result_row", None)
+        if row is None:
+            return
+        row.set_no_show_all(False)
+        row.show_all()
+
+    def _refresh_quick_status(self) -> None:
+        if not hasattr(self, "quick_status_label"):
+            return
+        has_base = bool(self.base_path and Path(self.base_path).is_file())
+        has_updated = bool(self.updated_path and Path(self.updated_path).is_file())
+        if has_base and has_updated:
+            base_pose = load_reference_pose(Path(self.base_path))
+            updated_pose = load_reference_pose(Path(self.updated_path))
+            if base_pose is not None and updated_pose is not None:
+                position_error_cm = float(np.linalg.norm(base_pose[0] - updated_pose[0])) * 100.0
+                rotation_error_deg = ((base_pose[1] - updated_pose[1] + 180.0) % 360.0) - 180.0
+                max_rotation_error = float(np.max(np.abs(rotation_error_deg)))
+                position_ok = position_error_cm <= self.IMU_POSITION_TOLERANCE_CM
+                rotation_ok = max_rotation_error <= self.IMU_ROTATION_TOLERANCE_DEG
+                self.alignment_applied = position_ok and rotation_ok
+                if self.alignment_applied:
+                    self.quick_alignment_status.set_text(
+                        f"Diferencia entre poses: {position_error_cm:.1f} cm y "
+                        f"{max_rotation_error:.1f}Â° de diferencia."
+                    )
+                    self.quick_status_label.set_text(
+                        "Poses dentro de tolerancia. Esto asume que ambas capturas conservan el mismo tracking."
+                    )
+                else:
+                    self.quick_alignment_status.set_text(
+                        f"Poses distintas: {position_error_cm:.1f} cm y "
+                        f"{max_rotation_error:.1f}°. Se puede compensar por software al calcular."
+                    )
+                    self.quick_status_label.set_text(
+                        "Diferencia de pose detectada. Al presionar 'Calcular espesor' podrás "
+                        "compensarla automáticamente por software sin marcar puntos manuales."
+                    )
+            else:
+                if self.alignment_applied:
+                    self.quick_alignment_status.set_text("Alineacion por puntos aplicada a la nube DESPUES.")
+                    self.quick_status_label.set_text(
+                        "Ambas capturas estan listas y la alineacion manual aplicada. Puedes calcular el espesor."
+                    )
+                else:
+                    self.quick_alignment_status.set_text(
+                        "No se pudo verificar: falta pose IMU en una o ambas capturas."
+                    )
+                    self.quick_status_label.set_text(
+                        "Ambas nubes estan cargadas, pero falta pose IMU. Para verificar por IMU, "
+                        "captura con el Aurora conectado y tracking activo entre ambas tomas."
+                    )
+        elif has_base:
+            self.quick_alignment_status.set_text("Falta la captura DESPUES para verificar las poses IMU.")
+            self.quick_status_label.set_text("Captura ANTES lista. Falta cargar o capturar DESPUES.")
+        elif has_updated:
+            self.quick_alignment_status.set_text("Falta la captura ANTES para verificar las poses IMU.")
+            self.quick_status_label.set_text("Captura DESPUES lista. Falta cargar o capturar ANTES.")
+        else:
+            self.quick_alignment_status.set_text("Las poses IMU se verifican cuando ambas capturas estan listas.")
+            self.quick_status_label.set_text("Carga las nubes antes y despues para comenzar.")
 
     # -- Pagina: Captura ---------------------------------------------------------
 
@@ -407,6 +1303,7 @@ class AuroraGUI:
         self.sensor_address_entry = Gtk.Entry()
         self.sensor_address_entry.set_text("192.168.11.1")
         self.sensor_address_entry.set_width_chars(16)
+        self.sensor_address_entry.connect("changed", self._sync_sensor_address)
         row.pack_start(self.sensor_address_entry, False, False, 0)
         self.connect_button = Gtk.Button(label="Conectar")
         self.connect_button.connect("clicked", lambda _b: self._toggle_sensor_connection())
@@ -471,7 +1368,14 @@ class AuroraGUI:
         self.capture_status_label = Gtk.Label(xalign=0)
         row.pack_start(self.capture_status_label, False, False, 0)
 
-        row = self._row(sensor_box)
+        capture_options_expander = Gtk.Expander(label="Ajustes de captura (opcional)")
+        capture_options_expander.set_expanded(True)
+        capture_options_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        capture_options_box.get_style_context().add_class("expander-content")
+        capture_options_expander.add(capture_options_box)
+        sensor_box.pack_start(capture_options_expander, False, False, 0)
+
+        row = self._row(capture_options_box)
         row.pack_start(Gtk.Label(label="Duracion de la captura (s):"), False, False, 0)
         self.capture_duration_entry = Gtk.Entry()
         self.capture_duration_entry.set_text("15")
@@ -498,7 +1402,7 @@ class AuroraGUI:
             0,
         )
 
-        row = self._row(sensor_box)
+        row = self._row(capture_options_box)
         self.capture_limit_fov_check = Gtk.CheckButton(label="Limitar campo de vision")
         row.pack_start(self.capture_limit_fov_check, False, False, 0)
         row.pack_start(Gtk.Label(label="Cono (grados):"), False, False, 0)
@@ -519,24 +1423,30 @@ class AuroraGUI:
         row.pack_start(self.capture_max_distance_entry, False, False, 0)
         row.pack_start(
             self._info_button(
-                "Opcional, desactivado por defecto (captura todo el campo de vision del "
-                "sensor). Al activarlo, descarta puntos fuera de un cono centrado en el "
-                "eje frontal indicado — util para capturar solo una caja de prueba sin "
-                "incluir lo que esta detras o a los costados.\n\n"
+                "Cono visual: desactivado por defecto. Al activarlo, descarta puntos fuera "
+                "del cono centrado en el eje frontal indicado; puede ayudar a aislar una "
+                "zona, pero tambien puede dejar fuera parte de la pared.\n\n"
                 "Distancia maxima: vacio = sin limite. Descarta puntos mas lejos que ese "
-                "valor, aplique o no el cono."
+                "valor, con o sin el cono."
             ),
             False,
             False,
             0,
         )
 
-        row = self._row(sensor_box)
+        live_tools_expander = Gtk.Expander(label="Herramientas de vista en vivo (opcional)")
+        live_tools_expander.set_expanded(True)
+        live_tools_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        live_tools_box.get_style_context().add_class("expander-content")
+        live_tools_expander.add(live_tools_box)
+        sensor_box.pack_start(live_tools_expander, False, False, 0)
+
+        row = self._row(live_tools_box)
         self.start_live_capture_button = Gtk.Button(label="Iniciar captura en tiempo real")
         self.start_live_capture_button.set_sensitive(False)
         self.start_live_capture_button.connect("clicked", lambda _b: self._start_live_capture_clicked())
         row.pack_start(self.start_live_capture_button, False, False, 0)
-        self.capture_live_baseline_button = Gtk.Button(label="Fijar BASE en vivo (MVP)")
+        self.capture_live_baseline_button = Gtk.Button(label="Fijar BASE en vivo")
         self.capture_live_baseline_button.set_sensitive(False)
         self.capture_live_baseline_button.connect("clicked", lambda _b: self._capture_live_baseline_clicked())
         row.pack_start(self.capture_live_baseline_button, False, False, 0)
@@ -560,8 +1470,371 @@ class AuroraGUI:
             0,
         )
 
+        row = self._row(live_tools_box)
+        self.stream_toggle_button = Gtk.Button(label="Iniciar transmision")
+        self.stream_toggle_button.connect("clicked", lambda _b: self._toggle_stream_clicked())
+        row.pack_start(self.stream_toggle_button, False, False, 0)
+        row.pack_start(
+            self._info_button(
+                "Abre un servidor local en esta PC para ver la vista 3D en vivo desde un "
+                "celular. Conecta el celular a la MISMA red WiFi y escanea el codigo QR que "
+                "aparece aca abajo con la camara — vas a poder orbitar y hacer zoom con el "
+                "dedo. Si la vista en vivo todavia no esta abierta, se abre automaticamente."
+            ),
+            False,
+            False,
+            0,
+        )
+
+        row = self._row(live_tools_box)
+        self.stream_qr_image = Gtk.Image()
+        row.pack_start(self.stream_qr_image, False, False, 0)
+        qr_side_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.stream_url_label = Gtk.Label(label="", xalign=0)
+        self.stream_url_label.set_selectable(True)
+        qr_side_box.pack_start(self.stream_url_label, False, False, 0)
+        row.pack_start(qr_side_box, False, False, 0)
+
         page.pack_start(sensor_frame, False, True, 0)
         return self._scrolled(page)
+
+    # -- Pagina: Alineacion IMU ----------------------------------------------------
+
+    IMU_POSITION_TOLERANCE_CM = 0.5
+    IMU_ROTATION_TOLERANCE_DEG = 3.0
+
+    def _build_imu_alignment_page(self) -> Gtk.Widget:
+        page = self._new_page()
+
+        self.imu_reference_pose: tuple[np.ndarray, np.ndarray] | None = None
+        self.imu_reference_source_path: str | None = None
+        self.imu_direction_words: dict[str, tuple[str, str]] | None = None
+        self.imu_poll_source_id: int | None = None
+
+        info_frame, info_box = self._section("Reposicionar el sensor (IMU/SLAM)")
+        note = Gtk.Label(
+            label=(
+                "El sensor Aurora sigue su propia posicion (tracking visual-inercial) "
+                "mientras queda encendido. Al capturar el 'Tunel original' se guarda esa "
+                "posicion como referencia. Podes mover el sensor libremente para aplicar "
+                "el shotcrete; antes de capturar el 'Tunel con shotcrete', usa esta "
+                "pagina para devolverlo a la misma posicion fisica siguiendo la guia de "
+                "abajo (no apagues el sensor entre medio o pierde el tracking).\n\n"
+                "La guia indica hacia donde mover con palabras (adelante/atras, "
+                "izquierda/derecha, arriba/abajo) calculadas a partir de hacia donde "
+                "miraba el sensor al capturar el 'Tunel original' — 'adelante' es la cara "
+                "con las camaras en ese momento. Adelante/atras ya se valido contra el "
+                "sensor real; izquierda/derecha y arriba/abajo son la mejor aproximacion "
+                "disponible pero todavia no se confirmaron — si notas que no coinciden con "
+                "el movimiento real, confia en el numero (cm) y el color en vez de la "
+                "palabra."
+            ),
+            xalign=0,
+        )
+        note.set_line_wrap(True)
+        info_box.pack_start(note, False, False, 0)
+        page.pack_start(info_frame, False, True, 0)
+
+        ref_frame, ref_box = self._section("Posicion de referencia")
+        row = self._row(ref_box)
+        self.imu_reference_label = Gtk.Label(label="(sin capturar todavia)", xalign=0)
+        row.pack_start(self.imu_reference_label, False, False, 0)
+        refresh_button = Gtk.Button(label="Actualizar")
+        refresh_button.set_tooltip_text(
+            "Vuelve a buscar la pose de referencia guardada junto al 'Tunel original' actual."
+        )
+        refresh_button.connect("clicked", lambda _b: self._refresh_imu_reference())
+        row.pack_start(refresh_button, False, False, 0)
+        page.pack_start(ref_frame, False, True, 0)
+
+        guide_frame, guide_box = self._section("Guia en vivo")
+        self.imu_guide_status_label = Gtk.Label(label="", xalign=0)
+        guide_box.pack_start(self.imu_guide_status_label, False, False, 0)
+
+        grid = Gtk.Grid(column_spacing=16, row_spacing=6)
+        guide_box.pack_start(grid, False, False, 0)
+
+        def add_axis_row(row_idx: int, title: str, swatch_color: str | None = None) -> Gtk.Label:
+            title_label = Gtk.Label(xalign=0)
+            swatch = f'<span foreground="{swatch_color}">●</span> ' if swatch_color else ""
+            title_label.set_markup(f"{swatch}{GLib.markup_escape_text(title)}")
+            title_label.set_size_request(150, -1)
+            grid.attach(title_label, 0, row_idx, 1, 1)
+            value_label = Gtk.Label(label="", xalign=0)
+            value_label.set_width_chars(14)
+            value_label.set_xalign(0.0)
+            grid.attach(value_label, 1, row_idx, 1, 1)
+            return value_label
+
+        self.imu_axis_labels = {
+            "x": add_axis_row(0, "Eje X:", AXIS_HUD_COLORS["x"]),
+            "y": add_axis_row(1, "Eje Y:", AXIS_HUD_COLORS["y"]),
+            "z": add_axis_row(2, "Eje Z:", AXIS_HUD_COLORS["z"]),
+            "roll": add_axis_row(3, "Rotacion (roll):"),
+            "pitch": add_axis_row(4, "Rotacion (pitch):"),
+            "yaw": add_axis_row(5, "Rotacion (yaw):"),
+        }
+
+        total_row = self._row(guide_box)
+        total_caption = Gtk.Label(label="Distancia total:", xalign=0)
+        total_caption.set_size_request(150, -1)
+        total_row.pack_start(total_caption, False, False, 0)
+        self.imu_total_distance_label = Gtk.Label(label="", xalign=0)
+        self.imu_total_distance_label.set_width_chars(14)
+        total_row.pack_start(self.imu_total_distance_label, False, False, 0)
+
+        page.pack_start(guide_frame, False, True, 0)
+
+        viewer_frame, viewer_box = self._section("Ver posiciones en 3D")
+        viewer_note = Gtk.Label(
+            label=(
+                "Abre una ventana 3D aparte, simple (sin la nube completa): una esfera "
+                "que pasa de ROJO a AMBAR a VERDE marca al sensor segun que tan cerca "
+                "esta del objetivo. En la esquina superior izquierda de esa ventana hay "
+                "una flecha fija que indica hacia donde mover, un eje a la vez (cian=X, "
+                "despues magenta=Y, despues amarillo=Z); se convierte en un punto verde "
+                "cuando ya estan los tres alineados. Junto a la ventana 3D se abre "
+                "tambien un panel flotante con los mismos numeros en grande, para "
+                "poder leerlos sin tener que mirar esta pestana mientras movés el "
+                "sensor."
+            ),
+            xalign=0,
+        )
+        viewer_note.set_line_wrap(True)
+        viewer_box.pack_start(viewer_note, False, False, 0)
+        row = self._row(viewer_box)
+        self.open_imu_viewer_button = Gtk.Button(label="Abrir vista 3D")
+        self.open_imu_viewer_button.connect("clicked", lambda _b: self._open_imu_pose_viewer())
+        row.pack_start(self.open_imu_viewer_button, False, False, 0)
+        self.close_imu_viewer_button = Gtk.Button(label="Cerrar vista 3D")
+        self.close_imu_viewer_button.set_sensitive(False)
+        self.close_imu_viewer_button.connect("clicked", lambda _b: self._close_imu_pose_viewer())
+        row.pack_start(self.close_imu_viewer_button, False, False, 0)
+        page.pack_start(viewer_frame, False, True, 0)
+
+        return self._scrolled(page)
+
+    def _open_imu_pose_viewer(self) -> None:
+        if self.imu_reference_pose is None:
+            self._show_warning(
+                "Sin posicion de referencia",
+                "No hay una posicion de referencia cargada (ver 'Posicion de referencia' arriba).",
+            )
+            return
+        if self.pose_viewer is not None and self.pose_viewer.is_running():
+            self._show_info("Vista 3D", "La vista 3D de alineacion IMU ya esta abierta.")
+            return
+
+        reference_position, _reference_rpy_deg = self.imu_reference_pose
+        self.pose_viewer = PoseAlignmentViewer(
+            reference_position, self.IMU_POSITION_TOLERANCE_CM / 100.0, log=self._log
+        )
+        self.pose_viewer.start()
+        self.close_imu_viewer_button.set_sensitive(True)
+        self._open_imu_hud_window()
+
+    def _close_imu_pose_viewer(self) -> None:
+        if self.pose_viewer is not None:
+            self.pose_viewer.stop()
+            self.pose_viewer = None
+        self.close_imu_viewer_button.set_sensitive(False)
+        self._close_imu_hud_window()
+
+    def _build_imu_hud_window(self) -> Gtk.Window:
+        """Ventana flotante, siempre encima, con los mismos numeros que la
+        guia de pose IMU pero en letra grande — para poder leerlos
+        de un vistazo junto a la vista 3D mientras se mueve el sensor con
+        las dos manos, sin tener que volver a mirar la pestana."""
+        window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        window.set_title("Aurora - Metricas de alineacion")
+        window.set_default_size(300, -1)
+        window.set_keep_above(True)
+        window.set_resizable(False)
+        window.connect("delete-event", lambda *_a: self._close_imu_hud_window() or True)
+        window.move(20, 20)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+        box.set_margin_top(14)
+        box.set_margin_bottom(14)
+        window.add(box)
+
+        status_label = Gtk.Label(xalign=0)
+        status_label.set_line_wrap(True)
+        box.pack_start(status_label, False, False, 0)
+        self.imu_hud_status_label = status_label
+
+        grid = Gtk.Grid(column_spacing=14, row_spacing=8)
+        box.pack_start(grid, False, False, 0)
+
+        def add_row(row_idx: int, title: str, swatch_color: str | None = None) -> Gtk.Label:
+            title_label = Gtk.Label(xalign=0)
+            swatch = f'<span foreground="{swatch_color}">●</span> ' if swatch_color else ""
+            title_label.set_markup(f"<span size='large'>{swatch}{GLib.markup_escape_text(title)}</span>")
+            grid.attach(title_label, 0, row_idx, 1, 1)
+            value_label = Gtk.Label(label="", xalign=0)
+            grid.attach(value_label, 1, row_idx, 1, 1)
+            return value_label
+
+        self.imu_hud_labels = {
+            "x": add_row(0, "X:", AXIS_HUD_COLORS["x"]),
+            "y": add_row(1, "Y:", AXIS_HUD_COLORS["y"]),
+            "z": add_row(2, "Z:", AXIS_HUD_COLORS["z"]),
+            "roll": add_row(3, "Roll:"),
+            "pitch": add_row(4, "Pitch:"),
+            "yaw": add_row(5, "Yaw:"),
+        }
+
+        separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        box.pack_start(separator, False, False, 0)
+
+        total_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        total_row.pack_start(Gtk.Label(label="Distancia total:"), False, False, 0)
+        total_caption = Gtk.Label(label="Distancia total:")
+        total_row.pack_start(total_caption, False, False, 0)
+        total_label = Gtk.Label(label="")
+        total_row.pack_start(total_label, False, False, 0)
+        box.pack_start(total_row, False, False, 0)
+        self.imu_hud_total_distance_label = total_label
+
+        return window
+
+    def _open_imu_hud_window(self) -> None:
+        if self.imu_hud_window is None:
+            self.imu_hud_window = self._build_imu_hud_window()
+        self.imu_hud_window.show_all()
+        self.imu_hud_window.present()
+
+    def _close_imu_hud_window(self) -> None:
+        if self.imu_hud_window is not None:
+            self.imu_hud_window.hide()
+
+    def _refresh_imu_reference(self) -> None:
+        self._close_imu_pose_viewer()
+        self.imu_reference_pose = None
+        self.imu_reference_source_path = None
+        base_path = getattr(self, "base_path", None)
+        if not base_path or not Path(base_path).is_file():
+            self.imu_reference_label.set_text("(sin capturar todavia)")
+            self._set_imu_guide_disabled("Todavia no hay un 'Tunel original' cargado.")
+            return
+
+        pose = load_reference_pose(Path(base_path))
+        if pose is None:
+            self.imu_reference_label.set_text(f"No hay pose guardada para: {Path(base_path).name}")
+            self._set_imu_guide_disabled(
+                "Esta captura no tiene posicion de referencia (se hizo sin sensor conectado, o "
+                "es anterior a esta funcion). Volve a capturar el 'Tunel original' con el "
+                "sensor conectado."
+            )
+            return
+
+        self.imu_reference_pose = pose
+        self.imu_reference_source_path = base_path
+        self.imu_direction_words = direction_word_pairs_for_axes(pose[1])
+        self.imu_reference_label.set_text(f"Guardada desde: {Path(base_path).name}")
+        self.imu_guide_status_label.set_text("Conecta el sensor para ver la guia en vivo.")
+
+    def _set_imu_guide_disabled(self, message: str) -> None:
+        self.imu_guide_status_label.set_text(message)
+        for label in self.imu_axis_labels.values():
+            label.set_text("")
+        self.imu_total_distance_label.set_text("")
+        if self.imu_hud_labels is not None:
+            self.imu_hud_status_label.set_text(message)
+            for label in self.imu_hud_labels.values():
+                label.set_text("")
+            self.imu_hud_total_distance_label.set_text("")
+
+    def _start_imu_poll(self) -> None:
+        if self.imu_poll_source_id is not None:
+            return
+        self.imu_poll_source_id = GLib.timeout_add(300, self._imu_poll_tick)
+
+    def _stop_imu_poll(self) -> None:
+        source_id = getattr(self, "imu_poll_source_id", None)
+        if source_id is not None:
+            GLib.source_remove(source_id)
+            self.imu_poll_source_id = None
+
+    def _imu_poll_tick(self) -> bool:
+        if self.stack.get_visible_child_name() != "alineacion_imu":
+            self.imu_poll_source_id = None
+            return False
+
+        if self.sensor_connection is None:
+            self._set_imu_guide_disabled("Conecta el sensor en la pestana 'Captura' para ver la guia en vivo.")
+            return True
+
+        if self.imu_reference_pose is None:
+            self._set_imu_guide_disabled("No hay posicion de referencia cargada (ver arriba).")
+            return True
+
+        try:
+            pose = aurora_sensor.get_current_pose(self.sensor_connection)
+        except Exception as exc:
+            self._set_imu_guide_disabled(f"No se pudo leer la posicion del sensor: {exc}")
+            return True
+
+        ref_position, ref_rpy_deg = self.imu_reference_pose
+        position_error_m = ref_position - pose.position
+        rotation_error_deg = ((ref_rpy_deg - pose.rpy_deg + 180.0) % 360.0) - 180.0
+
+        label_sets = [self.imu_axis_labels]
+        if self.imu_hud_labels is not None:
+            label_sets.append(self.imu_hud_labels)
+
+        position_ok = True
+        pending_move: tuple[str, float] | None = None  # (palabra, cm) del primer eje sin corregir
+        for axis, value_m in zip(("x", "y", "z"), position_error_m):
+            value_cm = value_m * 100.0
+            positive_word, negative_word = self.imu_direction_words[axis]
+            word = positive_word if value_cm >= 0 else negative_word
+            within = abs(value_cm) <= self.IMU_POSITION_TOLERANCE_CM
+            position_ok = position_ok and within
+            if not within and pending_move is None:
+                pending_move = (word, abs(value_cm))
+            color = COLOR_OK if within else COLOR_WARN
+            markup = f'<span foreground="{color}">mover hacia {word.upper()}: {abs(value_cm):.1f} cm</span>'
+            for labels in label_sets:
+                labels[axis].set_markup(markup)
+
+        rotation_ok = True
+        for axis, value_deg in zip(("roll", "pitch", "yaw"), rotation_error_deg):
+            direction = "+" if value_deg >= 0 else "-"
+            within = abs(value_deg) <= self.IMU_ROTATION_TOLERANCE_DEG
+            rotation_ok = rotation_ok and within
+            color = COLOR_OK if within else COLOR_WARN
+            markup = f'<span foreground="{color}">girar {direction}: {abs(value_deg):.1f}°</span>'
+            for labels in label_sets:
+                labels[axis].set_markup(markup)
+
+        total_distance_cm = float(np.linalg.norm(position_error_m)) * 100.0
+        self.imu_total_distance_label.set_text(f"{total_distance_cm:.1f} cm")
+        if self.imu_hud_labels is not None:
+            self.imu_hud_total_distance_label.set_text(f"{total_distance_cm:.1f} cm")
+
+        if self.pose_viewer is not None and self.pose_viewer.is_running():
+            self.pose_viewer.update_current_pose(pose.position)
+
+        if pending_move is not None:
+            word, value_cm = pending_move
+            status_markup = (
+                f'<span foreground="{COLOR_WARN}" size="large" weight="bold">'
+                f"Mover hacia {word.upper()}: {value_cm:.1f} cm</span>"
+            )
+        elif not rotation_ok:
+            status_markup = (
+                f'<span foreground="{COLOR_WARN}">Posicion correcta — ajusta la rotacion (ver abajo)</span>'
+            )
+        else:
+            status_markup = f'<span foreground="{COLOR_OK}">✓ Sensor en posicion, listo para capturar</span>'
+        self.imu_guide_status_label.set_markup(status_markup)
+        if self.imu_hud_status_label is not None:
+            self.imu_hud_status_label.set_markup(status_markup)
+
+        return True
 
     # -- Pagina: Comparacion ------------------------------------------------------
 
@@ -590,13 +1863,64 @@ class AuroraGUI:
 
         return self._scrolled(page)
 
+    def _invalidate_results(self) -> None:
+        """Clear output tied to the previous pair so it cannot be reported as current."""
+        self._result_generation += 1
+        self.result = None
+        self.raycast_result = None
+        self._active_result_kind = None
+        self._hide_quick_mesh_result_actions()
+        if hasattr(self, "log_buffer"):
+            self.log_buffer.set_text("")
+        if hasattr(self, "cards_row"):
+            self.cards_row.set_no_show_all(True)
+            self.cards_row.hide()
+            self.results_empty_label.show()
+            self.thickness_alert_label.set_text("")
+            self.thickness_alert_label.set_no_show_all(True)
+            self.thickness_alert_label.hide()
+            self.status_label.set_text("Todavia no se calculo ningun resultado.")
+            self.generate_report_button.set_sensitive(False)
+            self.open_result_viewer_button.set_sensitive(False)
+            self.open_result_viewer_button.set_label("Abrir vista 3D")
+            self.result_mesh_actions.set_no_show_all(True)
+            self.result_mesh_actions.hide()
+            self.status_spinner.stop()
+            self.status_spinner.set_visible(False)
+        if hasattr(self, "raycast_status_label"):
+            self.raycast_status_label.set_text("(nada calculado todavia)")
+
     def _set_base_path(self, path: str) -> None:
+        self._invalidate_results()
         self.base_path = path
         self.alignment_applied = False
+        self._hide_quick_mesh_result_actions()
+        if hasattr(self, "quick_alignment_status"):
+            self.quick_alignment_status.set_text("Alineacion no aplicada")
+        self.landmark_base_manual_photo_path = None
+        for name in ("base_path_label", "raycast_base_path_label", "quick_base_path_label"):
+            label = getattr(self, name, None)
+            if label is not None:
+                self._set_path_label(label, path)
+        if hasattr(self, "landmark_base_manual_photo_label"):
+            self.landmark_base_manual_photo_label.set_text("")
+        self._refresh_quick_status()
 
     def _set_updated_path(self, path: str) -> None:
+        self._invalidate_results()
         self.updated_path = path
         self.alignment_applied = False
+        self._hide_quick_mesh_result_actions()
+        if hasattr(self, "quick_alignment_status"):
+            self.quick_alignment_status.set_text("Alineacion no aplicada")
+        self.landmark_updated_manual_photo_path = None
+        for name in ("updated_path_label", "raycast_updated_path_label", "quick_updated_path_label"):
+            label = getattr(self, name, None)
+            if label is not None:
+                self._set_path_label(label, path)
+        if hasattr(self, "landmark_updated_manual_photo_label"):
+            self.landmark_updated_manual_photo_label.set_text("")
+        self._refresh_quick_status()
 
     # -- Pagina: Alineacion (Procrustes por puntos de referencia) ---------------
 
@@ -605,9 +1929,8 @@ class AuroraGUI:
 
         self.landmarks_base: list | None = None
         self.landmarks_updated: list | None = None
-        self.alignment_rotation: np.ndarray | None = None
-        self.alignment_translation: np.ndarray | None = None
-        self._raw_updated_path: str | None = None
+        self.landmark_base_manual_photo_path: str | None = None
+        self.landmark_updated_manual_photo_path: str | None = None
 
         info_frame, info_box = self._section("Alinear con puntos de referencia (opcional)")
         note = Gtk.Label(
@@ -617,7 +1940,13 @@ class AuroraGUI:
                 "fijos que NO se muevan entre capturas — por ejemplo cabezas de pernos de "
                 "anclaje, marcas o esquinas rigidas. A diferencia de ICP (que ajusta toda "
                 "la superficie y puede confundir el espesor real con error de alineacion), "
-                "esto usa solo esos puntos fijos como referencia."
+                "esto usa solo esos puntos fijos como referencia.\n\n"
+                "Si el punto de referencia queda tapado por el shotcrete (ej. solo sobresale "
+                "la punta de un perno, muy fina para que el sensor la resuelva como puntos "
+                "3D limpios), elige 'Foto de referencia' en vez de 'Nube 3D': se elige el "
+                "punto sobre la foto que el sensor capturo junto con la nube, y el sistema "
+                "busca el punto 3D correspondiente. Solo esta disponible si esa captura se "
+                "hizo con el sensor Aurora conectado."
             ),
             xalign=0,
         )
@@ -625,7 +1954,26 @@ class AuroraGUI:
         info_box.pack_start(note, False, False, 0)
         page.pack_start(info_frame, False, True, 0)
 
-        step_frame, step_box = self._section("Paso 1: elegir los mismos puntos en ambas nubes")
+        pose_frame, pose_box = self._section("Opción rápida: Alineación automática por Pose IMU/SLAM")
+        pose_desc = Gtk.Label(
+            label=(
+                "Si ambas capturas conservan el tracking del sensor, el sistema puede compensar "
+                "automáticamente los centímetros o grados que se haya movido el trípode sin necesidad de marcar puntos a mano."
+            ),
+            xalign=0,
+        )
+        pose_desc.set_line_wrap(True)
+        pose_box.pack_start(pose_desc, False, False, 0)
+
+        pose_row = self._row(pose_box)
+        self.apply_pose_alignment_btn = Gtk.Button(label="Compensar movimiento automáticamente por pose")
+        self.apply_pose_alignment_btn.connect("clicked", lambda _b: self._apply_pose_alignment(interactive=True))
+        pose_row.pack_start(self.apply_pose_alignment_btn, False, False, 0)
+        self.pose_alignment_status_label = Gtk.Label(label="")
+        pose_row.pack_start(self.pose_alignment_status_label, False, False, 0)
+        page.pack_start(pose_frame, False, True, 0)
+
+        step_frame, step_box = self._section("Método alternativo: marcar puntos fijos (respaldo)")
 
         row = self._row(step_box)
         pick_base_button = Gtk.Button(label="1. Elegir puntos en el tunel original...")
@@ -638,6 +1986,28 @@ class AuroraGUI:
         row.pack_start(self.landmarks_base_label, False, False, 0)
 
         row = self._row(step_box)
+        row.pack_start(Gtk.Label(label="Elegir sobre:"), False, False, 0)
+        self.landmark_base_source_3d_rb = Gtk.RadioButton.new_with_label(None, "Nube 3D")
+        self.landmark_base_source_photo_rb = Gtk.RadioButton.new_with_label_from_widget(
+            self.landmark_base_source_3d_rb, "Foto de referencia"
+        )
+        row.pack_start(self.landmark_base_source_3d_rb, False, False, 0)
+        row.pack_start(self.landmark_base_source_photo_rb, False, False, 0)
+        load_base_photo_button = Gtk.Button(label="Cargar foto de referencia...")
+        load_base_photo_button.set_tooltip_text(
+            "Elegir manualmente el archivo _ref.npz (foto + profundidad) si el .ply se "
+            "movio/renombro y ya no se detecta automaticamente."
+        )
+        load_base_photo_button.connect("clicked", lambda _b: self._load_manual_reference_photo("base"))
+        row.pack_start(load_base_photo_button, False, False, 0)
+        self.landmark_base_manual_photo_label = Gtk.Label(
+            label=Path(self.landmark_base_manual_photo_path).name if self.landmark_base_manual_photo_path else ""
+        )
+        row.pack_start(self.landmark_base_manual_photo_label, False, False, 0)
+        if self.landmark_base_manual_photo_path:
+            self.landmark_base_source_photo_rb.set_active(True)
+
+        row = self._row(step_box)
         pick_updated_button = Gtk.Button(label="2. Elegir los MISMOS puntos en el tunel con shotcrete...")
         pick_updated_button.set_tooltip_text(
             "Elige los puntos en el MISMO orden que en el paso 1, sobre los mismos puntos fisicos."
@@ -646,6 +2016,24 @@ class AuroraGUI:
         row.pack_start(pick_updated_button, False, False, 0)
         self.landmarks_updated_label = Gtk.Label(label="(ninguno)")
         row.pack_start(self.landmarks_updated_label, False, False, 0)
+
+        row = self._row(step_box)
+        row.pack_start(Gtk.Label(label="Elegir sobre:"), False, False, 0)
+        self.landmark_updated_source_3d_rb = Gtk.RadioButton.new_with_label(None, "Nube 3D")
+        self.landmark_updated_source_photo_rb = Gtk.RadioButton.new_with_label_from_widget(
+            self.landmark_updated_source_3d_rb, "Foto de referencia"
+        )
+        row.pack_start(self.landmark_updated_source_3d_rb, False, False, 0)
+        row.pack_start(self.landmark_updated_source_photo_rb, False, False, 0)
+        load_updated_photo_button = Gtk.Button(label="Cargar foto de referencia...")
+        load_updated_photo_button.set_tooltip_text(
+            "Elegir manualmente el archivo _ref.npz (foto + profundidad) si el .ply se "
+            "movio/renombro y ya no se detecta automaticamente."
+        )
+        load_updated_photo_button.connect("clicked", lambda _b: self._load_manual_reference_photo("updated"))
+        row.pack_start(load_updated_photo_button, False, False, 0)
+        self.landmark_updated_manual_photo_label = Gtk.Label(label="")
+        row.pack_start(self.landmark_updated_manual_photo_label, False, False, 0)
 
         page.pack_start(step_frame, False, True, 0)
 
@@ -660,33 +2048,105 @@ class AuroraGUI:
 
         return self._scrolled(page)
 
+    def _load_manual_reference_photo(self, which: str) -> None:
+        dialog = Gtk.FileChooserDialog(
+                title="Seleccionar foto de referencia (_ref.npz)",
+                parent=self.window,
+                action=Gtk.FileChooserAction.OPEN,
+        )
+        dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Abrir", Gtk.ResponseType.OK)
+        filter_npz = Gtk.FileFilter()
+        filter_npz.set_name("Foto de referencia (*_ref.npz)")
+        filter_npz.add_pattern("*.npz")
+        dialog.add_filter(filter_npz)
+        path = None
+        if dialog.run() == Gtk.ResponseType.OK:
+            path = dialog.get_filename()
+        dialog.destroy()
+        if not path:
+            return
+
+        try:
+            load_reference_photo_file(Path(path))
+        except Exception as exc:
+            self._show_error("Error al cargar la foto de referencia", str(exc))
+            return
+
+        name = Path(path).name
+        if which == "base":
+            self.landmark_base_manual_photo_path = path
+            self.landmark_base_manual_photo_label.set_text(name)
+            self.landmark_base_source_photo_rb.set_active(True)
+        else:
+            self.landmark_updated_manual_photo_path = path
+            self.landmark_updated_manual_photo_label.set_text(name)
+            self.landmark_updated_source_photo_rb.set_active(True)
+
     def _pick_alignment_points(self, which: str) -> None:
         path = Path(self.base_path if which == "base" else self.updated_path)
-        if not path.exists():
+
+        use_photo = (
+            self.landmark_base_source_photo_rb.get_active()
+            if which == "base"
+            else self.landmark_updated_source_photo_rb.get_active()
+        )
+
+        manual_photo_path = (
+            self.landmark_base_manual_photo_path if which == "base" else self.landmark_updated_manual_photo_path
+        )
+
+        # Si se eligio una foto de referencia manual, no hace falta el .ply
+        # (base_path/updated_path) para nada: todo el picking usa el .npz.
+        if not (use_photo and manual_photo_path) and not path.is_file():
             self._show_error("Error", f"No se encontro el archivo:\n{path}")
             return
+
         try:
-            cloud = load_point_cloud(path)
-            title = (
-                "Tunel original - Shift+Click en cada punto de referencia, en orden, luego cerrar (Q)"
-                if which == "base"
-                else "Tunel con shotcrete - Elige los MISMOS puntos, en el mismo orden, luego cerrar (Q)"
-            )
-            points = pick_landmark_points(cloud, title)
+            if use_photo:
+                if manual_photo_path:
+                    reference = load_reference_photo_file(Path(manual_photo_path))
+                else:
+                    reference = load_reference_photo(path)
+                if reference is None:
+                    self._show_warning(
+                        "Sin foto de referencia",
+                        f"No hay foto de referencia guardada para:\n{path}\n\n"
+                        "Solo se genera al capturar esa nube con el sensor Aurora conectado. "
+                        "Si tienes el archivo _ref.npz en otra ubicacion (ej. el .ply se "
+                        "movio/renombro), usa 'Cargar foto de referencia...'. Si no, elige "
+                        "'Nube 3D' para este archivo.",
+                    )
+                    return
+                image, point_grid = reference
+                title = (
+                    "Tunel original - click en cada punto de referencia, en orden, luego cerrar la ventana"
+                    if which == "base"
+                    else "Tunel con shotcrete - click en los MISMOS puntos, en el mismo orden, luego cerrar la ventana"
+                )
+                points = pick_landmark_points_from_photo(image, point_grid, title, log=self._log)
+            else:
+                cloud = load_point_cloud(path)
+                title = (
+                    "Tunel original - Shift+Click en cada punto de referencia, en orden, luego cerrar (Q)"
+                    if which == "base"
+                    else "Tunel con shotcrete - Elige los MISMOS puntos, en el mismo orden, luego cerrar (Q)"
+                )
+                points = pick_landmark_points(cloud, title)
         except Exception as exc:
-            self._show_error("Error al abrir el visor 3D", str(exc))
+            self._show_error("Error al elegir los puntos", str(exc))
             return
 
         if points is None:
-            self._show_info("Sin seleccion", "Elige al menos 3 puntos (Shift+Click) antes de cerrar la ventana.")
+            self._show_info("Sin seleccion", "Elige al menos 3 puntos antes de cerrar la ventana.")
             return
 
+        method_label = "foto" if use_photo else "nube 3D"
         if which == "base":
             self.landmarks_base = points
-            self.landmarks_base_label.set_text(f"{len(points)} puntos elegidos ✓")
+            self.landmarks_base_label.set_text(f"{len(points)} puntos elegidos ({method_label}) ✓")
         else:
             self.landmarks_updated = points
-            self.landmarks_updated_label.set_text(f"{len(points)} puntos elegidos ✓")
+            self.landmarks_updated_label.set_text(f"{len(points)} puntos elegidos ({method_label}) ✓")
 
     def _apply_alignment(self) -> None:
         if self.landmarks_base is None or self.landmarks_updated is None:
@@ -707,13 +2167,6 @@ class AuroraGUI:
         except Exception as exc:
             self._show_error("Error al calcular la alineacion", str(exc))
             return
-
-        # Se guardan ya calculadas (y la ruta cruda, previa a esta alineacion) para que
-        # la pestaña "Segmentacion" pueda ubicar un box en la nube con shotcrete sin
-        # tener que transformar la nube completa.
-        self.alignment_rotation = rotation
-        self.alignment_translation = translation
-        self._raw_updated_path = self.updated_path
 
         self.apply_alignment_button.set_sensitive(False)
         self.alignment_result_label.set_text("Aplicando...")
@@ -737,14 +2190,21 @@ class AuroraGUI:
     def _on_alignment_done(self, aligned_path: str, rms: float) -> None:
         self.apply_alignment_button.set_sensitive(True)
         self.alignment_result_label.set_text(f"Error residual: {rms * 1000:.2f} mm — nube alineada guardada")
+        self._invalidate_results()
         self.alignment_applied = True
         self.updated_path = aligned_path
         self._set_path_label(self.updated_path_label, aligned_path)
+        for name in ("raycast_updated_path_label", "quick_updated_path_label"):
+            label = getattr(self, name, None)
+            if label is not None:
+                self._set_path_label(label, aligned_path)
+        self.quick_alignment_status.set_text(f"Alineacion aplicada (residual: {rms * 1000:.2f} mm)")
+        self._refresh_quick_status()
         self._show_info(
             "Alineacion aplicada",
             f"Error residual en los puntos de referencia: {rms * 1000:.2f} mm.\n\n"
             f"Se guardo la nube alineada en:\n{aligned_path}\n\n"
-            "La pestaña 'Comparacion' ya usa este archivo como nube con shotcrete.",
+            "Medicion rapida ya usa este archivo como nube DESPUES.",
         )
 
     def _on_alignment_failed(self, message: str) -> None:
@@ -752,30 +2212,102 @@ class AuroraGUI:
         self.alignment_result_label.set_text("Error al aplicar la alineacion")
         self._show_error("Error", message)
 
-    # -- Pagina: Segmentacion -----------------------------------------------
+    def _apply_pose_alignment(self, interactive: bool = True) -> bool:
+        base_file = Path(self.base_path)
+        updated_file = Path(self.updated_path)
+        if not base_file.is_file() or not updated_file.is_file():
+            if interactive:
+                self._show_error("Archivos no encontrados", "Verifica que ambas nubes estén seleccionadas.")
+            return False
 
-    def _build_segmentation_page(self) -> Gtk.Widget:
+        base_pose = load_reference_pose(base_file)
+        updated_pose = load_reference_pose(updated_file)
+
+        if base_pose is None or updated_pose is None:
+            if interactive:
+                self._show_error(
+                    "Faltan datos de pose",
+                    "Uno o ambos archivos .ply no tienen archivo de pose (_pose.npz) asociado.\n\n"
+                    "Para usar la compensación automática, las capturas deben haberse realizado "
+                    "con el sensor Aurora conectado.",
+                )
+            return False
+
+        try:
+            R_rel, t_rel = compute_pose_relative_transform(base_pose, updated_pose)
+            dist_cm = float(np.linalg.norm(t_rel)) * 100.0
+            cos_angle = float(np.clip((np.trace(R_rel) - 1.0) / 2.0, -1.0, 1.0))
+            rot_deg = float(np.degrees(np.arccos(cos_angle)))
+
+            cloud = load_point_cloud(updated_file)
+            aligned = apply_rigid_transform(cloud, R_rel, t_rel)
+            aligned_path = updated_file.with_name(updated_file.stem + "_alineado_pose.ply")
+            import open3d as o3d
+            o3d.io.write_point_cloud(str(aligned_path), aligned)
+
+            # Guardar pose de la base para la nueva nube alineada para reflejar que ya coinciden
+            save_reference_pose(aligned_path, base_pose[0], base_pose[1])
+
+            # Copiar foto de referencia si existe
+            ref_photo_src = reference_photo_path_for(updated_file)
+            if ref_photo_src.exists():
+                ref_photo_dst = reference_photo_path_for(aligned_path)
+                try:
+                    import shutil
+                    shutil.copyfile(ref_photo_src, ref_photo_dst)
+                except Exception:
+                    pass
+
+            self._invalidate_results()
+            self.alignment_applied = True
+            self.updated_path = str(aligned_path)
+            self._set_path_label(self.updated_path_label, str(aligned_path))
+            for name in ("raycast_updated_path_label", "quick_updated_path_label"):
+                label = getattr(self, name, None)
+                if label is not None:
+                    self._set_path_label(label, str(aligned_path))
+
+            msg = f"Compensación aplicada: {dist_cm:.1f} cm y {rot_deg:.1f}° corregidos."
+            if hasattr(self, "quick_alignment_status"):
+                self.quick_alignment_status.set_text(f"Alineación por pose aplicada ({dist_cm:.1f} cm)")
+            if hasattr(self, "pose_alignment_status_label"):
+                self.pose_alignment_status_label.set_text(f"✓ {msg}")
+            self._refresh_quick_status()
+            self._log(f"Alineación por pose completada: {msg} (guardado en {aligned_path.name})")
+
+            if interactive:
+                self._show_info(
+                    "Alineación por pose aplicada",
+                    f"Se compensó el movimiento del sensor exitosamente:\n\n"
+                    f"• Desplazamiento compensado: {dist_cm:.1f} cm\n"
+                    f"• Rotación compensada: {rot_deg:.1f}°\n\n"
+                    f"Nube alineada guardada como:\n{aligned_path.name}\n\n"
+                    "Medición rápida ya usa esta nube alineada.",
+                )
+            return True
+        except Exception as exc:
+            if interactive:
+                self._show_error("Error al compensar pose", str(exc))
+            return False
+
+    # -- Pagina: preparar y recortar un par de nubes -----------------------------
+
+    def _build_prepare_clouds_page(self) -> Gtk.Widget:
         page = self._new_page()
+        self.test_crop_before_path: str | None = None
+        self.test_crop_after_path: str | None = None
+        self.test_crop_output_paths: tuple[str, str] | None = None
+        self.test_crop_output_dir: Path | None = None
+        self.test_crop_output_dir_is_custom = False
+        self.test_crop_bounds: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None
 
-        self.segmentation_quad: np.ndarray | None = None
-        self._segmentation_source_base_path: str | None = None
-        self._segmentation_source_updated_path: str | None = None
-
-        info_frame, info_box = self._section("Recortar una region antes de analizar (opcional)")
+        info_frame, info_box = self._section("Preparar un par de nubes")
         note = Gtk.Label(
             label=(
-                "Elegi 4 puntos (Shift+Click), en orden alrededor del perimetro, sobre la "
-                "nube CON shotcrete (la capturada despues), para marcar una region "
-                "cuadrada/rectangular (por ejemplo, un tramo especifico del tunel o una de "
-                "tus cajas de prueba). La app arma un 'box' 3D extruyendo esa region a lo "
-                "largo de su normal (el ancho del box es configurable abajo) y recorta las "
-                "DOS nubes (con shotcrete y original) a los puntos que caen dentro de ese "
-                "box, generando dos archivos .ply nuevos que el resto del analisis va a usar "
-                "en vez de las nubes completas.\n\n"
-                "La misma region (mismas coordenadas) se aplica tal cual a la nube original. "
-                "Esto asume que ambas nubes comparten el mismo sistema de coordenadas: si el "
-                "sensor se reubico entre una captura y otra, calcula la alineacion primero "
-                "(pestaña 'Alineacion') antes de segmentar; si no se movio, no hace falta."
+                "Carga las nubes ANTES y DESPUES, revisalas juntas y marca dos esquinas de una cara "
+                "en la vista superpuesta. Aurora aplicara el mismo box y profundidad a las dos y "
+                "guardara copias nuevas; los PLY originales no se modifican. Ambas capturas deben "
+                "estar en el mismo sistema de coordenadas."
             ),
             xalign=0,
         )
@@ -783,208 +2315,353 @@ class AuroraGUI:
         info_box.pack_start(note, False, False, 0)
         page.pack_start(info_frame, False, True, 0)
 
-        step_frame, step_box = self._section("Paso 1: elegir la region y el ancho del box")
-        row = self._row(step_box)
-        pick_button = Gtk.Button(label="Elegir 4 puntos en el tunel con shotcrete...")
-        pick_button.set_tooltip_text(
-            "Shift+Click en las 4 esquinas de la region, en orden alrededor del perimetro, "
-            "despues cerrar la ventana."
-        )
-        pick_button.connect("clicked", lambda _b: self._pick_segmentation_quad())
-        row.pack_start(pick_button, False, False, 0)
-        self.segmentation_quad_label = Gtk.Label(label="(ninguno)")
-        row.pack_start(self.segmentation_quad_label, False, False, 0)
+        source_frame, source_box = self._section("1. Cargar ANTES y DESPUES")
+        row = self._row(source_box)
+        row.pack_start(Gtk.Label(label="ANTES:"), False, False, 0)
+        self.test_crop_before_label = Gtk.Label(label="Sin seleccionar", xalign=0)
+        self.test_crop_before_label.set_hexpand(True)
+        self.test_crop_before_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        row.pack_start(self.test_crop_before_label, True, True, 0)
+        self.test_crop_choose_before_button = Gtk.Button(label="Cargar ANTES")
+        self.test_crop_choose_before_button.connect("clicked", lambda _b: self._choose_test_crop_input("before"))
+        row.pack_start(self.test_crop_choose_before_button, False, False, 0)
+        self.test_crop_view_before_button = Gtk.Button(label="Ver")
+        self.test_crop_view_before_button.set_sensitive(False)
+        self.test_crop_view_before_button.connect("clicked", lambda _b: self._view_test_crop_cloud("before"))
+        row.pack_start(self.test_crop_view_before_button, False, False, 0)
+        row = self._row(source_box)
+        row.pack_start(Gtk.Label(label="DESPUES:"), False, False, 0)
+        self.test_crop_after_label = Gtk.Label(label="Sin seleccionar", xalign=0)
+        self.test_crop_after_label.set_hexpand(True)
+        self.test_crop_after_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        row.pack_start(self.test_crop_after_label, True, True, 0)
+        self.test_crop_choose_after_button = Gtk.Button(label="Cargar DESPUES")
+        self.test_crop_choose_after_button.connect("clicked", lambda _b: self._choose_test_crop_input("after"))
+        row.pack_start(self.test_crop_choose_after_button, False, False, 0)
+        self.test_crop_view_after_button = Gtk.Button(label="Ver")
+        self.test_crop_view_after_button.set_sensitive(False)
+        self.test_crop_view_after_button.connect("clicked", lambda _b: self._view_test_crop_cloud("after"))
+        row.pack_start(self.test_crop_view_after_button, False, False, 0)
+        page.pack_start(source_frame, False, True, 0)
 
-        row = self._row(step_box)
-        row.pack_start(Gtk.Label(label="Ancho del box (cm):"), False, False, 0)
-        width_adjustment = Gtk.Adjustment(value=10.0, lower=1.0, upper=100.0, step_increment=1.0, page_increment=5.0)
-        self.segmentation_width_spin = Gtk.SpinButton(adjustment=width_adjustment, climb_rate=1.0, digits=1)
-        row.pack_start(self.segmentation_width_spin, False, False, 0)
+        bounds_frame, bounds_box = self._section("2. Ver ambas y marcar la region")
+        self.test_crop_view_pair_button = Gtk.Button(label="Ver ANTES y DESPUES juntos")
+        self.test_crop_view_pair_button.set_sensitive(False)
+        self.test_crop_view_pair_button.connect("clicked", lambda _b: self._view_test_crop_pair())
+        bounds_box.pack_start(self.test_crop_view_pair_button, False, False, 0)
+        row = self._row(bounds_box)
+        self.test_crop_pick_button = Gtk.Button(label="Ver ambas y elegir dos esquinas...")
+        self.test_crop_pick_button.connect("clicked", lambda _b: self._pick_test_crop_bounds())
+        self.test_crop_pick_button.set_sensitive(False)
+        row.pack_start(self.test_crop_pick_button, False, False, 0)
+        self.test_crop_bounds_label = Gtk.Label(label="Limites sin definir", xalign=0)
+        row.pack_start(self.test_crop_bounds_label, False, False, 0)
+
+        row = self._row(bounds_box)
+        row.pack_start(Gtk.Label(label="Profundidad del box (cm):"), False, False, 0)
+        self.test_crop_depth_spin = Gtk.Entry()
+        self.test_crop_depth_spin.set_text("10.0")
+        self.test_crop_depth_spin.set_width_chars(8)
+        self.test_crop_depth_spin.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        self.test_crop_depth_spin.connect("changed", lambda _entry: self._on_test_crop_depth_changed())
+        row.pack_start(self.test_crop_depth_spin, False, False, 0)
+        self.test_crop_preview_button = Gtk.Button(label="Vista previa del box")
+        self.test_crop_preview_button.connect("clicked", lambda _button: self._preview_test_crop_bounds())
+        row.pack_start(self.test_crop_preview_button, False, False, 0)
         row.pack_start(
             self._info_button(
-                "Profundidad del box a lo largo de la normal de la region elegida, centrada "
-                "en ese plano (+/- la mitad del ancho para cada lado). Tiene que ser mayor "
-                "que el espesor de shotcrete esperado, para no cortar la superficie con "
-                "shotcrete que quedo mas cerca del sensor."
+                "En la vista superpuesta, marca dos esquinas diagonales de la misma cara, idealmente "
+                "en DESPUES. El eje con menor distancia se toma como profundidad. El mismo box se "
+                "aplica a ambas capturas."
             ),
-            False, False, 0,
+            False,
+            False,
+            0,
         )
-        page.pack_start(step_frame, False, True, 0)
+        hint = Gtk.Label(
+            label=(
+                "Elige dos esquinas diagonales de la misma cara en el visor superpuesto (gris = ANTES, "
+                "celeste = DESPUES) y cierra la ventana. Luego ajusta la profundidad y revisa la vista "
+                "previa de ambas nubes recortadas. La cara debe estar aproximadamente alineada con los "
+                "ejes de la nube."
+            ),
+            xalign=0,
+        )
+        hint.set_line_wrap(True)
+        self.test_crop_hint_label = hint
+        bounds_box.pack_start(hint, False, False, 0)
+        page.pack_start(bounds_frame, False, True, 0)
 
-        apply_frame, apply_box = self._section("Paso 2: aplicar")
-        row = self._row(apply_box)
-        self.apply_segmentation_button = Gtk.Button(label="Aplicar segmentacion")
-        self.apply_segmentation_button.connect("clicked", lambda _b: self._apply_segmentation())
-        row.pack_start(self.apply_segmentation_button, False, False, 0)
-        clear_button = Gtk.Button(label="Quitar segmentacion (usar nube completa)")
-        clear_button.connect("clicked", lambda _b: self._clear_segmentation())
-        row.pack_start(clear_button, False, False, 0)
+        output_frame, output_box = self._section("3. Guardar las dos nubes recortadas")
+        row = self._row(output_box)
+        row.pack_start(Gtk.Label(label="Carpeta destino:"), False, False, 0)
+        self.test_crop_output_dir_label = Gtk.Label(label="Usar carpeta del archivo ANTES", xalign=0)
+        self.test_crop_output_dir_label.set_hexpand(True)
+        self.test_crop_output_dir_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        row.pack_start(self.test_crop_output_dir_label, True, True, 0)
+        self.test_crop_choose_output_dir_button = Gtk.Button(label="Elegir carpeta...")
+        self.test_crop_choose_output_dir_button.connect("clicked", lambda _b: self._choose_test_crop_output_dir())
+        row.pack_start(self.test_crop_choose_output_dir_button, False, False, 0)
+        self.test_crop_apply_button = Gtk.Button(label="Recortar y guardar ANTES + DESPUES")
+        self.test_crop_apply_button.get_style_context().add_class("suggested-action")
+        self.test_crop_apply_button.set_sensitive(False)
+        self.test_crop_apply_button.connect("clicked", lambda _b: self._apply_test_crop())
+        output_box.pack_start(self.test_crop_apply_button, False, False, 0)
+        self.test_crop_status_label = Gtk.Label(label="Carga ambas nubes para empezar.", xalign=0)
+        self.test_crop_status_label.set_line_wrap(True)
+        output_box.pack_start(self.test_crop_status_label, False, False, 0)
 
-        row = self._row(apply_box)
-        self.view_segmented_base_button = Gtk.Button(label="Ver nube segmentada: antes")
-        self.view_segmented_base_button.set_sensitive(False)
-        self.view_segmented_base_button.connect("clicked", lambda _b: self._view_segmented_cloud("base"))
-        row.pack_start(self.view_segmented_base_button, False, False, 0)
-        self.view_segmented_updated_button = Gtk.Button(label="Ver nube segmentada: despues")
-        self.view_segmented_updated_button.set_sensitive(False)
-        self.view_segmented_updated_button.connect("clicked", lambda _b: self._view_segmented_cloud("updated"))
-        row.pack_start(self.view_segmented_updated_button, False, False, 0)
+        self.test_crop_use_pair_button = Gtk.Button(label="Usar el par recortado en Medicion rapida")
+        self.test_crop_use_pair_button.set_sensitive(False)
+        self.test_crop_use_pair_button.connect("clicked", lambda _b: self._use_test_crop_pair())
+        output_box.pack_start(self.test_crop_use_pair_button, False, False, 0)
+        page.pack_start(output_frame, False, True, 0)
 
-        self.segmentation_result_label = Gtk.Label(xalign=0)
-        self.segmentation_result_label.set_line_wrap(True)
-        apply_box.pack_start(self.segmentation_result_label, False, False, 0)
-        self.segmentation_paths_label = Gtk.Label(xalign=0)
-        self.segmentation_paths_label.set_line_wrap(True)
-        self.segmentation_paths_label.set_selectable(True)
-        apply_box.pack_start(self.segmentation_paths_label, False, False, 0)
-        page.pack_start(apply_frame, False, True, 0)
+        self.test_crop_preview_button.set_sensitive(False)
 
         return self._scrolled(page)
 
-    def _pick_segmentation_quad(self) -> None:
-        path = Path(self.updated_path)
-        if not path.exists():
-            self._show_error("Error", f"No se encontro el archivo:\n{path}")
+    def _get_test_crop_depth_m(self) -> float:
+        value_text = self.test_crop_depth_spin.get_text().strip().replace(",", ".")
+        try:
+            value_cm = float(value_text)
+        except ValueError as exc:
+            raise ValueError("Introduce una profundidad numérica entre 1 y 100 cm.") from exc
+        if not np.isfinite(value_cm) or not 1.0 <= value_cm <= 100.0:
+            raise ValueError("La profundidad debe estar entre 1 y 100 cm.")
+        return value_cm / 100.0
+
+    def _on_test_crop_depth_changed(self) -> None:
+        if self.test_crop_bounds is None:
+            return
+        self.test_crop_output_paths = None
+        self.test_crop_use_pair_button.set_sensitive(False)
+        self.test_crop_status_label.set_text(
+            "Profundidad cambiada. Revisa la vista previa del par antes de guardar."
+        )
+        self._refresh_test_crop_controls()
+
+    def _choose_test_crop_input(self, stage: str) -> None:
+        path = self._run_open_file_dialog()
+        if not path:
+            return
+        if stage == "before":
+            self.test_crop_before_path = path
+            self._set_path_label(self.test_crop_before_label, path)
+            if not self.test_crop_output_dir_is_custom:
+                self.test_crop_output_dir = Path(path).parent
+                self._set_test_crop_output_dir_label()
+        else:
+            self.test_crop_after_path = path
+            self._set_path_label(self.test_crop_after_label, path)
+        self.test_crop_output_paths = None
+        self.test_crop_bounds = None
+        self.test_crop_bounds_label.set_text("Limites sin definir")
+        self.test_crop_use_pair_button.set_sensitive(False)
+        self.test_crop_status_label.set_text("Carga ambas capturas y confirma que compartan coordenadas.")
+        self._refresh_test_crop_controls()
+
+    def _set_test_crop_output_dir_label(self) -> None:
+        if self.test_crop_output_dir is None:
+            self.test_crop_output_dir_label.set_text("Usar carpeta del archivo ANTES")
+            self.test_crop_output_dir_label.set_tooltip_text("")
+        else:
+            self.test_crop_output_dir_label.set_text(str(self.test_crop_output_dir))
+            self.test_crop_output_dir_label.set_tooltip_text(str(self.test_crop_output_dir))
+
+    def _choose_test_crop_output_dir(self) -> None:
+        dialog = Gtk.FileChooserDialog(
+                title="Elegir carpeta para los dos recortes",
+                parent=self.window,
+                action=Gtk.FileChooserAction.SELECT_FOLDER,
+        )
+        dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Seleccionar", Gtk.ResponseType.OK)
+        if self.test_crop_output_dir and self.test_crop_output_dir.is_dir():
+            dialog.set_current_folder(str(self.test_crop_output_dir))
+        path = None
+        if dialog.run() == Gtk.ResponseType.OK:
+            path = dialog.get_filename()
+        dialog.destroy()
+        if path:
+            self.test_crop_output_dir = Path(path)
+            self.test_crop_output_dir_is_custom = True
+            self._set_test_crop_output_dir_label()
+
+    def _refresh_test_crop_controls(self) -> None:
+        has_before = bool(self.test_crop_before_path and Path(self.test_crop_before_path).is_file())
+        has_after = bool(self.test_crop_after_path and Path(self.test_crop_after_path).is_file())
+        has_pair = has_before and has_after
+        self.test_crop_choose_before_button.set_sensitive(True)
+        self.test_crop_choose_after_button.set_sensitive(True)
+        self.test_crop_view_before_button.set_sensitive(has_before)
+        self.test_crop_view_after_button.set_sensitive(has_after)
+        self.test_crop_view_pair_button.set_sensitive(has_pair)
+        self.test_crop_pick_button.set_sensitive(has_pair)
+        has_region = has_pair and self.test_crop_bounds is not None
+        self.test_crop_preview_button.set_sensitive(has_region)
+        self.test_crop_apply_button.set_sensitive(has_region)
+        self.test_crop_use_pair_button.set_sensitive(
+            bool(self.test_crop_output_paths and all(Path(p).is_file() for p in self.test_crop_output_paths))
+        )
+
+    def _load_test_crop_pair(self):
+        if not self.test_crop_before_path or not self.test_crop_after_path:
+            raise RuntimeError("Carga los archivos ANTES y DESPUES primero.")
+        before = load_point_cloud(Path(self.test_crop_before_path))
+        after = load_point_cloud(Path(self.test_crop_after_path))
+        return before, after
+
+    def _view_test_crop_cloud(self, stage: str) -> None:
+        path = self.test_crop_before_path if stage == "before" else self.test_crop_after_path
+        stage_name = "ANTES" if stage == "before" else "DESPUES"
+        if not path or not Path(path).is_file():
+            self._show_warning("Falta la nube", f"Carga el archivo PLY de {stage_name} primero.")
             return
         try:
-            cloud = load_point_cloud(path)
-            points = pick_quad_points(
-                cloud,
-                "Tunel con shotcrete - Shift+Click en las 4 esquinas de la region, en orden, luego cerrar (Q)",
-            )
+            cloud = load_point_cloud(Path(path))
+            show_point_cloud(cloud, window_name=f"Aurora - {stage_name}: {Path(path).name}")
         except Exception as exc:
-            self._show_error("Error al abrir el visor 3D", str(exc))
-            return
+            self._show_error(f"No se pudo abrir la nube {stage_name}", str(exc))
 
-        if points is None:
-            self._show_info(
-                "Seleccion invalida",
-                "Elegi exactamente 4 puntos (Shift+Click), en orden alrededor del perimetro, "
-                "antes de cerrar la ventana.",
-            )
-            return
-
-        self.segmentation_quad = points
-        self.segmentation_quad_label.set_text("4 puntos elegidos ✓")
-
-        width_m = self.segmentation_width_spin.get_value() / 100.0
+    def _view_test_crop_pair(self) -> None:
         try:
-            show_quad_box_preview(cloud, points, width_m, window_name="Aurora - Region elegida (despues, con shotcrete)")
+            before, after = self._load_test_crop_pair()
+            show_point_cloud_pair(before, after)
         except Exception as exc:
-            self._show_error("Error al mostrar la previsualizacion", str(exc))
-            return
+            self._show_error("No se pudieron abrir las dos capturas", str(exc))
 
+    def _pick_test_crop_bounds(self) -> None:
         try:
-            base_cloud = load_point_cloud(Path(self.base_path))
-            show_quad_box_preview(
-                base_cloud, points, width_m, window_name="Aurora - Misma region aplicada a la nube original (antes)"
+            before, after = self._load_test_crop_pair()
+            bounds = pick_crop_bounds_from_pair(before, after)
+        except Exception as exc:
+            self._show_error("Error al seleccionar la region", str(exc))
+            return
+        if bounds is None:
+            self._show_info("Seleccion incompleta", "Marca exactamente dos esquinas opuestas y cierra el visor.")
+            return
+        self.test_crop_bounds = bounds
+        self.test_crop_output_paths = None
+        self.test_crop_use_pair_button.set_sensitive(False)
+        low, high = bounds
+        depth_axis = int(np.argmin(np.asarray(high) - np.asarray(low)))
+        axis_name = ("X", "Y", "Z")[depth_axis]
+        self.test_crop_bounds_label.set_text(f"Box definido; profundidad en eje {axis_name}")
+        self.test_crop_status_label.set_text("Se aplicara el mismo box a ANTES y DESPUES.")
+        self._refresh_test_crop_controls()
+        self._preview_test_crop_bounds()
+
+    def _preview_test_crop_bounds(self) -> None:
+        if self.test_crop_bounds is None:
+            return
+        try:
+            depth_m = self._get_test_crop_depth_m()
+            before, after = self._load_test_crop_pair()
+            before_cut = crop_cloud_by_face_depth(before, self.test_crop_bounds, depth_m)
+            after_cut = crop_cloud_by_face_depth(after, self.test_crop_bounds, depth_m)
+            if len(before_cut.points) == 0 or len(after_cut.points) == 0:
+                raise RuntimeError(
+                    "El box debe contener puntos en ambas nubes. Confirma que comparten coordenadas o ajusta la region."
+                )
+            self.test_crop_status_label.set_text(
+                f"Vista previa: ANTES {len(before_cut.points):,} puntos; DESPUES {len(after_cut.points):,} puntos."
+            )
+            show_point_cloud_pair(before_cut, after_cut, window_name="Aurora - Par recortado")
+            self.test_crop_status_label.set_text(
+                f"Vista previa revisada: ANTES {len(before_cut.points):,}; DESPUES {len(after_cut.points):,} puntos."
             )
         except Exception as exc:
-            self._show_error("Error al mostrar la previsualizacion en la nube original", str(exc))
+            self.test_crop_status_label.set_text("No se pudo previsualizar el par recortado.")
+            self._show_error("Error en la vista previa de las dos nubes", str(exc))
 
-    def _apply_segmentation(self) -> None:
-        if self.segmentation_quad is None:
-            self._show_warning("Falta la region", "Elegi los 4 puntos de la region primero.")
+    def _apply_test_crop(self) -> None:
+        if not self.test_crop_before_path or not self.test_crop_after_path or self.test_crop_bounds is None:
+            self._show_warning("Faltan datos", "Carga ANTES y DESPUES y selecciona la region antes de guardar.")
+            return
+        before_source = Path(self.test_crop_before_path)
+        after_source = Path(self.test_crop_after_path)
+        output_dir = self.test_crop_output_dir or before_source.parent
+        if not output_dir.is_dir():
+            self._show_warning("Carpeta invalida", "Elige una carpeta de destino que exista.")
             return
 
-        if self._segmentation_source_base_path is None:
-            self._segmentation_source_base_path = self.base_path
-            self._segmentation_source_updated_path = self.updated_path
+        suffix = ""
+        index = 2
+        before_destination = output_dir / f"ANTES_{before_source.stem}_recortada.ply"
+        after_destination = output_dir / f"DESPUES_{after_source.stem}_recortada.ply"
+        while before_destination.exists() or after_destination.exists():
+            suffix = f"_{index}"
+            before_destination = output_dir / f"ANTES_{before_source.stem}_recortada{suffix}.ply"
+            after_destination = output_dir / f"DESPUES_{after_source.stem}_recortada{suffix}.ply"
+            index += 1
 
-        width_m = self.segmentation_width_spin.get_value() / 100.0
-        quad = self.segmentation_quad
-        base_source = Path(self._segmentation_source_base_path)
-        updated_source = Path(self._segmentation_source_updated_path)
+        bounds = self.test_crop_bounds
+        try:
+            depth_m = self._get_test_crop_depth_m()
+        except ValueError as exc:
+            self._show_error("Profundidad no válida", str(exc))
+            return
+        for button in (
+            self.test_crop_choose_before_button,
+            self.test_crop_choose_after_button,
+            self.test_crop_pick_button,
+            self.test_crop_preview_button,
+            self.test_crop_apply_button,
+        ):
+            button.set_sensitive(False)
+        self.test_crop_status_label.set_text("Recortando y guardando ambas nubes...")
 
-        self.apply_segmentation_button.set_sensitive(False)
-        self.segmentation_result_label.set_text("Recortando...")
-
-        def worker():
+        def worker() -> None:
+            before_temp = before_destination.with_name(f".{before_destination.stem}.{os.getpid()}.tmp.ply")
+            after_temp = after_destination.with_name(f".{after_destination.stem}.{os.getpid()}.tmp.ply")
             try:
-                # La region se eligio sobre la nube con shotcrete; se aplica tal cual
-                # (mismas coordenadas) a la nube original, ambas en el mismo sistema
-                # de referencia (si el sensor no se movio, o si ya se aplico la
-                # alineacion previamente).
-                updated_cloud = load_point_cloud(updated_source)
-                updated_cropped = crop_cloud_by_quad_box(updated_cloud, quad, width_m)
-
-                base_cloud = load_point_cloud(base_source)
-                base_cropped = crop_cloud_by_quad_box(base_cloud, quad, width_m)
-
-                if len(base_cropped.points) == 0 or len(updated_cropped.points) == 0:
-                    raise RuntimeError(
-                        "El box elegido no contiene puntos en una de las dos nubes. "
-                        "Proba con otra region o con un ancho de box distinto."
-                    )
-
-                base_out = base_source.with_name(base_source.stem + "_segmento.ply")
-                updated_out = updated_source.with_name(updated_source.stem + "_segmento.ply")
+                before = crop_cloud_by_face_depth(load_point_cloud(before_source), bounds, depth_m)
+                after = crop_cloud_by_face_depth(load_point_cloud(after_source), bounds, depth_m)
+                if len(before.points) == 0 or len(after.points) == 0:
+                    raise RuntimeError("El box debe incluir puntos en ambas nubes.")
                 import open3d as o3d
 
-                o3d.io.write_point_cloud(str(base_out), base_cropped)
-                o3d.io.write_point_cloud(str(updated_out), updated_cropped)
+                if not o3d.io.write_point_cloud(str(before_temp), before):
+                    raise RuntimeError("Open3D no pudo guardar el recorte ANTES.")
+                if not o3d.io.write_point_cloud(str(after_temp), after):
+                    raise RuntimeError("Open3D no pudo guardar el recorte DESPUES.")
+                before_temp.replace(before_destination)
+                after_temp.replace(after_destination)
             except Exception as exc:
-                self._ui(self._on_segmentation_failed, str(exc))
+                before_temp.unlink(missing_ok=True)
+                after_temp.unlink(missing_ok=True)
+                self._ui(self._on_test_crop_failed, str(exc))
                 return
             self._ui(
-                self._on_segmentation_done,
-                str(base_out),
-                str(updated_out),
-                len(base_cropped.points),
-                len(updated_cropped.points),
+                self._on_test_crop_done,
+                str(before_destination),
+                str(after_destination),
+                len(before.points),
+                len(after.points),
             )
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_segmentation_done(self, base_out: str, updated_out: str, n_base: int, n_updated: int) -> None:
-        self.apply_segmentation_button.set_sensitive(True)
-        self.segmentation_result_label.set_text(f"Recorte: {n_base} / {n_updated} puntos (original/shotcrete)")
-        self.segmentation_paths_label.set_text(
-            f"Antes: {Path(base_out).name}\n  {base_out}\n"
-            f"Despues: {Path(updated_out).name}\n  {updated_out}"
-        )
-        self.base_path = base_out
-        self.updated_path = updated_out
-        self._set_path_label(self.base_path_label, base_out)
-        self._set_path_label(self.updated_path_label, updated_out)
-        self.view_segmented_base_button.set_sensitive(True)
-        self.view_segmented_updated_button.set_sensitive(True)
-        self._show_info(
-            "Segmentacion aplicada",
-            f"Nube original recortada: {n_base} puntos.\nNube con shotcrete recortada: {n_updated} puntos.\n\n"
-            f"Guardadas en:\n{base_out}\n{updated_out}\n\n"
-            "El resto del analisis (Ajustes, Visualizacion, Reporte) va a usar estas nubes recortadas.",
+    def _on_test_crop_done(self, before_path: str, after_path: str, before_count: int, after_count: int) -> None:
+        self.test_crop_output_paths = (before_path, after_path)
+        self._refresh_test_crop_controls()
+        self.test_crop_status_label.set_text(
+            f"Par recortado guardado: {Path(before_path).name} ({before_count:,}) y "
+            f"{Path(after_path).name} ({after_count:,}). Los originales siguen intactos."
         )
 
-    def _on_segmentation_failed(self, message: str) -> None:
-        self.apply_segmentation_button.set_sensitive(True)
-        self.segmentation_result_label.set_text("Error al recortar")
-        self._show_error("Error", message)
+    def _on_test_crop_failed(self, message: str) -> None:
+        self._refresh_test_crop_controls()
+        self.test_crop_status_label.set_text("No se pudieron guardar las dos nubes recortadas.")
+        self._show_error("Error al recortar el par", message)
 
-    def _clear_segmentation(self) -> None:
-        if self._segmentation_source_base_path is None:
-            self._show_info("Nada que quitar", "Todavia no se aplico ninguna segmentacion.")
+    def _use_test_crop_pair(self) -> None:
+        if not self.test_crop_output_paths or not all(Path(p).is_file() for p in self.test_crop_output_paths):
+            self._show_warning("No hay par recortado", "Recorta y guarda ambas nubes antes de usarlas.")
             return
-        self.base_path = self._segmentation_source_base_path
-        self.updated_path = self._segmentation_source_updated_path
-        self._set_path_label(self.base_path_label, self.base_path)
-        self._set_path_label(self.updated_path_label, self.updated_path)
-        self.segmentation_result_label.set_text("Segmentacion quitada, usando la nube completa")
-        self.segmentation_paths_label.set_text("")
-        self.view_segmented_base_button.set_sensitive(False)
-        self.view_segmented_updated_button.set_sensitive(False)
-        self._segmentation_source_base_path = None
-        self._segmentation_source_updated_path = None
-
-    def _view_segmented_cloud(self, target: str) -> None:
-        path = self.base_path if target == "base" else self.updated_path
-        label = "Antes (segmentado)" if target == "base" else "Despues (segmentado)"
-        try:
-            cloud = load_point_cloud(Path(path))
-        except Exception as exc:
-            self._show_error("Error al abrir la nube segmentada", str(exc))
-            return
-        show_point_cloud(cloud, window_name=f"Aurora - {label}")
+        self._set_base_path(self.test_crop_output_paths[0])
+        self._set_updated_path(self.test_crop_output_paths[1])
+        self.stack.set_visible_child_name("medicion_rapida")
 
     # -- Pagina: Ajustes de analisis --------------------------------------------
 
@@ -1025,8 +2702,9 @@ class AuroraGUI:
 
     def _build_advanced_expander_page2(self) -> tuple[Gtk.Widget, Gtk.Box]:
         expander = Gtk.Expander(label="Opciones avanzadas")
-        expander.set_expanded(False)
+        expander.set_expanded(True)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.get_style_context().add_class("expander-content")
         box.set_margin_start(4)
         box.set_margin_top(10)
         box.set_margin_bottom(4)
@@ -1133,17 +2811,17 @@ class AuroraGUI:
 
         row = self._row(color_box)
         self.color_continuous_rb = Gtk.RadioButton.new_with_label_from_widget(None, "Escala continua")
-        self.color_continuous_rb.connect("toggled", lambda _b: self._on_color_mode_changed())
+        self.color_continuous_rb.connect("toggled", lambda button: self._on_color_mode_changed() if button.get_active() else None)
         row.pack_start(self.color_continuous_rb, False, False, 0)
         self.color_banded_rb = Gtk.RadioButton.new_with_label_from_widget(
             self.color_continuous_rb, "3 niveles de color"
         )
-        self.color_banded_rb.connect("toggled", lambda _b: self._on_color_mode_changed())
+        self.color_banded_rb.connect("toggled", lambda button: self._on_color_mode_changed() if button.get_active() else None)
         row.pack_start(self.color_banded_rb, False, False, 0)
         self.color_six_bands_rb = Gtk.RadioButton.new_with_label_from_widget(
             self.color_continuous_rb, "6 niveles (espesor objetivo)"
         )
-        self.color_six_bands_rb.connect("toggled", lambda _b: self._on_color_mode_changed())
+        self.color_six_bands_rb.connect("toggled", lambda button: self._on_color_mode_changed() if button.get_active() else None)
         row.pack_start(self.color_six_bands_rb, False, False, 0)
         row.pack_start(
             self._info_button(
@@ -1161,23 +2839,23 @@ class AuroraGUI:
         )
 
         self.band_revealer = Gtk.Revealer()
-        self.band_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self.band_revealer.set_transition_type(Gtk.RevealerTransitionType.NONE)
         band_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         band_row.pack_start(Gtk.Label(label="Hasta este espesor = verde (mm):"), False, False, 0)
         self.band_low_entry = Gtk.Entry()
-        self.band_low_entry.set_text("20")
+        self.band_low_entry.set_text("50")
         self.band_low_entry.set_width_chars(8)
         band_row.pack_start(self.band_low_entry, False, False, 0)
         band_row.pack_start(Gtk.Label(label="Desde este espesor = rojo (mm):"), False, False, 0)
         self.band_high_entry = Gtk.Entry()
-        self.band_high_entry.set_text("50")
+        self.band_high_entry.set_text("100")
         self.band_high_entry.set_width_chars(8)
         band_row.pack_start(self.band_high_entry, False, False, 0)
         self.band_revealer.add(band_row)
         color_box.pack_start(self.band_revealer, False, False, 0)
 
         self.six_bands_revealer = Gtk.Revealer()
-        self.six_bands_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self.six_bands_revealer.set_transition_type(Gtk.RevealerTransitionType.NONE)
         six_bands_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         six_bands_row.pack_start(Gtk.Label(label="Espesor objetivo (cm):"), False, False, 0)
         self.target_thickness_entry = Gtk.Entry()
@@ -1193,9 +2871,12 @@ class AuroraGUI:
         self.six_bands_revealer.add(six_bands_row)
         color_box.pack_start(self.six_bands_revealer, False, False, 0)
 
-        advanced_frame, advanced_box = Gtk.Expander(label="Opciones avanzadas"), None
-        advanced_frame.set_expanded(False)
+        self.color_banded_rb.set_active(True)  # despues de crear los revealers: dispara _on_color_mode_changed
+
+        advanced_frame = Gtk.Expander(label="Opciones avanzadas")
+        advanced_frame.set_expanded(True)
         adv_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        adv_inner.get_style_context().add_class("expander-content")
         adv_inner.set_margin_start(4)
         adv_inner.set_margin_top(10)
         advanced_frame.add(adv_inner)
@@ -1254,7 +2935,7 @@ class AuroraGUI:
 
         page.pack_start(view_frame, False, True, 0)
 
-        live_frame, live_box = self._section("Ajustes de captura en vivo (MVP)")
+        live_frame, live_box = self._section("Ajustes de captura en vivo")
         row = self._row(live_box)
         row.pack_start(Gtk.Label(label="Distancia maxima (m):"), False, False, 0)
         self.live_max_distance_entry = Gtk.Entry()
@@ -1288,6 +2969,23 @@ class AuroraGUI:
         row.pack_start(self.live_invert_y_check, False, False, 0)
         self.live_invert_z_check = Gtk.CheckButton(label="Invertir Z")
         row.pack_start(self.live_invert_z_check, False, False, 0)
+
+        self.visualization_status_label = Gtk.Label(xalign=0)
+        self.visualization_status_label.set_line_wrap(True)
+        self.visualization_status_label.set_text("Los cambios se aplican al abrir la vista 3D.")
+        live_box.pack_start(self.visualization_status_label, False, False, 0)
+        for entry in (
+            self.band_low_entry,
+            self.band_high_entry,
+            self.target_thickness_entry,
+            self.max_distance_entry,
+            self.live_max_distance_entry,
+            self.live_cone_angle_entry,
+        ):
+            entry.connect("changed", lambda _entry: self._apply_viewer_settings())
+        self.live_forward_axis_combo.connect("changed", lambda _combo: self._apply_viewer_settings())
+        self.live_invert_y_check.connect("toggled", lambda _check: self._apply_viewer_settings())
+        self.live_invert_z_check.connect("toggled", lambda _check: self._apply_viewer_settings())
 
         page.pack_start(live_frame, False, True, 0)
         return self._scrolled(page)
@@ -1330,7 +3028,7 @@ class AuroraGUI:
     def _load_embedded_comparison(self) -> None:
         base_file = Path(self.base_path)
         updated_file = Path(self.updated_path)
-        if not base_file.exists() or not updated_file.exists():
+        if not base_file.is_file() or not updated_file.is_file():
             self._show_error(
                 "Error", "Elige ambos archivos en la pestaña 'Comparacion' antes de cargar la vista."
             )
@@ -1358,6 +3056,312 @@ class AuroraGUI:
     def _on_embedded_load_failed(self, message: str) -> None:
         self.embedded_status_label.set_text("Error al cargar")
         self._show_error("Error", message)
+
+    # -- Pagina: Raycasting (prueba) --------------------------------------------
+
+    def _build_raycast_test_page(self) -> Gtk.Widget:
+        page = self._new_page()
+
+        note_frame, note_box = self._section("Seccion experimental")
+        note = Gtk.Label(
+            label=(
+                "Prueba: en vez de Cloud-to-Cloud (vecino mas cercano), reconstruye una "
+                "malla de cada nube y mide el espesor por raycasting en vez de por "
+                "distancia euclidiana al vecino mas cercano. Los archivos se comparten "
+                "con la pestaña 'Comparacion' (elegirlos aca o alla es lo mismo). "
+                "Todavia no esta decidido si esto reemplaza al metodo Cloud-to-Cloud "
+                "actual."
+            ),
+            xalign=0,
+        )
+        note.set_line_wrap(True)
+        note_box.pack_start(note, False, False, 0)
+        page.pack_start(note_frame, False, True, 0)
+
+        method_frame, method_box = self._section("Metodo")
+        row = self._row(method_box)
+        row.pack_start(Gtk.Label(label="Malla:"), False, False, 0)
+        self.raycast_mesh_poisson_rb = Gtk.RadioButton.new_with_label_from_widget(None, "Poisson")
+        row.pack_start(self.raycast_mesh_poisson_rb, False, False, 0)
+        self.raycast_mesh_delaunay_rb = Gtk.RadioButton.new_with_label_from_widget(
+            self.raycast_mesh_poisson_rb, "Delaunay"
+        )
+        row.pack_start(self.raycast_mesh_delaunay_rb, False, False, 0)
+        mesh_note = Gtk.Label(
+            label=(
+                "Poisson reconstruye una superficie cerrada, pensado para una nube "
+                "completa. Delaunay triangula la proyeccion sobre el plano que mejor "
+                "ajusta la nube — pensado para un recorte casi-plano (pestaña "
+                "'Preparar nubes'), no genera artefactos en los bordes abiertos."
+            ),
+            xalign=0,
+        )
+        mesh_note.set_line_wrap(True)
+        method_box.pack_start(mesh_note, False, False, 0)
+
+        row = self._row(method_box)
+        row.pack_start(Gtk.Label(label="Rayos:"), False, False, 0)
+        self.raycast_ray_origin_rb = Gtk.RadioButton.new_with_label_from_widget(
+            None, "Desde el origen del sensor"
+        )
+        row.pack_start(self.raycast_ray_origin_rb, False, False, 0)
+        self.raycast_ray_normal_rb = Gtk.RadioButton.new_with_label_from_widget(
+            self.raycast_ray_origin_rb, "A lo largo de la normal del plano"
+        )
+        row.pack_start(self.raycast_ray_normal_rb, False, False, 0)
+        ray_note = Gtk.Label(
+            label=(
+                "'Desde el origen del sensor' asume que el sensor no se movio entre "
+                "capturas (o que volvio a la misma posicion via 'Alineacion IMU') y usa "
+                "el sidecar '_pose.npz' de cada .ply (o el origen manual de abajo si no "
+                "existe). 'A lo largo de la normal del plano' no necesita la pose del "
+                "sensor, pero requiere que las dos nubes ya esten alineadas (pestaña "
+                "'Alineacion' o 'Alineacion IMU') — mide el espesor perpendicular a la "
+                "pared original en vez de a lo largo de un rayo desde el sensor."
+            ),
+            xalign=0,
+        )
+        ray_note.set_line_wrap(True)
+        method_box.pack_start(ray_note, False, False, 0)
+        self.raycast_ray_origin_rb.connect("toggled", lambda _b: self._on_raycast_ray_method_toggled())
+        page.pack_start(method_frame, False, True, 0)
+
+        files_frame, files_box = self._section("Archivos")
+        self.raycast_base_path_label = self._file_row(
+            files_box,
+            self.base_path,
+            lambda p: self._set_base_path(p),
+            info_text="Tunel original (antes del shotcrete). Comparte archivo con la "
+            "pestaña 'Comparacion' — elegirlo aca tambien lo actualiza alla.",
+        )
+        self.raycast_updated_path_label = self._file_row(
+            files_box,
+            self.updated_path,
+            lambda p: self._set_updated_path(p),
+            info_text="Tunel con shotcrete (despues). Comparte archivo con la pestaña "
+            "'Comparacion' — elegirlo aca tambien lo actualiza alla.",
+        )
+        page.pack_start(files_frame, False, True, 0)
+
+        origin_frame, origin_box = self._section("Origen del sensor (si el .ply no tiene sidecar de pose)")
+        origin_note = Gtk.Label(
+            label=(
+                "Se usa el sidecar '_pose.npz' guardado junto al .ply si existe. Si no "
+                "existe (nube cargada a mano, sin sensor conectado), se usa el origen "
+                "manual de aca abajo — por defecto (0,0,0), es decir la nube ya esta en "
+                "el sistema de coordenadas del sensor."
+            ),
+            xalign=0,
+        )
+        origin_note.set_line_wrap(True)
+        origin_box.pack_start(origin_note, False, False, 0)
+
+        row = self._row(origin_box)
+        row.pack_start(Gtk.Label(label="Origen base (x y z, m):"), False, False, 0)
+        self.raycast_base_origin_entry = Gtk.Entry()
+        self.raycast_base_origin_entry.set_text("0 0 0")
+        self.raycast_base_origin_entry.set_width_chars(18)
+        row.pack_start(self.raycast_base_origin_entry, False, False, 0)
+
+        row = self._row(origin_box)
+        row.pack_start(Gtk.Label(label="Origen actualizada (x y z, m):"), False, False, 0)
+        self.raycast_updated_origin_entry = Gtk.Entry()
+        self.raycast_updated_origin_entry.set_text("0 0 0")
+        self.raycast_updated_origin_entry.set_width_chars(18)
+        row.pack_start(self.raycast_updated_origin_entry, False, False, 0)
+        page.pack_start(origin_frame, False, True, 0)
+        self.raycast_origin_frame = origin_frame
+
+        action_frame, action_box = self._section("Calcular")
+        row = self._row(action_box)
+        self.raycast_run_button = Gtk.Button(label="Calcular espesor (raycasting)")
+        self.raycast_run_button.connect("clicked", lambda _b: self._run_raycast_clicked())
+        row.pack_start(self.raycast_run_button, False, False, 0)
+        self.raycast_status_label = Gtk.Label(label="(nada calculado todavia)")
+        row.pack_start(self.raycast_status_label, False, False, 0)
+        page.pack_start(action_frame, False, True, 0)
+
+        self._on_raycast_ray_method_toggled()
+        return self._scrolled(page)
+
+    def _on_raycast_ray_method_toggled(self) -> None:
+        self.raycast_origin_frame.set_sensitive(self.raycast_ray_origin_rb.get_active())
+
+    def _raycast_log(self, message: str) -> None:
+        def append():
+            if hasattr(self, "log_buffer"):
+                main_end = self.log_buffer.get_end_iter()
+                self.log_buffer.insert(main_end, f"[Malla] {message}\n")
+
+        self._ui(append)
+
+    def _run_raycast_clicked(self) -> None:
+        if self.worker_thread and self.worker_thread.is_alive():
+            self._show_warning("En progreso", "Ya hay un analisis en ejecucion.")
+            return
+
+        base_file = Path(self.base_path)
+        updated_file = Path(self.updated_path)
+        if not base_file.is_file() or not updated_file.is_file():
+            self._show_error(
+                "Error", "Elige ambos archivos (arriba, o en la pestaña 'Comparacion') antes de calcular."
+            )
+            return
+
+        ray_method = "origin" if self.raycast_ray_origin_rb.get_active() else "normal"
+        mesh_method = "poisson" if self.raycast_mesh_poisson_rb.get_active() else "delaunay"
+
+        if ray_method == "normal" and not self.alignment_applied:
+            if not self._confirm_missing_alignment():
+                self._refresh_quick_status()
+                return
+
+        base_origin = updated_origin = None
+        if ray_method == "origin":
+            try:
+                base_origin = self._parse_xyz(self.raycast_base_origin_entry.get_text(), "Origen base")
+                updated_origin = self._parse_xyz(
+                    self.raycast_updated_origin_entry.get_text(), "Origen actualizada"
+                )
+            except ValueError as exc:
+                self._show_error("Parametros invalidos", str(exc))
+                return
+            # Si el .ply tiene sidecar de pose (captura real con sensor), usarlo
+            # tiene prioridad sobre el origen manual del formulario; el manual es
+            # solo un respaldo para probar el flujo sin sensor conectado.
+            base_origin = None if load_reference_pose(base_file) is not None else base_origin
+            updated_origin = None if load_reference_pose(updated_file) is not None else updated_origin
+
+        params = RaycastPipelineParams(
+            base_path=base_file,
+            updated_path=updated_file,
+            output_dir=Path(self.output_dir),
+            base_origin=base_origin,
+            updated_origin=updated_origin,
+            mesh_method=mesh_method,
+            ray_method=ray_method,
+            poisson_depth=int(self.quick_poisson_depth.get_value_as_int())
+            if self.quick_mesh_check.get_active() else 9,
+            mesh_smoothing_iterations=int(self.quick_smooth_iterations.get_value_as_int())
+            if self.quick_mesh_check.get_active() and self.quick_smooth_check.get_active() else 0,
+        )
+
+        self._invalidate_results()
+        generation = self._result_generation
+        self.log_buffer.set_text("")
+        self.raycast_run_button.set_sensitive(False)
+        self.quick_calculate_button.set_sensitive(False)
+        self.raycast_status_label.set_text("Calculando...")
+        self.status_spinner.start()
+        self.status_spinner.set_visible(True)
+        self.status_label.set_text("Calculando espesor con malla...")
+        self.stack.set_visible_child_name("resultados")
+
+        self.worker_thread = threading.Thread(
+            target=self._run_raycast_worker, args=(params, generation), daemon=True
+        )
+        self.worker_thread.start()
+
+    def _run_raycast_worker(self, params: RaycastPipelineParams, generation: int) -> None:
+        try:
+            result = run_raycast_pipeline(params, log=self._raycast_log)
+            self._raycast_log("\nListo.")
+            self._ui(self._on_raycast_success, result, generation)
+        except Exception as exc:
+            self._raycast_log(f"\nERROR: {exc}")
+            self._ui(self._on_raycast_failure, str(exc), generation)
+        finally:
+            self._ui(self.raycast_run_button.set_sensitive, True)
+            self._ui(self.quick_calculate_button.set_sensitive, True)
+            self._ui(self.status_spinner.stop)
+            self._ui(self.status_spinner.set_visible, False)
+
+    def _on_raycast_success(self, result, generation: int) -> None:
+        if generation != self._result_generation:
+            return
+        self.raycast_result = result
+        stats = self.raycast_result.stats
+        self._active_result_kind = "raycast"
+        self._set_stat(self.stat_points, f"{stats.n_points:,}")
+        self._set_stat(self.stat_mean, f"{stats.mean * 100:.2f} cm")
+        self._set_stat(self.stat_median, f"{stats.median * 100:.2f} cm")
+        self._set_stat(self.stat_min, f"{stats.min * 100:.2f} cm")
+        self._set_stat(self.stat_max, f"{stats.max * 100:.2f} cm")
+        self._set_stat(self.stat_p95, f"{stats.p95 * 100:.2f} cm")
+        self.cards_row.set_no_show_all(False)
+        self.cards_row.show_all()
+        self.results_empty_label.hide()
+        self.status_label.set_markup(
+            f'<span foreground="{COLOR_OK}">●</span>  Analisis con malla completo — '
+            f"espesor promedio {stats.mean * 100:.2f} cm"
+        )
+        self.generate_report_button.set_sensitive(True)
+        self.open_result_viewer_button.set_sensitive(True)
+        self.open_result_viewer_button.set_label("Ver mapa de espesor 3D")
+        self.result_mesh_actions.set_no_show_all(False)
+        self.result_mesh_actions.show_all()
+        self.quick_status_label.set_text(
+            f"Medicion con malla lista: promedio {stats.mean * 100:.2f} cm, "
+            f"mediana {stats.median * 100:.2f} cm, P95 {stats.p95 * 100:.2f} cm."
+        )
+        self.raycast_status_label.set_text(f"Listo — espesor promedio {stats.mean * 100:.2f} cm")
+        self._show_quick_mesh_result_actions()
+        self._generate_alerts()
+        self.stack.set_visible_child_name("resultados")
+        self._view_raycast_result()
+
+    def _on_raycast_failure(self, message: str, generation: int) -> None:
+        if generation != self._result_generation:
+            return
+        self._hide_quick_mesh_result_actions()
+        self.raycast_status_label.set_text("Error al calcular")
+        self.quick_status_label.set_text(f"No se pudo calcular la malla: {message}")
+        self.status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  El analisis con malla fallo')
+        self.stack.set_visible_child_name("resultados")
+        self._show_error("Error durante el analisis por raycasting", message)
+
+    def _view_raycast_result(self) -> None:
+        if not self.raycast_result:
+            return
+        try:
+            base_cloud = load_point_cloud(Path(self.base_path))
+        except Exception as exc:
+            self._show_error("No se pudo abrir la vista 3D", str(exc))
+            return
+
+        if self.viewer is None or not self.viewer.is_running():
+            self.viewer = LiveViewer(base_cloud, log=self._log)
+            self.viewer.start()
+            self.close_viewer_button.set_sensitive(True)
+
+        # Raycasting ya calculo los espesores sobre una malla, asi que entrega
+        # su heatmap directamente al visor compartido en vez de recalcular C2C.
+        self._apply_viewer_settings()
+        self.viewer.push_static_result(base_cloud, self.raycast_result.heatmap_cloud)
+        self._log("Vista 3D de resultados abierta.")
+
+    def _view_raycast_meshes(self) -> None:
+        if not self.raycast_result:
+            return
+        import open3d as o3d
+
+        # Copias pintadas de un color solido para distinguir las dos mallas
+        # superpuestas (a diferencia del heatmap, aca no interesa el
+        # espesor sino inspeccionar la reconstruccion en si: huecos de
+        # Poisson, triangulos largos sin recortar de Delaunay, etc.).
+        base_mesh = o3d.geometry.TriangleMesh(self.raycast_result.base_mesh)
+        updated_mesh = o3d.geometry.TriangleMesh(self.raycast_result.updated_mesh)
+        base_mesh.paint_uniform_color((0.55, 0.6, 0.65))
+        updated_mesh.paint_uniform_color((1.0, 0.549, 0.0))
+        base_mesh.compute_vertex_normals()
+        updated_mesh.compute_vertex_normals()
+
+        o3d.visualization.draw_geometries(
+            [base_mesh, updated_mesh],
+            window_name="Aurora - Raycasting (prueba): mallas reconstruidas "
+            "(gris = original, naranja = con shotcrete)",
+            mesh_show_back_face=True,
+        )
 
     # -- Helpers de layout -----------------------------------------------------
 
@@ -1438,7 +3442,11 @@ class AuroraGUI:
 
     def _set_path_label(self, label: Gtk.Label, path: str) -> None:
         name = os.path.basename(path) if path else ""
-        label.set_text(name if name else "Sin seleccionar")
+        if name:
+            escaped_name = GLib.markup_escape_text(name)
+            label.set_markup(f'<span foreground="{COLOR_FILE_NAME}">{escaped_name}</span>')
+        else:
+            label.set_text("Sin seleccionar")
         label.set_tooltip_text(path or "")
 
     def _file_row(self, parent_box: Gtk.Box, initial_path: str, on_selected, info_text: str | None = None) -> Gtk.Label:
@@ -1557,14 +3565,30 @@ class AuroraGUI:
 
     # ------------------------------------------------------------ Sensor
 
+    def _sync_sensor_address(self, source_entry) -> None:
+        if not hasattr(self, "sensor_address_entry") or not hasattr(self, "quick_sensor_address_entry"):
+            return
+        target = self.quick_sensor_address_entry if source_entry is self.sensor_address_entry else self.sensor_address_entry
+        if target.get_text() != source_entry.get_text():
+            target.set_text(source_entry.get_text())
+
+    def _set_sensor_ui_state(self, connected: bool, connecting: bool = False) -> None:
+        button_text = "Conectando..." if connecting else ("Desconectar" if connected else "Conectar sensor")
+        status = "Conectando..." if connecting else ("Conectado" if connected else "Desconectado")
+        color = COLOR_WARN if connecting else (COLOR_OK if connected else COLOR_ERROR)
+        for button in (self.connect_button, self.quick_connect_button):
+            button.set_label(button_text)
+            button.set_sensitive(not connecting)
+        for label in (self.sensor_status_label, self.quick_sensor_status_label):
+            label.set_markup(f'<span foreground="{color}">●</span>  {status}')
+
     def _toggle_sensor_connection(self) -> None:
         if self.sensor_connection is not None:
             self._disconnect_sensor()
             return
 
         address = self.sensor_address_entry.get_text().strip()
-        self.connect_button.set_sensitive(False)
-        self.sensor_status_label.set_markup(f'<span foreground="{COLOR_WARN}">●</span>  Conectando...')
+        self._set_sensor_ui_state(False, connecting=True)
 
         def worker():
             try:
@@ -1577,9 +3601,7 @@ class AuroraGUI:
 
     def _on_sensor_connected(self, connection) -> None:
         self.sensor_connection = connection
-        self.connect_button.set_label("Desconectar")
-        self.connect_button.set_sensitive(True)
-        self.sensor_status_label.set_markup(f'<span foreground="{COLOR_OK}">●</span>  Conectado')
+        self._set_sensor_ui_state(True)
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
         self.start_live_capture_button.set_sensitive(True)
@@ -1592,8 +3614,7 @@ class AuroraGUI:
         self._log(f"Conectado al sensor Aurora en {self.sensor_address_entry.get_text()}.")
 
     def _on_sensor_connect_failed(self, exc: Exception) -> None:
-        self.connect_button.set_sensitive(True)
-        self.sensor_status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  Desconectado')
+        self._set_sensor_ui_state(False)
         self._show_error("Error de conexion", str(exc))
 
     def _disconnect_sensor(self) -> None:
@@ -1604,8 +3625,7 @@ class AuroraGUI:
         except Exception as exc:
             self._log(f"Aviso al desconectar: {exc}")
         self.sensor_connection = None
-        self.connect_button.set_label("Conectar")
-        self.sensor_status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  Desconectado')
+        self._set_sensor_ui_state(False)
         self.capture_base_button.set_sensitive(False)
         self.capture_updated_button.set_sensitive(False)
         self.stop_capture_button.set_sensitive(False)
@@ -1664,7 +3684,17 @@ class AuroraGUI:
                     cone_angle_deg=cone_angle_deg,
                     forward_axis=forward_axis,
                 )
-                self._ui(self._on_capture_done, target, cloud)
+                try:
+                    ref_image, ref_point_grid = aurora_sensor.capture_reference_frame(
+                        self.sensor_connection, max_distance_m=max_distance_m
+                    )
+                except Exception:
+                    ref_image, ref_point_grid = None, None
+                try:
+                    ref_pose = aurora_sensor.get_current_pose(self.sensor_connection)
+                except Exception:
+                    ref_pose = None
+                self._ui(self._on_capture_done, target, cloud, ref_image, ref_point_grid, ref_pose)
             except Exception as exc:
                 self._ui(self._on_capture_failed, exc)
 
@@ -1677,13 +3707,16 @@ class AuroraGUI:
             self.capture_status_label.set_text("Deteniendo captura...")
             self._log("Captura detenida manualmente, procesando frames acumulados hasta ahora...")
 
-    def _on_capture_done(self, target: str, cloud) -> None:
+    def _on_capture_done(self, target: str, cloud, ref_image=None, ref_point_grid=None, ref_pose=None) -> None:
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
         self.stop_capture_button.set_sensitive(False)
         self.capture_stop_event = None
 
-        default_name = "base_capturada.ply" if target == "base" else "updated_capturada.ply"
+        import datetime
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"base_capturada_{timestamp}.ply" if target == "base" else f"updated_capturada_{timestamp}.ply"
         default_dir = PROJECT_ROOT / "data"
         default_dir.mkdir(parents=True, exist_ok=True)
         path = self._save_file_dialog("Guardar captura como", default_dir, default_name)
@@ -1696,19 +3729,56 @@ class AuroraGUI:
 
         o3d.io.write_point_cloud(path, cloud)
         self._log(f"Captura guardada en: {path} ({len(cloud.points)} puntos)")
-        self.alignment_applied = False
+
+        if ref_image is None or ref_point_grid is None:
+            try:
+                ref_image, ref_point_grid = render_reference_photo_from_cloud(cloud)
+                self._log("Sin foto real del sensor; se genero una foto de referencia sintetica a partir de la nube.")
+            except Exception as exc:
+                self._log(f"No se pudo generar una foto de referencia sintetica: {exc}")
+                ref_image, ref_point_grid = None, None
+
+        if ref_image is not None and ref_point_grid is not None:
+            try:
+                save_reference_photo(Path(path), ref_image, ref_point_grid)
+                self._log("Foto de referencia guardada junto a la nube (util para alinear puntos tapados por shotcrete).")
+            except Exception as exc:
+                self._log(f"No se pudo guardar la foto de referencia: {exc}")
+        else:
+            self._log("Sin foto de referencia disponible para esta captura (se podra alinear igual con la nube 3D).")
+
+        if ref_pose is not None:
+            try:
+                save_reference_pose(Path(path), ref_pose.position, ref_pose.rpy_deg)
+                if target == "base":
+                    self._log(
+                        "Posicion del sensor (IMU/SLAM) guardada junto a la nube — "
+                        "usa la Guia de pose IMU para volver a ella antes de capturar DESPUES."
+                    )
+                else:
+                    self._log(
+                        "Posicion del sensor (IMU/SLAM) guardada junto a la nube DESPUES."
+                    )
+            except Exception as exc:
+                self._log(f"No se pudo guardar la posicion de referencia del sensor: {exc}")
+        else:
+            self._log(
+                "No se pudo leer la posicion del sensor para esta captura; la guia de "
+                "pose IMU no estara disponible para esta nube. Aun puedes usar alineacion por puntos."
+            )
+
         if target == "base":
-            self.base_path = path
-            self._set_path_label(self.base_path_label, path)
+            self._set_base_path(path)
             self.last_base_capture_path = path
             self.view_base_capture_button.set_sensitive(True)
             self.capture_status_label.set_text("Tunel original capturado")
+            self._refresh_imu_reference()
         else:
-            self.updated_path = path
-            self._set_path_label(self.updated_path_label, path)
+            self._set_updated_path(path)
             self.last_updated_capture_path = path
             self.view_updated_capture_button.set_sensitive(True)
             self.capture_status_label.set_text("Tunel con shotcrete capturado")
+        self._refresh_quick_status()
 
     def _view_last_capture(self, target: str) -> None:
         path = self.last_base_capture_path if target == "base" else self.last_updated_capture_path
@@ -1786,9 +3856,9 @@ class AuroraGUI:
             return
 
         dialog = Gtk.FileChooserDialog(
-            title="Seleccionar carpeta para guardar nubes en vivo",
-            parent=self.window,
-            action=Gtk.FileChooserAction.SELECT_FOLDER,
+                title="Seleccionar carpeta para guardar nubes en vivo",
+                parent=self.window,
+                action=Gtk.FileChooserAction.SELECT_FOLDER,
         )
         dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Seleccionar", Gtk.ResponseType.OK)
         target_dir = None
@@ -1812,11 +3882,19 @@ class AuroraGUI:
         o3d.io.write_point_cloud(str(updated_path), current_cloud)
         self._log(f"Nubes en vivo guardadas en: {base_path} y {updated_path}")
 
+        for cloud, cloud_path in ((baseline_cloud, base_path), (current_cloud, updated_path)):
+            try:
+                ref_image, ref_point_grid = render_reference_photo_from_cloud(cloud)
+                save_reference_photo(cloud_path, ref_image, ref_point_grid)
+            except Exception as exc:
+                self._log(f"No se pudo generar foto de referencia para {cloud_path.name}: {exc}")
+        self._log("Fotos de referencia (sinteticas) guardadas junto a las nubes en vivo.")
+
     # ---------------------------------------------------------------- Crop
 
     def _pick_crop_interactively(self) -> None:
         base_file = Path(self.base_path)
-        if not base_file.exists():
+        if not base_file.is_file():
             self._show_error("Error", f"No se encontro la nube base:\n{base_file}")
             return
         try:
@@ -1859,17 +3937,19 @@ class AuroraGUI:
             "Si el sensor se reubico entre la captura del tunel original y la del tunel "
             "con shotcrete, el resultado puede incluir ese desplazamiento como si fuera "
             "espesor real, en vez de solo el shotcrete aplicado.\n\n"
-            "Puedes ir a la pestaña 'Alineacion' y marcar puntos de referencia fijos "
+            "Puedes ir a 'Alineacion por puntos' y marcar puntos de referencia fijos "
             "(por ejemplo pernos o marcas) antes de calcular, o continuar si sabes que "
             "las dos capturas se tomaron desde la misma posicion."
         )
-        dialog.add_button("Ir a Alineacion", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Ir a puntos de referencia", Gtk.ResponseType.CANCEL)
         continue_button = dialog.add_button("Continuar de todas formas", Gtk.ResponseType.OK)
         continue_button.get_style_context().add_class("destructive-action")
         response = dialog.run()
         dialog.destroy()
         if response == Gtk.ResponseType.OK:
             return True
+        if hasattr(self, "quick_status_label"):
+            self.quick_status_label.set_text("Alinea las capturas con puntos de referencia y luego vuelve a calcular.")
         self.stack.set_visible_child_name("alineacion")
         return False
 
@@ -1888,13 +3968,18 @@ class AuroraGUI:
             if not self._confirm_missing_alignment():
                 return
 
+        self._invalidate_results()
+        generation = self._result_generation
         self.log_buffer.set_text("")
-        self.run_button.set_sensitive(False)
+        self.quick_calculate_button.set_sensitive(False)
         self.status_spinner.start()
         self.status_spinner.set_visible(True)
         self.status_label.set_markup("Calculando el espesor...")
+        self.stack.set_visible_child_name("resultados")
 
-        self.worker_thread = threading.Thread(target=self._run_pipeline_worker, args=(params,), daemon=True)
+        self.worker_thread = threading.Thread(
+            target=self._run_pipeline_worker, args=(params, generation), daemon=True
+        )
         self.worker_thread.start()
 
     def _build_params(self) -> PipelineParams:
@@ -1923,23 +4008,25 @@ class AuroraGUI:
             max_distance=max_distance,
         )
 
-    def _run_pipeline_worker(self, params: PipelineParams) -> None:
+    def _run_pipeline_worker(self, params: PipelineParams, generation: int) -> None:
         try:
-            self.result = run_pipeline(params, log=self._log)
+            result = run_pipeline(params, log=self._log)
             self._log("\nListo.")
-            self._ui(self._on_pipeline_success)
-            self._ui(self._show_result_in_viewer)
+            self._ui(self._on_pipeline_success, result, generation)
         except Exception as exc:
             self._log(f"\nERROR: {exc}")
-            self._ui(self._on_pipeline_failure, str(exc))
-            self._ui(self._show_error, "Error durante el analisis", str(exc))
+            self._ui(self._on_pipeline_failure, str(exc), generation)
         finally:
-            self._ui(self.run_button.set_sensitive, True)
+            self._ui(self.quick_calculate_button.set_sensitive, True)
             self._ui(self.status_spinner.stop)
             self._ui(self.status_spinner.set_visible, False)
 
-    def _on_pipeline_success(self) -> None:
+    def _on_pipeline_success(self, result, generation: int) -> None:
+        if generation != self._result_generation:
+            return
+        self.result = result
         stats = self.result.stats
+        self._active_result_kind = "cloud_to_cloud"
         self._set_stat(self.stat_points, f"{stats.n_points:,}")
         self._set_stat(self.stat_mean, f"{stats.mean * 100:.2f} cm")
         self._set_stat(self.stat_median, f"{stats.median * 100:.2f} cm")
@@ -1948,57 +4035,119 @@ class AuroraGUI:
         self._set_stat(self.stat_p95, f"{stats.p95 * 100:.2f} cm")
         self.cards_row.set_no_show_all(False)
         self.cards_row.show_all()
+        self.results_empty_label.hide()
+        self.result_mesh_actions.set_no_show_all(True)
+        self.result_mesh_actions.hide()
+        self.open_result_viewer_button.set_sensitive(True)
+        self.open_result_viewer_button.set_label("Abrir vista 3D")
         self.status_label.set_markup(
             f'<span foreground="{COLOR_OK}">●</span>  Analisis completo — '
             f"espesor promedio {stats.mean * 100:.2f} cm"
         )
         self.generate_report_button.set_sensitive(True)
+        self.quick_status_label.set_text(
+            f"Medicion lista: promedio {stats.mean * 100:.2f} cm, "
+            f"mediana {stats.median * 100:.2f} cm, P95 {stats.p95 * 100:.2f} cm."
+        )
         self._generate_alerts()
+        self.stack.set_visible_child_name("resultados")
+        self._show_result_in_viewer()
 
-    def _on_pipeline_failure(self, message: str) -> None:
+    def _on_pipeline_failure(self, message: str, generation: int) -> None:
+        if generation != self._result_generation:
+            return
+        self.quick_status_label.set_text(f"No se pudo calcular: {message}")
         self.status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  El analisis fallo')
+        self.stack.set_visible_child_name("resultados")
+        self._show_error("Error durante el analisis", message)
 
     # ------------------------------------------------------- Alertas e informe
 
+    def _active_result(self):
+        if self._active_result_kind == "raycast":
+            return self.raycast_result
+        if self._active_result_kind == "cloud_to_cloud":
+            return self.result
+        return self.result or self.raycast_result
+
     def _generate_alerts(self) -> None:
-        if not self.result:
+        result = self._active_result()
+        if result is None:
+            self.thickness_alert_label.hide()
             return
-        low_mm = float(self.band_low_entry.get_text() or 20)
-        high_mm = float(self.band_high_entry.get_text() or 50)
-        mean_mm = self.result.stats.mean * 1000
+        try:
+            low_mm, high_mm = self._band_thresholds_mm()
+        except ValueError as exc:
+            self.thickness_alert_label.set_markup(
+                f'<span foreground="{COLOR_WARN}"><b>Revisa los umbrales de espesor:</b> '
+                f'{GLib.markup_escape_text(str(exc))}</span>'
+            )
+            self.thickness_alert_label.set_no_show_all(False)
+            self.thickness_alert_label.show()
+            return
+        mean_mm = result.stats.mean * 1000
 
         if mean_mm < low_mm:
-            self._show_warning(
-                "Alerta de espesor (falta)",
-                f"El espesor medio ({mean_mm:.2f} mm) esta por debajo del umbral minimo ({low_mm} mm).\n"
-                "Falta aplicar mas shotcrete.",
+            message = (
+                f"Espesor medio: {mean_mm:.2f} mm, bajo el minimo de {low_mm} mm. "
+                "Falta aplicar shotcrete."
             )
         elif mean_mm >= high_mm:
-            self._show_warning(
-                "Alerta de espesor (exceso)",
-                f"El espesor medio ({mean_mm:.2f} mm) supera el umbral maximo ({high_mm} mm).\n"
-                "Exceso de shotcrete.",
+            message = (
+                f"Espesor medio: {mean_mm:.2f} mm, sobre el maximo de {high_mm} mm. "
+                "Exceso de shotcrete."
             )
+        else:
+            self.thickness_alert_label.set_text("")
+            self.thickness_alert_label.set_no_show_all(True)
+            self.thickness_alert_label.hide()
+            return
+
+        self.thickness_alert_label.set_markup(
+            f'<span foreground="{COLOR_WARN}"><b>Alerta de espesor:</b> '
+            f'{GLib.markup_escape_text(message)}</span>'
+        )
+        self.thickness_alert_label.set_no_show_all(False)
+        self.thickness_alert_label.show()
 
     def _generate_report(self) -> None:
-        if not self.result:
+        result = self._active_result()
+        if result is None:
+            return
+
+        try:
+            low_mm, high_mm = self._band_thresholds_mm()
+            target_thickness_cm = self._parse_positive_entry(
+                self.target_thickness_entry, "El espesor objetivo"
+            )
+        except ValueError as exc:
+            self._show_warning("Revisa los ajustes de visualizacion", str(exc))
+            self.stack.set_visible_child_name("visualizacion")
             return
 
         import datetime
+        from xml.sax.saxutils import escape
 
-        from reportlab.lib import colors as rl_colors
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.units import cm as rl_cm
-        from reportlab.platypus import (
-            Image,
-            Paragraph,
-            SimpleDocTemplate,
-            Spacer,
-            Table,
-            TableStyle,
-        )
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.enums import TA_CENTER
+        try:
+            from reportlab.lib import colors as rl_colors
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.units import cm as rl_cm
+            from reportlab.platypus import (
+                Image,
+                Paragraph,
+                SimpleDocTemplate,
+                Spacer,
+                Table,
+                TableStyle,
+            )
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER
+        except ImportError as exc:
+            self._show_error(
+                "Falta la dependencia del informe PDF",
+                f"No se pudo cargar ReportLab: {exc}. Reinstala las dependencias de Aurora.",
+            )
+            return
 
         default_dir = Path(self.output_dir)
         default_dir.mkdir(parents=True, exist_ok=True)
@@ -2006,9 +4155,7 @@ class AuroraGUI:
         timestamp = now.strftime("%Y%m%d_%H%M%S")
         report_path = default_dir / f"informe_aurora_{timestamp}.pdf"
 
-        stats = self.result.stats
-        low_mm = float(self.band_low_entry.get_text() or 20)
-        high_mm = float(self.band_high_entry.get_text() or 50)
+        stats = result.stats
         mean_mm = stats.mean * 1000
 
         if mean_mm < low_mm:
@@ -2018,10 +4165,6 @@ class AuroraGUI:
         else:
             status_text, status_color = "DENTRO DE PARAMETRO", rl_colors.HexColor("#34C759")
 
-        try:
-            target_thickness_cm = float(self.target_thickness_entry.get_text() or 12)
-        except ValueError:
-            target_thickness_cm = 12.0
         band_width_cm = target_thickness_cm / len(SIX_BAND_LABELS)
 
         styles = getSampleStyleSheet()
@@ -2053,8 +4196,12 @@ class AuroraGUI:
             Paragraph(status_text, status_style),
             Spacer(1, 6),
             Paragraph("1. Archivos analizados", h2_style),
-            Paragraph(f"<b>Nube base (original):</b> {self.base_path}", body_style),
-            Paragraph(f"<b>Nube actualizada (shotcrete):</b> {self.updated_path}", body_style),
+            Paragraph(f"<b>Nube base (original):</b> {escape(str(self.base_path))}", body_style),
+            Paragraph(f"<b>Nube actualizada (shotcrete):</b> {escape(str(self.updated_path))}", body_style),
+            Paragraph(
+                f"<b>Metodo de calculo:</b> {'Raycasting con malla' if self._active_result_kind == 'raycast' else 'Cloud-to-Cloud'}",
+                body_style,
+            ),
             Paragraph("2. Umbrales de alerta", h2_style),
             Paragraph(f"Umbral bajo (mínimo): {low_mm / 10:.2f} cm — Umbral alto (máximo): {high_mm / 10:.2f} cm", body_style),
             Paragraph("3. Estadísticas de espesor", h2_style),
@@ -2116,7 +4263,7 @@ class AuroraGUI:
 
         story.append(Paragraph("5. Distribución (histograma)", h2_style))
         try:
-            story.append(Image(str(self.result.histogram_path), width=15 * rl_cm, height=9 * rl_cm))
+            story.append(Image(str(result.histogram_path), width=15 * rl_cm, height=9 * rl_cm))
         except Exception as exc:
             story.append(Paragraph(f"(No se pudo incluir el histograma: {exc})", body_style))
 
@@ -2128,9 +4275,9 @@ class AuroraGUI:
                 body_style,
             )
         )
-        story.append(Paragraph(f"• Detalle por punto: {self.result.csv_path.name}", body_style))
-        story.append(Paragraph(f"• Histograma: {self.result.histogram_path.name}", body_style))
-        story.append(Paragraph(f"• Nube 3D heatmap: {self.result.heatmap_path.name}", body_style))
+        story.append(Paragraph(f"• Detalle por punto: {result.csv_path.name}", body_style))
+        story.append(Paragraph(f"• Histograma: {result.histogram_path.name}", body_style))
+        story.append(Paragraph(f"• Nube 3D heatmap: {result.heatmap_path.name}", body_style))
 
         doc = SimpleDocTemplate(
             str(report_path),
@@ -2140,37 +4287,72 @@ class AuroraGUI:
             topMargin=1.5 * rl_cm,
             bottomMargin=1.5 * rl_cm,
         )
-        doc.build(story)
+        try:
+            doc.build(story)
+        except Exception as exc:
+            self._show_error("No se pudo generar el informe PDF", str(exc))
+            return
 
         self._log(f"Informe generado: {report_path}")
         self._show_info("Informe generado", f"El informe (PDF) fue guardado en:\n{report_path}")
 
     # --------------------------------------------------------------- Viewer
 
+    @staticmethod
+    def _parse_positive_entry(entry: Gtk.Entry, label: str) -> float:
+        text = entry.get_text().strip().replace(",", ".")
+        try:
+            value = float(text) if text else 12.0
+        except ValueError as exc:
+            raise ValueError(f"{label} debe ser un numero mayor que cero.") from exc
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{label} debe ser un numero mayor que cero.")
+        return value
+
+    def _band_thresholds_mm(self) -> tuple[float, float]:
+        try:
+            low_mm = float((self.band_low_entry.get_text().strip() or "50").replace(",", "."))
+            high_mm = float((self.band_high_entry.get_text().strip() or "100").replace(",", "."))
+        except ValueError as exc:
+            raise ValueError("Los umbrales verde y rojo deben ser numeros en milimetros.") from exc
+        if not np.isfinite(low_mm) or not np.isfinite(high_mm) or low_mm < 0 or high_mm <= low_mm:
+            raise ValueError("El umbral rojo debe ser mayor que el verde y ambos deben ser cero o mas.")
+        return low_mm, high_mm
+
     def _band_thresholds_m(self) -> tuple[float, float]:
-        low_mm = float(self.band_low_entry.get_text() or 20)
-        high_mm = float(self.band_high_entry.get_text() or 50)
+        low_mm, high_mm = self._band_thresholds_mm()
         return low_mm / 1000.0, high_mm / 1000.0
 
     def _parse_live_filter_params(self) -> tuple[float | None, float | None]:
         max_distance = None
         text = self.live_max_distance_entry.get_text().strip()
         if text:
-            max_distance = float(text)
-            if max_distance <= 0:
+            try:
+                max_distance = float(text.replace(",", "."))
+            except ValueError as exc:
+                raise ValueError("la distancia maxima debe ser un numero mayor que cero") from exc
+            if not np.isfinite(max_distance) or max_distance <= 0:
                 raise ValueError("la distancia maxima debe ser > 0")
 
         cone_angle = None
         text = self.live_cone_angle_entry.get_text().strip()
         if text:
-            cone_angle = float(text)
-            if cone_angle <= 0 or cone_angle > 180:
+            try:
+                cone_angle = float(text.replace(",", "."))
+            except ValueError as exc:
+                raise ValueError("el cono debe ser un numero entre 0 y 180 grados") from exc
+            if not np.isfinite(cone_angle) or cone_angle <= 0 or cone_angle > 180:
                 raise ValueError("el cono debe estar en (0, 180]")
 
         return max_distance, cone_angle
 
+    def _open_active_result_visualization(self) -> None:
+        if self._active_result_kind == "raycast":
+            self._view_raycast_result()
+        else:
+            self._show_result_in_viewer()
+
     def _show_result_in_viewer(self) -> None:
-        self.stack.set_visible_child_name("visualizacion")
         if self.viewer is not None and self.viewer.is_running():
             self._apply_viewer_settings()
         else:
@@ -2178,7 +4360,7 @@ class AuroraGUI:
 
     def _open_viewer(self) -> None:
         base_file = Path(self.base_path)
-        if not base_file.exists():
+        if not base_file.is_file():
             self._show_error("Error", f"No se encontro la nube base:\n{base_file}")
             return
 
@@ -2192,7 +4374,7 @@ class AuroraGUI:
             self._show_error("Error", str(exc))
             return
 
-        self.viewer = LiveViewer(base_cloud)
+        self.viewer = LiveViewer(base_cloud, log=self._log)
         self.viewer.start()
         self.close_viewer_button.set_sensitive(True)
         self._apply_viewer_settings()
@@ -2203,6 +4385,49 @@ class AuroraGUI:
             self.viewer.stop()
             self.viewer = None
         self.close_viewer_button.set_sensitive(False)
+        self._clear_stream_ui()
+
+    def _clear_stream_ui(self) -> None:
+        self.stream_toggle_button.set_label("Iniciar transmision")
+        self.stream_url_label.set_text("")
+        self.stream_qr_image.clear()
+
+    def _set_stream_qr(self, url: str) -> None:
+        qr_img = make_qr_image(url).resize((160, 160))
+        data = qr_img.tobytes()
+        pixbuf = GdkPixbuf.Pixbuf.new_from_data(
+            data, GdkPixbuf.Colorspace.RGB, False, 8, qr_img.width, qr_img.height, qr_img.width * 3
+        )
+        self.stream_qr_image.set_from_pixbuf(pixbuf)
+        # GdkPixbuf.new_from_data no copia el buffer: se guarda una referencia para que no lo recolecte el GC.
+        self.stream_qr_image._qr_data_ref = data
+
+    def _toggle_stream_clicked(self) -> None:
+        if self.viewer is not None and self.viewer.is_streaming():
+            self.viewer.stop_stream()
+            self._clear_stream_ui()
+            self._log("Transmision al celular detenida.")
+            return
+
+        if self.viewer is None or not self.viewer.is_running():
+            if self.sensor_connection is not None:
+                if not self._ensure_live_capture_running():
+                    return
+            else:
+                self._open_viewer()
+                if self.viewer is None:
+                    return
+
+        try:
+            url = self.viewer.start_stream()
+        except Exception as exc:
+            self._show_error("Error al iniciar la transmision", str(exc))
+            return
+
+        self.stream_toggle_button.set_label("Detener transmision")
+        self.stream_url_label.set_text(f"Escanea con el celular (misma red WiFi):\n{url}")
+        self._set_stream_qr(url)
+        self._log(f"Transmision al celular activa en: {url}")
 
     def _on_color_mode_changed(self) -> None:
         self.band_revealer.set_reveal_child(self.color_banded_rb.get_active())
@@ -2210,18 +4435,32 @@ class AuroraGUI:
         self._apply_viewer_settings()
 
     def _apply_viewer_settings(self) -> None:
-        if self.viewer is None:
+        if not hasattr(self, "live_max_distance_entry"):
             return
         try:
             low_m, high_m = self._band_thresholds_m()
-        except ValueError:
-            low_m, high_m = 0.02, 0.05
-        max_distance_text = self.max_distance_entry.get_text().strip()
-        max_distance = float(max_distance_text) if max_distance_text else None
-        try:
-            target_thickness_m = float(self.target_thickness_entry.get_text() or 12) / 100.0
-        except ValueError:
-            target_thickness_m = 0.12
+            max_distance_text = self.max_distance_entry.get_text().strip()
+            max_distance = float(max_distance_text.replace(",", ".")) if max_distance_text else None
+            if max_distance is not None and (not np.isfinite(max_distance) or max_distance <= 0):
+                raise ValueError("El tope de la escala debe ser mayor que cero.")
+            target_thickness_m = self._parse_positive_entry(
+                self.target_thickness_entry, "El espesor objetivo"
+            ) / 100.0
+            live_max_distance, live_cone_angle = self._parse_live_filter_params()
+        except ValueError as exc:
+            if hasattr(self, "visualization_status_label"):
+                self.visualization_status_label.set_markup(
+                    f'<span foreground="{COLOR_ERROR}">Ajustes no aplicados: '
+                    f"{GLib.markup_escape_text(str(exc))}</span>"
+                )
+            return
+
+        if self.viewer is None:
+            if hasattr(self, "visualization_status_label"):
+                self.visualization_status_label.set_text(
+                    "Ajustes validos; se aplicaran al abrir la vista 3D."
+                )
+            return
 
         if self.color_banded_rb.get_active():
             color_mode = "banded"
@@ -2231,12 +4470,6 @@ class AuroraGUI:
             color_mode = "continuous"
         self.viewer.set_color_mode(color_mode, low_m, high_m, max_distance, target_thickness_m)
         self.viewer.set_show_updated(self.show_updated_check.get_active())
-
-        try:
-            live_max_distance, live_cone_angle = self._parse_live_filter_params()
-        except ValueError as exc:
-            self._log(f"Parametros de captura en vivo invalidos: {exc}. Se usan valores por defecto.")
-            live_max_distance, live_cone_angle = None, None
         self.viewer.set_live_filters(
             max_distance_m=live_max_distance,
             cone_angle_deg=live_cone_angle,
@@ -2250,6 +4483,8 @@ class AuroraGUI:
         else:
             self.viewer.set_live_sensor(None)
             self._push_static_result_to_viewer()
+        if hasattr(self, "visualization_status_label"):
+            self.visualization_status_label.set_text("Ajustes aplicados a la vista 3D.")
 
     def _push_static_result_to_viewer(self) -> None:
         if self.viewer is None or not self.source_static_rb.get_active():
@@ -2259,7 +4494,7 @@ class AuroraGUI:
                 points = np.asarray(self.result.updated_cloud.points)
             else:
                 updated_file = Path(self.updated_path)
-                if not updated_file.exists():
+                if not updated_file.is_file():
                     return
                 points = np.asarray(load_point_cloud(updated_file).points)
         except Exception as exc:
@@ -2276,12 +4511,14 @@ class AuroraGUI:
 
     def _on_close(self, *_args) -> None:
         self._close_viewer()
+        self._close_imu_pose_viewer()
         if self.sensor_connection is not None:
             try:
                 aurora_sensor.disconnect(self.sensor_connection)
             except Exception:
                 pass
-        Gtk.main_quit()
+        if Gtk.main_level() > 0:
+            Gtk.main_quit()
 
 
 def main() -> None:
@@ -2296,6 +4533,9 @@ def main() -> None:
     )
 
     window = Gtk.Window()
+    rgba_visual = Gdk.Screen.get_default().get_rgba_visual()
+    if rgba_visual is not None:
+        window.set_visual(rgba_visual)
     window.set_title("Aurora — Medicion de espesor de shotcrete")
     AuroraGUI(window)
     window.show_all()
