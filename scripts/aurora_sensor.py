@@ -324,7 +324,7 @@ def read_frame_points_and_colors(
         axis_idx = axis_map.get(forward_axis.lower())
         if axis_idx is None:
             raise ValueError("El eje frontal debe ser x, y o z.")
-        safe_distance = np.where(distance == 0, 1e-8, distance)
+        safe_distance = np.where(np.isfinite(distance) & (distance > 0), distance, 1.0)
         cos_theta = np.clip(points[:, axis_idx] / safe_distance, -1.0, 1.0)
         angle_deg = np.degrees(np.arccos(cos_theta))
         valid &= angle_deg <= (cone_angle_deg / 2.0)

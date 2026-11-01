@@ -63,6 +63,7 @@ La GUI se puede comprobar en escritorio, pero la precisión de la guía IMU, la 
 - Se repitió el flujo dentro de GTK: recorrió las nueve páginas, conectó el sensor, mostró el spinner, capturó 1 s y guardó un `.ply` de 326.889 puntos sin errores.
 - Tras conservar la intensidad de la imagen monocroma del sensor, se repitió la captura desde GTK: guardó 342.607 puntos con contraste real en grises (rango percentil 5–95 de luminancia: 0,180). La prueba guardó el `.ply` más `capture_ref.npz` y `capture_pose.npz` en una carpeta temporal.
 - Se abrieron en escritorio tanto la vista 3D estática de `data/seg y se demora .ply` como la vista en vivo alimentada por un frame NPZ de prueba. Ambas permanecieron activas hasta el cierre de la prueba, sin excepciones.
+- La vista en vivo conectada al Aurora actualiza frames y conserva la intensidad gris sincronizada del sensor cuando todavía no hay nube base; al existir una base, sigue mostrando el mapa de comparación. Una prueba real transmitió 20.889 puntos con rango de luminancia percentil 5–95 de 0,220.
 - Se ejecutaron Cloud-to-Cloud sobre capturas recortadas reales y se reconstruyeron y midieron mallas Poisson y Delaunay sobre el mismo par; ambos métodos generaron CSV, histograma y mapa de espesor en directorios temporales.
 - `compileall`, `py_compile` y `git diff --check` terminaron correctamente.
 

@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import open3d as o3d
 
-from aurora_sensor import AuroraConnection, read_frame_points
+from aurora_sensor import AuroraConnection, read_frame_points_and_colors
 from live_stream_server import LiveStreamServer
 from pointcloud_core import (
     _create_q_only_visualizer,
@@ -216,16 +216,25 @@ class LiveViewer:
             transformed[:, 2] *= -1.0
         return transformed
 
-    def _colorize(self, points_xyz: np.ndarray) -> o3d.geometry.PointCloud:
+    def _colorize(
+        self,
+        points_xyz: np.ndarray,
+        sensor_colors: np.ndarray | None = None,
+    ) -> o3d.geometry.PointCloud:
         cloud = o3d.geometry.PointCloud()
         cloud.points = o3d.utility.Vector3dVector(points_xyz)
         with self._lock:
             reference_cloud = o3d.geometry.PointCloud(self._distance_reference_cloud)
         if len(reference_cloud.points) == 0:
-            # Live viewing does not require a saved baseline. Until the user
-            # fixes a live baseline, show the sensor cloud in one neutral color
-            # instead of trying to compute distances against an empty cloud.
-            cloud.paint_uniform_color((0.10, 0.72, 0.95))
+            # Without a comparison baseline, show the Aurora's synchronized
+            # camera image colors (normally its native grayscale) instead of
+            # implying a thickness map with a fixed cyan color.
+            if sensor_colors is not None and np.asarray(sensor_colors).shape == points_xyz.shape:
+                cloud.colors = o3d.utility.Vector3dVector(
+                    np.clip(np.asarray(sensor_colors), 0.0, 1.0)
+                )
+            else:
+                cloud.paint_uniform_color((0.72, 0.72, 0.72))
             return cloud
         distances = np.asarray(cloud.compute_point_cloud_distance(reference_cloud))
         with self._lock:
@@ -301,7 +310,7 @@ class LiveViewer:
             elif connection is not None:
                 now = time.time()
                 if now - last_sensor_poll > 0.08:
-                    points = read_frame_points(
+                    points, colors = read_frame_points_and_colors(
                         connection,
                         max_points=40000,
                         timeout_ms=50,
@@ -313,7 +322,7 @@ class LiveViewer:
                         points = self._apply_axis_transform(points, live_invert_y, live_invert_z)
                         with self._lock:
                             self._last_live_points = points.copy()
-                        new_colored = self._colorize(points)
+                        new_colored = self._colorize(points, colors)
                     last_sensor_poll = now
             elif pending_static is not None:
                 new_colored = self._colorize(np.asarray(pending_static.points))
@@ -368,7 +377,7 @@ class LiveViewer:
             now = time.monotonic()
             if connection is not None and now - last_sensor_poll >= 0.08:
                 try:
-                    points = read_frame_points(
+                    points, colors = read_frame_points_and_colors(
                         connection,
                         max_points=40000,
                         timeout_ms=50,
@@ -380,7 +389,7 @@ class LiveViewer:
                         points = self._apply_axis_transform(points, invert_y, invert_z)
                         with self._lock:
                             self._last_live_points = points.copy()
-                        colored = self._colorize(points)
+                        colored = self._colorize(points, colors)
                         path = self.live_output_path
                         if path is not None:
                             path.parent.mkdir(parents=True, exist_ok=True)
