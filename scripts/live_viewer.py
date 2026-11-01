@@ -21,7 +21,14 @@ import open3d as o3d
 
 from aurora_sensor import AuroraConnection, read_frame_points
 from live_stream_server import LiveStreamServer
-from pointcloud_core import build_heatmap_cloud, build_heatmap_cloud_banded, build_heatmap_cloud_six_bands
+from pointcloud_core import (
+    _create_q_only_visualizer,
+    _apply_sdk_render_style,
+    _start_at_sensor_pov,
+    build_heatmap_cloud,
+    build_heatmap_cloud_banded,
+    build_heatmap_cloud_six_bands,
+)
 
 LIVE_STREAM_INTERVAL_S = 0.2  # ritmo de envio al celular, mas lento que el redibujado local
 
@@ -219,15 +226,17 @@ class LiveViewer:
         return build_heatmap_cloud(cloud, distances, max_d)
 
     def _run(self) -> None:
-        vis = o3d.visualization.Visualizer()
-        vis.create_window(window_name="Aurora - Vista 3D", width=1024, height=768)
+        vis = _create_q_only_visualizer()
+        vis.create_window(window_name="Aurora - Vista 3D")
 
         base_vis = o3d.geometry.PointCloud(self._base_cloud_initial)
         vis.add_geometry(base_vis)
-
-        opt = vis.get_render_option()
-        opt.background_color = np.asarray([0.059, 0.067, 0.082])  # #0F1115
-        opt.point_size = 1.5
+        vis.add_geometry(
+            o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5),
+            reset_bounding_box=False,
+        )
+        _apply_sdk_render_style(vis, base_vis)
+        _start_at_sensor_pov(vis)
 
         updated_vis = o3d.geometry.PointCloud()
         updated_added = False

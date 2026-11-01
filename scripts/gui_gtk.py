@@ -17,9 +17,15 @@ from __future__ import annotations
 
 import os
 import math
+import json
 import cairo
 import queue
+import shutil
+import subprocess
+import sys
+import tempfile
 import threading
+import time
 from pathlib import Path
 
 # Pide a GTK que muestre Gtk.FileChooserNative mediante el portal del escritorio
@@ -40,11 +46,21 @@ from live_stream_server import make_qr_image  # noqa: E402
 from live_viewer import LiveViewer  # noqa: E402
 from pose_alignment_viewer import PoseAlignmentViewer  # noqa: E402
 from pointcloud_core import (  # noqa: E402
+    DistanceStats,
     PipelineParams,
     RaycastPipelineParams,
+    RaycastPipelineResult,
     SIX_BAND_COLORS,
     SIX_BAND_LABELS,
+    HEATMAP_COLOR_HIGH,
+    HEATMAP_COLOR_LOW,
+    BAND_COLOR_HIGH,
+    BAND_COLOR_LOW,
+    BAND_COLOR_MEDIUM,
     apply_rigid_transform,
+    build_heatmap_cloud,
+    build_heatmap_cloud_banded,
+    build_heatmap_cloud_six_bands,
     build_subtle_overlay_cloud,
     compute_c2c_distance,
     compute_rigid_transform,
@@ -56,18 +72,15 @@ from pointcloud_core import (  # noqa: E402
     load_reference_photo_file,
     load_reference_pose,
     reference_photo_path_for,
-    pick_crop_bounds,
     pick_crop_bounds_from_pair,
     pick_landmark_points,
     pick_landmark_points_from_photo,
     render_reference_photo_from_cloud,
     rigid_transform_rms_error,
     run_pipeline,
-    run_raycast_pipeline,
     save_reference_photo,
+    save_transformed_reference_photo,
     save_reference_pose,
-    show_point_cloud,
-    show_point_cloud_pair,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -436,25 +449,10 @@ entry {{
 }}
 
 entry:focus,
-spinbutton entry:focus,
 textview:focus {{
     outline: none;
     box-shadow: none;
     border: 1px solid #596579;
-}}
-
-spinbutton:focus {{
-    outline: none;
-    box-shadow: none;
-}}
-
-spinbutton button,
-spinbutton button:hover,
-spinbutton button:focus,
-spinbutton button:active {{
-    outline: none;
-    box-shadow: none;
-    border-color: transparent;
 }}
 
 checkbutton, radiobutton {{
@@ -532,7 +530,7 @@ expander title {{
 }}
 
 textview.technical-log, textview.technical-log text {{
-    background-color: #13151D;
+    background-color: {COLOR_CARD};
     color: {COLOR_TEXT};
     font-family: "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
 }}
@@ -589,6 +587,13 @@ popover contents {{
     border-top: 1px solid rgba(255, 255, 255, 0.06);
 }}
 
+box.calculation-indicator {{
+    background-color: #171B23;
+    border: 1px solid #303A4B;
+    border-radius: 8px;
+    padding: 8px 10px;
+}}
+
 /* GTK themes draw a heavy blue focus halo by default; keep focus subtle across all pages. */
 *:focus {{
     outline: none;
@@ -635,6 +640,11 @@ class AuroraGUI:
         self.imu_hud_status_label: Gtk.Label | None = None
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.worker_thread: threading.Thread | None = None
+        self.external_viewer_processes: list[subprocess.Popen] = []
+        self.calculation_method = "cloud_to_cloud"
+        self._progress_timer_source: int | None = None
+        self._progress_started_at = 0.0
+        self._progress_stage = ""
 
         self._build_layout()
         GLib.timeout_add(150, self._poll_log_queue)
@@ -704,17 +714,18 @@ class AuroraGUI:
         self.stack.add_titled(self._build_imu_alignment_page(), "alineacion_imu", "Guia de pose IMU")
         self.stack.add_titled(self._build_alignment_page(), "alineacion", "Alineacion")
         self.stack.add_titled(self._build_prepare_clouds_page(), "preparar_nubes", "Preparar nubes")
-        self.stack.add_titled(self._build_processing_page(), "procesamiento", "Ajustes de analisis")
+        self.analysis_settings_widget = self._build_analysis_controls()
+        self.stack.add_titled(self._build_raycast_test_page(), "prueba_raycasting", "Raycasting (prueba)")
+        self.stack.add_titled(self._build_configuration_page(), "configuracion", "Parametros avanzados")
         self.stack.add_titled(self._build_results_page(), "resultados", "Resultados")
         self.stack.add_titled(self._build_embedded_test_page(), "prueba_embebida", "Comparacion (prueba)")
-        self.stack.add_titled(self._build_raycast_test_page(), "prueba_raycasting", "Raycasting (prueba)")
         for page_name in (
             "medicion_rapida",
             "captura",
             "alineacion_imu",
             "alineacion",
             "preparar_nubes",
-            "procesamiento",
+            "configuracion",
             "resultados",
             "prueba_embebida",
             "prueba_raycasting",
@@ -847,7 +858,7 @@ class AuroraGUI:
         add_page("Preparar nubes", "preparar_nubes")
 
         add_header("Configuracion")
-        add_page("Ajustes de analisis", "procesamiento")
+        add_page("Parametros avanzados", "configuracion")
 
         add_header("Resultados")
         add_page("Resultados del calculo", "resultados")
@@ -889,10 +900,6 @@ class AuroraGUI:
         status_frame, status_box = self._section("Estado del analisis")
         status_frame.get_style_context().add_class("status-bar")
         status_row = self._row(status_box)
-        self.status_spinner = Gtk.Spinner()
-        self.status_spinner.set_no_show_all(True)
-        self.status_spinner.set_visible(False)
-        status_row.pack_start(self.status_spinner, False, False, 0)
         self.status_label = Gtk.Label(label="Todavia no se calculo ningun resultado.", xalign=0)
         self.status_label.set_hexpand(True)
         status_row.pack_start(self.status_label, True, True, 0)
@@ -904,6 +911,18 @@ class AuroraGUI:
         self.generate_report_button.set_sensitive(False)
         self.generate_report_button.connect("clicked", lambda _b: self._generate_report())
         status_row.pack_end(self.generate_report_button, False, False, 0)
+        self.calculation_indicator = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.calculation_indicator.get_style_context().add_class("calculation-indicator")
+        self.calculation_indicator.set_no_show_all(True)
+        self.calculation_spinner = Gtk.Spinner()
+        self.calculation_spinner.set_size_request(20, 20)
+        self.calculation_indicator.pack_start(self.calculation_spinner, False, False, 0)
+        self.calculation_label = Gtk.Label(label="")
+        self.calculation_label.set_xalign(0)
+        self.calculation_label.set_hexpand(True)
+        self.calculation_indicator.pack_start(self.calculation_label, True, True, 0)
+        self.calculation_indicator.hide()
+        status_box.pack_start(self.calculation_indicator, False, True, 0)
         page.pack_start(status_frame, False, True, 0)
 
         stats_frame, stats_box = self._section("Estadisticas de espesor")
@@ -950,13 +969,85 @@ class AuroraGUI:
         self.result_mesh_actions.hide()
         page.pack_start(stats_frame, False, True, 0)
 
-        self._build_visualization_controls(page)
+        method_frame, method_box = self._section("Metodo y parametros principales")
+        self.results_method_box = method_box
+        method_row = self._row(method_box)
+        self.result_method_cloud_rb = Gtk.RadioButton.new_with_label_from_widget(None, "Cloud-to-Cloud")
+        self.result_method_mesh_rb = Gtk.RadioButton.new_with_label_from_widget(
+            self.result_method_cloud_rb, "Malla / Raycasting"
+        )
+        self.result_method_cloud_rb.connect(
+            "toggled", self._on_calculation_method_radio_toggled, "cloud_to_cloud"
+        )
+        self.result_method_mesh_rb.connect(
+            "toggled", self._on_calculation_method_radio_toggled, "raycast"
+        )
+        method_row.pack_start(self.result_method_cloud_rb, False, False, 0)
+        method_row.pack_start(self.result_method_mesh_rb, False, False, 0)
+
+        self.quick_c2c_frame, quick_c2c_box = self._section("Configuracion rapida Cloud-to-Cloud")
+        self.quick_c2c_frame.set_no_show_all(True)
+        for quick_row in (self.c2c_voxel_row, self.c2c_outliers_row):
+            quick_row.get_parent().remove(quick_row)
+            quick_c2c_box.pack_start(quick_row, False, False, 0)
+        self.quick_c2c_frame.hide()
+        method_box.pack_start(self.quick_c2c_frame, False, True, 0)
+
+        self.quick_mesh_method_row.get_parent().remove(self.quick_mesh_method_row)
+        self.quick_mesh_method_row.set_no_show_all(True)
+        self.quick_mesh_method_row.hide()
+        method_box.pack_start(self.quick_mesh_method_row, False, False, 0)
+        self.quick_mesh_voxel_row.get_parent().remove(self.quick_mesh_voxel_row)
+        self.quick_mesh_voxel_row.set_no_show_all(True)
+        self.quick_mesh_voxel_row.hide()
+        method_box.pack_start(self.quick_mesh_voxel_row, False, False, 0)
+        for mesh_parameter_row in (self.quick_delaunay_params_row, self.quick_poisson_params_row):
+            mesh_parameter_row.get_parent().remove(mesh_parameter_row)
+            mesh_parameter_row.set_no_show_all(True)
+            mesh_parameter_row.hide()
+            method_box.pack_start(mesh_parameter_row, False, False, 0)
+
+        self.results_ray_method_row = self._row(method_box)
+        self.results_ray_method_row.pack_start(Gtk.Label(label="Direccion de medicion:"), False, False, 0)
+        self.results_ray_method_combo = Gtk.ComboBoxText()
+        self.results_ray_method_combo.append("normal", "Normal a la superficie")
+        self.results_ray_method_combo.append("origin", "Desde el origen del sensor")
+        self.results_ray_method_combo.set_active_id("normal")
+        self.results_ray_method_combo.connect("changed", lambda _combo: self._on_results_ray_method_changed())
+        self.results_ray_method_row.pack_start(self.results_ray_method_combo, False, False, 0)
+        self.results_ray_method_row.set_no_show_all(True)
+        self.results_ray_method_row.hide()
+
+        self.results_manual_origin_row = self._row(method_box)
+        self.results_manual_origin_row.pack_start(Gtk.Label(label="Origen ANTES (x y z, m):"), False, False, 0)
+        self.results_base_origin_entry = Gtk.Entry()
+        self.results_base_origin_entry.set_text("0 0 0")
+        self.results_base_origin_entry.set_width_chars(18)
+        self.results_manual_origin_row.pack_start(self.results_base_origin_entry, False, False, 0)
+        self.results_manual_origin_row.pack_start(Gtk.Label(label="DESPUES:"), False, False, 0)
+        self.results_updated_origin_entry = Gtk.Entry()
+        self.results_updated_origin_entry.set_text("0 0 0")
+        self.results_updated_origin_entry.set_width_chars(18)
+        self.results_manual_origin_row.pack_start(self.results_updated_origin_entry, False, False, 0)
+        self.results_manual_origin_row.set_no_show_all(True)
+        self.results_manual_origin_row.hide()
+
+        action_row = self._row(method_box)
+        advanced_button = Gtk.Button(label="Opciones avanzadas")
+        advanced_button.connect("clicked", lambda _b: self.stack.set_visible_child_name("configuracion"))
+        action_row.pack_start(advanced_button, False, False, 0)
+        self.result_recalculate_button = Gtk.Button(label="Recalcular espesor")
+        self.result_recalculate_button.get_style_context().add_class("suggested-action")
+        self.result_recalculate_button.set_sensitive(False)
+        self.result_recalculate_button.connect("clicked", lambda _b: self._recalculate_from_results())
+        action_row.pack_start(self.result_recalculate_button, False, False, 0)
+        page.pack_start(method_frame, False, True, 0)
+        self._on_results_method_changed()
 
         log_frame, log_box = self._section("Registro del calculo")
         log_expander = Gtk.Expander(label="Detalles tecnicos")
-        log_expander.set_expanded(True)
+        log_expander.set_expanded(False)
         log_scroller = Gtk.ScrolledWindow()
-        log_scroller.get_style_context().add_class("expander-content")
         log_scroller.set_min_content_height(220)
         log_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.log_view = Gtk.TextView()
@@ -975,6 +1066,15 @@ class AuroraGUI:
         log_box.pack_start(log_expander, False, True, 0)
         page.pack_start(log_frame, False, True, 0)
 
+        return self._scrolled(page)
+
+    def _build_configuration_page(self) -> Gtk.Widget:
+        page = self._new_page()
+        advanced_frame, advanced_box = self._section("Parametros avanzados de calculo")
+        advanced_box.pack_start(self.analysis_settings_widget, False, True, 0)
+        advanced_box.pack_start(self.quick_mesh_expander, False, True, 0)
+        page.pack_start(advanced_frame, False, True, 0)
+        self._build_visualization_controls(page)
         return self._scrolled(page)
 
     def _build_quick_measurement_page(self) -> Gtk.Widget:
@@ -1059,66 +1159,88 @@ class AuroraGUI:
         method_note.set_line_wrap(True)
         method_box.pack_start(method_note, False, False, 0)
 
-        mesh_expander = Gtk.Expander(label="Opcional · crear malla para medir el espesor")
+        mesh_expander = Gtk.Expander(label="Opciones avanzadas de malla")
         mesh_expander.set_expanded(False)
+        self.quick_mesh_expander = mesh_expander
         mesh_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         mesh_box.get_style_context().add_class("expander-content")
         self.quick_mesh_check = Gtk.CheckButton(label="Usar una malla para calcular el espesor")
-        mesh_box.pack_start(self.quick_mesh_check, False, False, 0)
-        mesh_row = self._row(mesh_box)
-        mesh_row.set_sensitive(False)
-        self.quick_mesh_check.connect(
-            "toggled", lambda check: mesh_row.set_sensitive(check.get_active())
+        self.quick_mesh_voxel_row = self._row(mesh_box)
+        self.quick_mesh_voxel_row.pack_start(Gtk.Label(label="Resolucion de malla (voxel, m):"), False, False, 0)
+        self.quick_mesh_voxel_entry = self._numeric_entry("0.01", 8)
+        self.quick_mesh_voxel_entry.set_tooltip_text(
+            "Reduce puntos muy cercanos antes de reconstruir la malla. 0 desactiva el muestreo; "
+            "en nubes densas puede hacer que el calculo tarde mucho."
         )
-        mesh_row.pack_start(Gtk.Label(label="Metodo de malla:"), False, False, 0)
+        self.quick_mesh_voxel_row.pack_start(self.quick_mesh_voxel_entry, False, False, 0)
+        self.quick_mesh_method_row = self._row(mesh_box)
+        self.quick_mesh_method_row.pack_start(Gtk.Label(label="Algoritmo de malla:"), False, False, 0)
         self.quick_poisson_rb = Gtk.RadioButton.new_with_label_from_widget(None, "Poisson")
-        mesh_row.pack_start(self.quick_poisson_rb, False, False, 0)
+        self.quick_mesh_method_row.pack_start(self.quick_poisson_rb, False, False, 0)
         self.quick_delaunay_rb = Gtk.RadioButton.new_with_label_from_widget(
             self.quick_poisson_rb, "Delaunay"
         )
-        mesh_row.pack_start(self.quick_delaunay_rb, False, False, 0)
-        mesh_detail_row = self._row(mesh_box)
-        mesh_detail_row.set_sensitive(False)
-        self.quick_mesh_check.connect(
-            "toggled", lambda check: mesh_detail_row.set_sensitive(check.get_active())
+        self.quick_mesh_method_row.pack_start(self.quick_delaunay_rb, False, False, 0)
+        self.quick_delaunay_params_row = self._row(mesh_box)
+        self.quick_delaunay_params_row.pack_start(Gtk.Label(label="Limite Delaunay:"), False, False, 0)
+        self.quick_delaunay_trim = self._numeric_entry("4.0", 7)
+        self.quick_delaunay_trim.set_tooltip_text(
+            "Descarta triangulos demasiado largos respecto al borde tipico de la nube."
         )
-        mesh_detail_row.pack_start(Gtk.Label(label="Profundidad Poisson:"), False, False, 0)
-        self.quick_poisson_depth = Gtk.SpinButton.new_with_range(5, 12, 1)
-        self.quick_poisson_depth.set_value(9)
+        self.quick_delaunay_trim.set_sensitive(False)
+        self.quick_delaunay_params_row.pack_start(self.quick_delaunay_trim, False, False, 0)
+        self.quick_poisson_params_row = self._row(mesh_box)
+        self.quick_poisson_params_row.pack_start(Gtk.Label(label="Profundidad Poisson:"), False, False, 0)
+        self.quick_poisson_depth = self._numeric_entry("9", 7, integer=True)
         self.quick_poisson_depth.set_tooltip_text(
             "Menor profundidad genera una superficie menos detallada y puede reducir picos pequeños."
         )
-        mesh_detail_row.pack_start(self.quick_poisson_depth, False, False, 0)
+        self.quick_poisson_params_row.pack_start(self.quick_poisson_depth, False, False, 0)
+        mesh_advanced_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        mesh_advanced_box.get_style_context().add_class("expander-content")
+        density_row = self._row(mesh_advanced_box)
+        density_row.pack_start(Gtk.Label(label="Recorte de densidad Poisson:"), False, False, 0)
+        self.quick_density_trim = self._numeric_entry("0.02", 7)
+        self.quick_density_trim.set_tooltip_text(
+            "Elimina los vertices de menor densidad de Poisson en los bordes de la superficie."
+        )
+        density_row.pack_start(self.quick_density_trim, False, False, 0)
         self.quick_smooth_check = Gtk.CheckButton(label="Suavizar malla (Taubin)")
         self.quick_smooth_check.set_tooltip_text(
             "Modifica la superficie usada para medir; compara el espesor con y sin suavizado."
         )
-        mesh_detail_row.pack_start(self.quick_smooth_check, False, False, 0)
-        self.quick_smooth_iterations = Gtk.SpinButton.new_with_range(1, 30, 1)
-        self.quick_smooth_iterations.set_value(5)
+        smooth_row = self._row(mesh_advanced_box)
+        smooth_row.pack_start(self.quick_smooth_check, False, False, 0)
+        self.quick_smooth_iterations = self._numeric_entry("5", 7, integer=True)
         self.quick_smooth_iterations.set_sensitive(False)
         self.quick_smooth_check.connect(
             "toggled", lambda check: self.quick_smooth_iterations.set_sensitive(check.get_active())
         )
-        mesh_detail_row.pack_start(Gtk.Label(label="Iteraciones:"), False, False, 0)
-        mesh_detail_row.pack_start(self.quick_smooth_iterations, False, False, 0)
-        self.quick_delaunay_rb.connect(
-            "toggled", lambda button: self.quick_poisson_depth.set_sensitive(not button.get_active())
+        smooth_row.pack_start(Gtk.Label(label="Iteraciones:"), False, False, 0)
+        smooth_row.pack_start(self.quick_smooth_iterations, False, False, 0)
+        ray_limit_row = self._row(mesh_advanced_box)
+        ray_limit_row.pack_start(Gtk.Label(label="Limite de espesor (m, opcional):"), False, False, 0)
+        self.quick_ray_max_distance_entry = Gtk.Entry()
+        self.quick_ray_max_distance_entry.set_width_chars(8)
+        self.quick_ray_max_distance_entry.set_tooltip_text(
+            "Descarta impactos a distancias mayores. Dejalo vacio para no limitar."
         )
+        ray_limit_row.pack_start(self.quick_ray_max_distance_entry, False, False, 0)
         mesh_explanation = Gtk.Label(
             label=(
-                "Activa la casilla para reconstruir las superficies antes de medir. Poisson suele "
-                "convenir para una captura completa; Delaunay, para una region local recortada. "
-                "Si la casilla queda desactivada, se usa Cloud-to-Cloud sin crear mallas. "
+                "En Resultados, elige Malla / Raycasting para reconstruir las superficies. Poisson crea "
+                "una superficie continua; Delaunay triangula directamente los puntos. "
+                "Cloud-to-Cloud mide distancias sin crear mallas. "
                 "Bajar la profundidad Poisson o activar Taubin reduce irregularidades, pero "
                 "tambien puede cambiar el espesor calculado; deja Taubin apagado para medir sin suavizado."
             ),
             xalign=0,
         )
         mesh_explanation.set_line_wrap(True)
-        mesh_box.pack_start(mesh_explanation, False, False, 0)
+        mesh_advanced_box.pack_start(mesh_explanation, False, False, 0)
+        mesh_box.pack_start(mesh_advanced_box, False, False, 0)
+        self.quick_delaunay_rb.connect("toggled", self._on_quick_mesh_method_toggled)
         mesh_expander.add(mesh_box)
-        method_box.pack_start(mesh_expander, False, False, 0)
 
         self.quick_calculate_button = Gtk.Button(label="Calcular espesor")
         self.quick_calculate_button.get_style_context().add_class("suggested-action")
@@ -1138,8 +1260,8 @@ class AuroraGUI:
         self._hide_quick_mesh_result_actions()
 
         extra_row = self._row(method_box)
-        advanced_button = Gtk.Button(label="Abrir ajustes avanzados")
-        advanced_button.connect("clicked", lambda _b: self.stack.set_visible_child_name("procesamiento"))
+        advanced_button = Gtk.Button(label="Parametros avanzados")
+        advanced_button.connect("clicked", lambda _b: self.stack.set_visible_child_name("configuracion"))
         extra_row.pack_start(advanced_button, False, False, 0)
         page.pack_start(method_frame, False, True, 0)
 
@@ -1166,6 +1288,84 @@ class AuroraGUI:
             return
         self.stack.set_visible_child_name("captura")
         self._capture_clicked(target)
+
+    def _on_results_method_changed(self) -> None:
+        use_mesh = self.calculation_method == "raycast"
+        self._sync_calculation_method_radios()
+        self.quick_mesh_check.set_active(use_mesh)
+        self._show_control_row(self.quick_c2c_frame, not use_mesh)
+        self._show_control_row(self.quick_mesh_method_row, use_mesh)
+        self._show_control_row(self.quick_mesh_voxel_row, use_mesh)
+        use_delaunay = self.quick_delaunay_rb.get_active()
+        self._show_control_row(self.quick_delaunay_params_row, use_mesh and use_delaunay)
+        self._show_control_row(self.quick_poisson_params_row, use_mesh and not use_delaunay)
+        self._show_control_row(self.results_ray_method_row, use_mesh)
+        self._on_results_ray_method_changed()
+
+    @staticmethod
+    def _show_control_row(widget: Gtk.Widget, show: bool) -> None:
+        if show:
+            widget.set_no_show_all(False)
+            widget.show_all()
+        else:
+            widget.hide()
+            widget.set_no_show_all(True)
+
+    def _sync_calculation_method_radios(self) -> None:
+        use_mesh = self.calculation_method == "raycast"
+        for name, active in (
+            ("result_method_cloud_rb", not use_mesh),
+            ("result_method_mesh_rb", use_mesh),
+        ):
+            button = getattr(self, name, None)
+            if button is not None and button.get_active() != active:
+                button.set_active(active)
+
+    def _on_calculation_method_radio_toggled(self, button, method_id: str) -> None:
+        if not button.get_active() or self.calculation_method == method_id:
+            return
+        self.calculation_method = method_id
+        self._sync_calculation_method_radios()
+        self._on_results_method_changed()
+
+    def _set_calculation_method(self, method_id: str) -> None:
+        if method_id not in {"cloud_to_cloud", "raycast"}:
+            return
+        self.calculation_method = method_id
+        self._sync_calculation_method_radios()
+        self._on_results_method_changed()
+
+    def _on_results_ray_method_changed(self) -> None:
+        if not hasattr(self, "results_manual_origin_row"):
+            return
+        show_origin = (
+            self.calculation_method == "raycast"
+            and self.results_ray_method_combo.get_active_id() == "origin"
+        )
+        self._show_control_row(self.results_manual_origin_row, show_origin)
+
+    def _on_quick_mesh_method_toggled(self, button) -> None:
+        use_delaunay = button.get_active()
+        self.quick_poisson_depth.set_sensitive(not use_delaunay)
+        self.quick_density_trim.set_sensitive(not use_delaunay)
+        self.quick_delaunay_trim.set_sensitive(use_delaunay)
+        if hasattr(self, "quick_delaunay_params_row"):
+            use_mesh = self.calculation_method == "raycast"
+            self._show_control_row(self.quick_delaunay_params_row, use_mesh and use_delaunay)
+            self._show_control_row(self.quick_poisson_params_row, use_mesh and not use_delaunay)
+
+    def _recalculate_from_results(self) -> None:
+        if self.worker_thread and self.worker_thread.is_alive():
+            self._show_warning("En progreso", "Espera a que termine el calculo actual.")
+            return
+        if self.calculation_method == "raycast":
+            self.raycast_mesh_poisson_rb.set_active(self.quick_poisson_rb.get_active())
+            self.raycast_mesh_delaunay_rb.set_active(self.quick_delaunay_rb.get_active())
+            self.raycast_ray_origin_rb.set_active(self.results_ray_method_combo.get_active_id() == "origin")
+            self.raycast_ray_normal_rb.set_active(self.results_ray_method_combo.get_active_id() != "origin")
+            self.raycast_base_origin_entry.set_text(self.results_base_origin_entry.get_text())
+            self.raycast_updated_origin_entry.set_text(self.results_updated_origin_entry.get_text())
+        self._quick_calculate()
 
     def _quick_calculate(self) -> None:
         if not self.base_path or not Path(self.base_path).is_file():
@@ -1218,11 +1418,20 @@ class AuroraGUI:
             else:
                 self.alignment_applied = True
 
-        self.quick_status_label.set_text("Calculando... puedes seguir el progreso en Detalles tecnicos.")
+        self.quick_status_label.set_text("Calculando espesor; el estado de carga y la etapa aparecen en Resultados.")
         if self.quick_mesh_check.get_active():
             self.raycast_mesh_poisson_rb.set_active(self.quick_poisson_rb.get_active())
             self.raycast_mesh_delaunay_rb.set_active(self.quick_delaunay_rb.get_active())
-            self.raycast_ray_normal_rb.set_active(True)
+            use_origin = (
+                hasattr(self, "results_ray_method_combo")
+                and self.calculation_method == "raycast"
+                and self.results_ray_method_combo.get_active_id() == "origin"
+            )
+            self.raycast_ray_origin_rb.set_active(use_origin)
+            self.raycast_ray_normal_rb.set_active(not use_origin)
+            if use_origin:
+                self.raycast_base_origin_entry.set_text(self.results_base_origin_entry.get_text())
+                self.raycast_updated_origin_entry.set_text(self.results_updated_origin_entry.get_text())
             self._run_raycast_clicked()
         else:
             self._run_pipeline_clicked()
@@ -1296,6 +1505,7 @@ class AuroraGUI:
         else:
             self.quick_alignment_status.set_text("Las poses IMU se verifican cuando ambas capturas estan listas.")
             self.quick_status_label.set_text("Carga las nubes antes y despues para comenzar.")
+        self._refresh_recalculate_button()
 
     # -- Pagina: Captura ---------------------------------------------------------
 
@@ -1375,7 +1585,7 @@ class AuroraGUI:
         row.pack_start(self.capture_status_label, False, False, 0)
 
         capture_options_expander = Gtk.Expander(label="Ajustes de captura (opcional)")
-        capture_options_expander.set_expanded(True)
+        capture_options_expander.set_expanded(False)
         capture_options_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         capture_options_box.get_style_context().add_class("expander-content")
         capture_options_expander.add(capture_options_box)
@@ -1441,7 +1651,7 @@ class AuroraGUI:
         )
 
         live_tools_expander = Gtk.Expander(label="Herramientas de vista en vivo (opcional)")
-        live_tools_expander.set_expanded(True)
+        live_tools_expander.set_expanded(False)
         live_tools_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         live_tools_box.get_style_context().add_class("expander-content")
         live_tools_expander.add(live_tools_box)
@@ -1696,7 +1906,6 @@ class AuroraGUI:
         box.pack_start(separator, False, False, 0)
 
         total_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        total_row.pack_start(Gtk.Label(label="Distancia total:"), False, False, 0)
         total_caption = Gtk.Label(label="Distancia total:")
         total_row.pack_start(total_caption, False, False, 0)
         total_label = Gtk.Label(label="")
@@ -1864,8 +2073,7 @@ class AuroraGUI:
             self.open_result_viewer_button.set_label("Abrir vista 3D")
             self.result_mesh_actions.set_no_show_all(True)
             self.result_mesh_actions.hide()
-            self.status_spinner.stop()
-            self.status_spinner.set_visible(False)
+            self._finish_calculation_progress(False)
         if hasattr(self, "raycast_status_label"):
             self.raycast_status_label.set_text("(nada calculado todavia)")
 
@@ -1881,8 +2089,11 @@ class AuroraGUI:
             label = getattr(self, name, None)
             if label is not None:
                 self._set_path_label(label, path)
+        self._sync_test_crop_input_path("before", path)
         if hasattr(self, "landmark_base_manual_photo_label"):
             self.landmark_base_manual_photo_label.set_text("")
+        if hasattr(self, "imu_reference_label"):
+            self._refresh_imu_reference()
         self._refresh_quick_status()
 
     def _set_updated_path(self, path: str) -> None:
@@ -1897,9 +2108,38 @@ class AuroraGUI:
             label = getattr(self, name, None)
             if label is not None:
                 self._set_path_label(label, path)
+        self._sync_test_crop_input_path("after", path)
         if hasattr(self, "landmark_updated_manual_photo_label"):
             self.landmark_updated_manual_photo_label.set_text("")
+        if hasattr(self, "imu_reference_label"):
+            self._refresh_imu_reference()
         self._refresh_quick_status()
+
+    def _sync_test_crop_input_path(self, stage: str, path: str) -> None:
+        """Keep Prepare Clouds bound to the shared ANTES/DESPUES selections."""
+        if not hasattr(self, "test_crop_before_path"):
+            return
+        if stage == "before":
+            self.test_crop_before_path = path
+            self._set_path_label(self.test_crop_before_label, path)
+            if not self.test_crop_output_dir_is_custom:
+                self.test_crop_output_dir = Path(path).parent if path else None
+                self._set_test_crop_output_dir_label()
+        else:
+            self.test_crop_after_path = path
+            self._set_path_label(self.test_crop_after_label, path)
+
+        self.test_crop_output_paths = None
+        self.test_crop_bounds = None
+        self.test_crop_bounds_label.set_text("Limites sin definir")
+        self.test_crop_use_pair_button.set_sensitive(False)
+        if path:
+            self.test_crop_status_label.set_text(
+                "Las nubes ANTES/DESPUES están sincronizadas. Revisa que compartan coordenadas y vuelve a definir el recorte."
+            )
+        else:
+            self.test_crop_status_label.set_text("Carga ambas nubes para empezar.")
+        self._refresh_test_crop_controls()
 
     # -- Pagina: Alineacion (Procrustes por puntos de referencia) ---------------
 
@@ -2078,41 +2318,58 @@ class AuroraGUI:
             self._show_error("Error", f"No se encontro el archivo:\n{path}")
             return
 
-        try:
+        def worker():
             if use_photo:
-                if manual_photo_path:
-                    reference = load_reference_photo_file(Path(manual_photo_path))
-                else:
-                    reference = load_reference_photo(path)
-                if reference is None:
-                    self._show_warning(
-                        "Sin foto de referencia",
-                        f"No hay foto de referencia guardada para:\n{path}\n\n"
-                        "Solo se genera al capturar esa nube con el sensor Aurora conectado. "
-                        "Si tienes el archivo _ref.npz en otra ubicacion (ej. el .ply se "
-                        "movio/renombro), usa 'Cargar foto de referencia...'. Si no, elige "
-                        "'Nube 3D' para este archivo.",
+                try:
+                    reference = (
+                        load_reference_photo_file(Path(manual_photo_path))
+                        if manual_photo_path
+                        else load_reference_photo(path)
                     )
+                    if reference is None:
+                        self._ui(self._on_alignment_pick_finished, which, use_photo, None, None, "missing_photo")
+                        return
+                    image, point_grid = reference
+                    title = (
+                        "Tunel original - click en cada punto de referencia, en orden, luego cerrar la ventana"
+                        if which == "base"
+                        else "Tunel con shotcrete - click en los MISMOS puntos, en el mismo orden, luego cerrar la ventana"
+                    )
+                    points = pick_landmark_points_from_photo(image, point_grid, title, log=self._log)
+                except Exception as exc:
+                    self._ui(self._on_alignment_pick_finished, which, use_photo, None, str(exc), None)
                     return
-                image, point_grid = reference
-                title = (
-                    "Tunel original - click en cada punto de referencia, en orden, luego cerrar la ventana"
-                    if which == "base"
-                    else "Tunel con shotcrete - click en los MISMOS puntos, en el mismo orden, luego cerrar la ventana"
-                )
-                points = pick_landmark_points_from_photo(image, point_grid, title, log=self._log)
             else:
-                cloud = load_point_cloud(path)
-                title = (
-                    "Tunel original - Shift+Click en cada punto de referencia, en orden, luego cerrar (Q)"
-                    if which == "base"
-                    else "Tunel con shotcrete - Elige los MISMOS puntos, en el mismo orden, luego cerrar (Q)"
-                )
-                points = pick_landmark_points(cloud, title)
-        except Exception as exc:
-            self._show_error("Error al elegir los puntos", str(exc))
-            return
+                try:
+                    cloud = load_point_cloud(path)
+                    title = (
+                        "Tunel original - Shift+Click en cada punto de referencia, en orden, luego cerrar (Q)"
+                        if which == "base"
+                        else "Tunel con shotcrete - Elige los MISMOS puntos, en el mismo orden, luego cerrar (Q)"
+                    )
+                    points = pick_landmark_points(cloud, title)
+                except Exception as exc:
+                    self._ui(self._on_alignment_pick_finished, which, use_photo, None, str(exc), None)
+                    return
+            self._ui(self._on_alignment_pick_finished, which, use_photo, points, None, None)
 
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_alignment_pick_finished(self, which, use_photo, points, error, warning) -> None:
+        if warning == "missing_photo":
+            path = self.base_path if which == "base" else self.updated_path
+            self._show_warning(
+                "Sin foto de referencia",
+                f"No hay foto de referencia guardada para:\n{path}\n\n"
+                "Solo se genera al capturar esa nube con el sensor Aurora conectado. "
+                "Si tienes el archivo _ref.npz en otra ubicacion (ej. el .ply se "
+                "movio/renombro), usa 'Cargar foto de referencia...'. Si no, elige "
+                "'Nube 3D' para este archivo.",
+            )
+            return
+        if error:
+            self._show_error("Error al elegir los puntos", error)
+            return
         if points is None:
             self._show_info("Sin seleccion", "Elige al menos 3 puntos antes de cerrar la ventana.")
             return
@@ -2147,16 +2404,32 @@ class AuroraGUI:
 
         self.apply_alignment_button.set_sensitive(False)
         self.alignment_result_label.set_text("Aplicando...")
+        updated_file = Path(self.updated_path)
+        base_pose = load_reference_pose(Path(self.base_path))
+        manual_photo_path = (
+            Path(self.landmark_updated_manual_photo_path)
+            if self.landmark_updated_source_photo_rb.get_active()
+            and self.landmark_updated_manual_photo_path
+            else reference_photo_path_for(updated_file)
+        )
+        if not manual_photo_path.is_file():
+            manual_photo_path = None
 
         def worker():
             try:
-                updated_file = Path(self.updated_path)
                 cloud = load_point_cloud(updated_file)
                 aligned = apply_rigid_transform(cloud, rotation, translation)
                 aligned_path = updated_file.with_name(updated_file.stem + "_alineado.ply")
                 import open3d as o3d
 
-                o3d.io.write_point_cloud(str(aligned_path), aligned)
+                if not o3d.io.write_point_cloud(str(aligned_path), aligned):
+                    raise OSError(f"No se pudo escribir la nube alineada: {aligned_path}")
+                if base_pose is not None:
+                    save_reference_pose(aligned_path, base_pose[0], base_pose[1])
+                if manual_photo_path is not None:
+                    save_transformed_reference_photo(
+                        manual_photo_path, aligned_path, rotation, translation
+                    )
             except Exception as exc:
                 self._ui(self._on_alignment_failed, str(exc))
                 return
@@ -2166,19 +2439,14 @@ class AuroraGUI:
 
     def _on_alignment_done(self, aligned_path: str, rms: float) -> None:
         self.apply_alignment_button.set_sensitive(True)
-        self.alignment_result_label.set_text(f"Error residual: {rms * 1000:.2f} mm — nube alineada guardada")
-        self._invalidate_results()
+        self.alignment_result_label.set_text(f"Error residual: {rms * 100:.2f} cm — nube alineada guardada")
+        self._set_updated_path(aligned_path)
         self.alignment_applied = True
-        self.updated_path = aligned_path
-        for name in ("updated_path_label", "raycast_updated_path_label", "quick_updated_path_label"):
-            label = getattr(self, name, None)
-            if label is not None:
-                self._set_path_label(label, aligned_path)
-        self.quick_alignment_status.set_text(f"Alineacion aplicada (residual: {rms * 1000:.2f} mm)")
+        self.quick_alignment_status.set_text(f"Alineacion aplicada (residual: {rms * 100:.2f} cm)")
         self._refresh_quick_status()
         self._show_info(
             "Alineacion aplicada",
-            f"Error residual en los puntos de referencia: {rms * 1000:.2f} mm.\n\n"
+            f"Error residual en los puntos de referencia: {rms * 100:.2f} cm.\n\n"
             f"Se guardo la nube alineada en:\n{aligned_path}\n\n"
             "Medicion rapida ya usa este archivo como nube DESPUES.",
         )
@@ -2219,28 +2487,23 @@ class AuroraGUI:
             aligned = apply_rigid_transform(cloud, R_rel, t_rel)
             aligned_path = updated_file.with_name(updated_file.stem + "_alineado_pose.ply")
             import open3d as o3d
-            o3d.io.write_point_cloud(str(aligned_path), aligned)
+            if not o3d.io.write_point_cloud(str(aligned_path), aligned):
+                raise OSError(f"No se pudo escribir la nube alineada por pose: {aligned_path}")
 
             # Guardar pose de la base para la nueva nube alineada para reflejar que ya coinciden
             save_reference_pose(aligned_path, base_pose[0], base_pose[1])
 
-            # Copiar foto de referencia si existe
+            # La rejilla 3D asociada a la foto tambien debe recibir la misma
+            # transformacion que la nube; copiarla sin transformar la desincroniza.
             ref_photo_src = reference_photo_path_for(updated_file)
             if ref_photo_src.exists():
-                ref_photo_dst = reference_photo_path_for(aligned_path)
                 try:
-                    import shutil
-                    shutil.copyfile(ref_photo_src, ref_photo_dst)
-                except Exception:
-                    pass
+                    save_transformed_reference_photo(ref_photo_src, aligned_path, R_rel, t_rel)
+                except Exception as exc:
+                    self._log(f"No se pudo actualizar la foto de referencia alineada: {exc}")
 
-            self._invalidate_results()
+            self._set_updated_path(str(aligned_path))
             self.alignment_applied = True
-            self.updated_path = str(aligned_path)
-            for name in ("updated_path_label", "raycast_updated_path_label", "quick_updated_path_label"):
-                label = getattr(self, name, None)
-                if label is not None:
-                    self._set_path_label(label, str(aligned_path))
 
             msg = f"Compensación aplicada: {dist_cm:.1f} cm y {rot_deg:.1f}° corregidos."
             if hasattr(self, "quick_alignment_status"):
@@ -2269,8 +2532,8 @@ class AuroraGUI:
 
     def _build_prepare_clouds_page(self) -> Gtk.Widget:
         page = self._new_page()
-        self.test_crop_before_path: str | None = None
-        self.test_crop_after_path: str | None = None
+        self.test_crop_before_path: str | None = self.base_path or None
+        self.test_crop_after_path: str | None = self.updated_path or None
         self.test_crop_output_paths: tuple[str, str] | None = None
         self.test_crop_output_dir: Path | None = None
         self.test_crop_output_dir_is_custom = False
@@ -2293,9 +2556,10 @@ class AuroraGUI:
         source_frame, source_box = self._section("1. Cargar ANTES y DESPUES")
         row = self._row(source_box)
         row.pack_start(Gtk.Label(label="ANTES:"), False, False, 0)
-        self.test_crop_before_label = Gtk.Label(label="Sin seleccionar", xalign=0)
+        self.test_crop_before_label = Gtk.Label(xalign=0)
         self.test_crop_before_label.set_hexpand(True)
         self.test_crop_before_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        self._set_path_label(self.test_crop_before_label, self.test_crop_before_path or "")
         row.pack_start(self.test_crop_before_label, True, True, 0)
         self.test_crop_choose_before_button = Gtk.Button(label="Cargar ANTES")
         self.test_crop_choose_before_button.connect("clicked", lambda _b: self._choose_test_crop_input("before"))
@@ -2306,9 +2570,10 @@ class AuroraGUI:
         row.pack_start(self.test_crop_view_before_button, False, False, 0)
         row = self._row(source_box)
         row.pack_start(Gtk.Label(label="DESPUES:"), False, False, 0)
-        self.test_crop_after_label = Gtk.Label(label="Sin seleccionar", xalign=0)
+        self.test_crop_after_label = Gtk.Label(xalign=0)
         self.test_crop_after_label.set_hexpand(True)
         self.test_crop_after_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        self._set_path_label(self.test_crop_after_label, self.test_crop_after_path or "")
         row.pack_start(self.test_crop_after_label, True, True, 0)
         self.test_crop_choose_after_button = Gtk.Button(label="Cargar DESPUES")
         self.test_crop_choose_after_button.connect("clicked", lambda _b: self._choose_test_crop_input("after"))
@@ -2335,7 +2600,7 @@ class AuroraGUI:
         row = self._row(bounds_box)
         row.pack_start(Gtk.Label(label="Profundidad del box (cm):"), False, False, 0)
         self.test_crop_depth_spin = Gtk.Entry()
-        self.test_crop_depth_spin.set_text("10.0")
+        self.test_crop_depth_spin.set_text("100")
         self.test_crop_depth_spin.set_width_chars(8)
         self.test_crop_depth_spin.set_input_purpose(Gtk.InputPurpose.NUMBER)
         self.test_crop_depth_spin.connect("changed", lambda _entry: self._on_test_crop_depth_changed())
@@ -2421,20 +2686,9 @@ class AuroraGUI:
         if not path:
             return
         if stage == "before":
-            self.test_crop_before_path = path
-            self._set_path_label(self.test_crop_before_label, path)
-            if not self.test_crop_output_dir_is_custom:
-                self.test_crop_output_dir = Path(path).parent
-                self._set_test_crop_output_dir_label()
+            self._set_base_path(path)
         else:
-            self.test_crop_after_path = path
-            self._set_path_label(self.test_crop_after_label, path)
-        self.test_crop_output_paths = None
-        self.test_crop_bounds = None
-        self.test_crop_bounds_label.set_text("Limites sin definir")
-        self.test_crop_use_pair_button.set_sensitive(False)
-        self.test_crop_status_label.set_text("Carga ambas capturas y confirma que compartan coordenadas.")
-        self._refresh_test_crop_controls()
+            self._set_updated_path(path)
 
     def _set_test_crop_output_dir_label(self) -> None:
         if self.test_crop_output_dir is None:
@@ -2490,25 +2744,40 @@ class AuroraGUI:
         if not path or not Path(path).is_file():
             self._show_warning("Falta la nube", f"Carga el archivo PLY de {stage_name} primero.")
             return
-        try:
-            cloud = load_point_cloud(Path(path))
-            show_point_cloud(cloud, window_name=f"Aurora - {stage_name}: {Path(path).name}")
-        except Exception as exc:
-            self._show_error(f"No se pudo abrir la nube {stage_name}", str(exc))
+        self._launch_viewer_process(
+            "cloud",
+            [path],
+            f"Aurora - {stage_name}: {Path(path).name}",
+            f"No se pudo abrir la nube {stage_name}",
+        )
 
     def _view_test_crop_pair(self) -> None:
-        try:
-            before, after = self._load_test_crop_pair()
-            show_point_cloud_pair(before, after)
-        except Exception as exc:
-            self._show_error("No se pudieron abrir las dos capturas", str(exc))
+        if not self.test_crop_before_path or not self.test_crop_after_path:
+            self._show_warning("Faltan capturas", "Carga los archivos ANTES y DESPUES primero.")
+            return
+        self._launch_viewer_process(
+            "pair",
+            [self.test_crop_before_path, self.test_crop_after_path],
+            "Aurora - Antes y despues (superpuestos)",
+            "No se pudieron abrir las dos capturas",
+        )
 
     def _pick_test_crop_bounds(self) -> None:
-        try:
-            before, after = self._load_test_crop_pair()
-            bounds = pick_crop_bounds_from_pair(before, after)
-        except Exception as exc:
-            self._show_error("Error al seleccionar la region", str(exc))
+        self.test_crop_pick_button.set_sensitive(False)
+        def worker():
+            try:
+                before, after = self._load_test_crop_pair()
+                bounds = pick_crop_bounds_from_pair(before, after)
+                self._ui(self._on_test_crop_pick_finished, bounds, None)
+            except Exception as exc:
+                self._ui(self._on_test_crop_pick_finished, None, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_test_crop_pick_finished(self, bounds, error: str | None) -> None:
+        self.test_crop_pick_button.set_sensitive(True)
+        if error:
+            self._show_error("Error al seleccionar la region", error)
             return
         if bounds is None:
             self._show_info("Seleccion incompleta", "Marca exactamente dos esquinas opuestas y cierra el visor.")
@@ -2529,23 +2798,64 @@ class AuroraGUI:
             return
         try:
             depth_m = self._get_test_crop_depth_m()
-            before, after = self._load_test_crop_pair()
-            before_cut = crop_cloud_by_face_depth(before, self.test_crop_bounds, depth_m)
-            after_cut = crop_cloud_by_face_depth(after, self.test_crop_bounds, depth_m)
-            if len(before_cut.points) == 0 or len(after_cut.points) == 0:
-                raise RuntimeError(
-                    "El box debe contener puntos en ambas nubes. Confirma que comparten coordenadas o ajusta la region."
-                )
-            self.test_crop_status_label.set_text(
-                f"Vista previa: ANTES {len(before_cut.points):,} puntos; DESPUES {len(after_cut.points):,} puntos."
-            )
-            show_point_cloud_pair(before_cut, after_cut, window_name="Aurora - Par recortado")
-            self.test_crop_status_label.set_text(
-                f"Vista previa revisada: ANTES {len(before_cut.points):,}; DESPUES {len(after_cut.points):,} puntos."
-            )
+            bounds = tuple(np.asarray(axis, dtype=np.float64).copy() for axis in self.test_crop_bounds)
         except Exception as exc:
             self.test_crop_status_label.set_text("No se pudo previsualizar el par recortado.")
             self._show_error("Error en la vista previa de las dos nubes", str(exc))
+            return
+
+        self.test_crop_preview_button.set_sensitive(False)
+
+        def worker():
+            try:
+                before, after = self._load_test_crop_pair()
+                before_cut = crop_cloud_by_face_depth(before, bounds, depth_m)
+                after_cut = crop_cloud_by_face_depth(after, bounds, depth_m)
+                if len(before_cut.points) == 0 or len(after_cut.points) == 0:
+                    raise RuntimeError(
+                        "El box debe contener puntos en ambas nubes. Confirma que comparten coordenadas o ajusta la region."
+                    )
+                self._ui(self._on_test_crop_preview_ready, before_cut, after_cut)
+            except Exception as exc:
+                self._ui(self._on_test_crop_preview_failed, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_test_crop_preview_ready(self, before_cut, after_cut) -> None:
+        self.test_crop_preview_button.set_sensitive(True)
+        self.test_crop_status_label.set_text(
+            f"Vista previa: ANTES {len(before_cut.points):,}; DESPUES {len(after_cut.points):,} puntos."
+        )
+        temp_dir = Path(tempfile.mkdtemp(prefix="aurora_crop_preview_"))
+
+        def worker():
+            try:
+                import open3d as o3d
+
+                before_path = temp_dir / "antes.ply"
+                after_path = temp_dir / "despues.ply"
+                if not o3d.io.write_point_cloud(str(before_path), before_cut):
+                    raise RuntimeError("No se pudo preparar la nube ANTES para la vista.")
+                if not o3d.io.write_point_cloud(str(after_path), after_cut):
+                    raise RuntimeError("No se pudo preparar la nube DESPUES para la vista.")
+                self._ui(
+                    self._launch_viewer_process,
+                    "pair",
+                    [str(before_path), str(after_path)],
+                    "Aurora - Par recortado",
+                    "Error en la vista previa de las dos nubes",
+                    str(temp_dir),
+                )
+            except Exception as exc:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                self._ui(self._show_error, "Error en la vista previa de las dos nubes", str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_test_crop_preview_failed(self, error: str) -> None:
+        self.test_crop_preview_button.set_sensitive(True)
+        self.test_crop_status_label.set_text("No se pudo previsualizar el par recortado.")
+        self._show_error("Error en la vista previa de las dos nubes", error)
 
     def _apply_test_crop(self) -> None:
         if not self.test_crop_before_path or not self.test_crop_after_path or self.test_crop_bounds is None:
@@ -2629,53 +2939,23 @@ class AuroraGUI:
         self._show_error("Error al recortar el par", message)
 
     def _use_test_crop_pair(self) -> None:
-        if not self.test_crop_output_paths or not all(Path(p).is_file() for p in self.test_crop_output_paths):
+        pair = self.test_crop_output_paths
+        if not pair or not all(Path(p).is_file() for p in pair):
             self._show_warning("No hay par recortado", "Recorta y guarda ambas nubes antes de usarlas.")
             return
-        self._set_base_path(self.test_crop_output_paths[0])
-        self._set_updated_path(self.test_crop_output_paths[1])
+        before_path, after_path = pair
+        self._set_base_path(before_path)
+        self._set_updated_path(after_path)
         self.stack.set_visible_child_name("medicion_rapida")
 
-    # -- Pagina: Ajustes de analisis --------------------------------------------
+    # -- Parametros del calculo (integrados en Resultados) ------------------------
 
-    def _build_processing_page(self) -> Gtk.Widget:
-        page = self._new_page()
-
-        crop_frame, crop_box = self._section("Analizar solo una zona (opcional)")
-        row = self._row(crop_box)
-        self.use_crop_check = Gtk.CheckButton(label="Analizar solo la zona seleccionada")
-        row.pack_start(self.use_crop_check, False, False, 0)
-        row.pack_start(
-            self._info_button(
-                "Por defecto se analiza toda la nube. Marca esta opcion para enfocar el "
-                "analisis en una sola zona (por ejemplo, un tramo especifico del tunel o "
-                "un objeto de prueba), en vez de que el resultado se mezcle con el resto "
-                "de la escena."
-            ),
-            False,
-            False,
-            0,
-        )
-        row = self._row(crop_box)
-        pick_button = Gtk.Button(label="Seleccionar zona en el visor 3D...")
-        pick_button.set_tooltip_text(
-            "Abre la nube original en una ventana 3D. Shift+Click sobre 2 o mas puntos "
-            "para marcar la zona, despues cerrar la ventana."
-        )
-        pick_button.connect("clicked", lambda _b: self._pick_crop_interactively())
-        row.pack_start(pick_button, False, False, 0)
-        self.crop_status_label = Gtk.Label(label="(ninguna zona seleccionada)")
-        row.pack_start(self.crop_status_label, False, False, 0)
-        page.pack_start(crop_frame, False, True, 0)
-
-        advanced_frame, advanced_box = self._build_advanced_expander_page2()
-        page.pack_start(advanced_frame, False, True, 0)
-
-        return self._scrolled(page)
+    def _build_analysis_controls(self) -> Gtk.Widget:
+        return self._build_advanced_expander_page2()[0]
 
     def _build_advanced_expander_page2(self) -> tuple[Gtk.Widget, Gtk.Box]:
-        expander = Gtk.Expander(label="Opciones avanzadas")
-        expander.set_expanded(True)
+        expander = Gtk.Expander(label="Opciones avanzadas de Cloud-to-Cloud")
+        expander.set_expanded(False)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.get_style_context().add_class("expander-content")
         box.set_margin_start(4)
@@ -2683,7 +2963,8 @@ class AuroraGUI:
         box.set_margin_bottom(4)
         expander.add(box)
 
-        row = self._row(box)
+        self.c2c_voxel_row = self._row(box)
+        row = self.c2c_voxel_row
         row.pack_start(Gtk.Label(label="Reducir densidad de puntos (voxel, en metros):"), False, False, 0)
         self.voxel_entry = Gtk.Entry()
         self.voxel_entry.set_text("0.0")
@@ -2699,7 +2980,8 @@ class AuroraGUI:
             0,
         )
 
-        row = self._row(box)
+        self.c2c_outliers_row = self._row(box)
+        row = self.c2c_outliers_row
         self.remove_outliers_check = Gtk.CheckButton(label="Quitar ruido / puntos aislados")
         row.pack_start(self.remove_outliers_check, False, False, 0)
         row.pack_start(
@@ -2723,41 +3005,6 @@ class AuroraGUI:
                 "(el sensor se movio levemente entre una y otra). No usar si lo que "
                 "cambio de una nube a otra es precisamente el espesor que quieres medir "
                 "en TODA la superficie, porque podria confundirse con error de alineacion."
-            ),
-            False,
-            False,
-            0,
-        )
-
-        row = self._row(box)
-        row.pack_start(Gtk.Label(label="Zona - esquina minima (x y z):"), False, False, 0)
-        self.crop_min_entry = Gtk.Entry()
-        self.crop_min_entry.set_width_chars(22)
-        row.pack_start(self.crop_min_entry, False, False, 0)
-        row.pack_start(Gtk.Label(label="maxima:"), False, False, 0)
-        self.crop_max_entry = Gtk.Entry()
-        self.crop_max_entry.set_width_chars(22)
-        row.pack_start(self.crop_max_entry, False, False, 0)
-        row.pack_start(
-            self._info_button(
-                "Coordenadas manuales de la zona a analizar (alternativa a elegirla en el "
-                "visor 3D)."
-            ),
-            False,
-            False,
-            0,
-        )
-
-        row = self._row(box)
-        row.pack_start(Gtk.Label(label="Margen extra al seleccionar en 3D (m):"), False, False, 0)
-        self.crop_margin_entry = Gtk.Entry()
-        self.crop_margin_entry.set_text("0.08")
-        self.crop_margin_entry.set_width_chars(8)
-        row.pack_start(self.crop_margin_entry, False, False, 0)
-        row.pack_start(
-            self._info_button(
-                "Debe ser mayor al desplazamiento esperado entre ambas capturas, o la zona "
-                "elegida puede quedar vacia en la nube con shotcrete."
             ),
             False,
             False,
@@ -2813,14 +3060,14 @@ class AuroraGUI:
         self.band_revealer = Gtk.Revealer()
         self.band_revealer.set_transition_type(Gtk.RevealerTransitionType.NONE)
         band_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        band_row.pack_start(Gtk.Label(label="Hasta este espesor = verde (mm):"), False, False, 0)
+        band_row.pack_start(Gtk.Label(label="Hasta este espesor = verde (cm):"), False, False, 0)
         self.band_low_entry = Gtk.Entry()
-        self.band_low_entry.set_text("50")
+        self.band_low_entry.set_text("5")
         self.band_low_entry.set_width_chars(8)
         band_row.pack_start(self.band_low_entry, False, False, 0)
-        band_row.pack_start(Gtk.Label(label="Desde este espesor = rojo (mm):"), False, False, 0)
+        band_row.pack_start(Gtk.Label(label="Desde este espesor = rojo (cm):"), False, False, 0)
         self.band_high_entry = Gtk.Entry()
-        self.band_high_entry.set_text("100")
+        self.band_high_entry.set_text("10")
         self.band_high_entry.set_width_chars(8)
         band_row.pack_start(self.band_high_entry, False, False, 0)
         self.band_revealer.add(band_row)
@@ -2846,7 +3093,7 @@ class AuroraGUI:
         self.color_banded_rb.set_active(True)  # despues de crear los revealers: dispara _on_color_mode_changed
 
         advanced_frame = Gtk.Expander(label="Opciones avanzadas")
-        advanced_frame.set_expanded(True)
+        advanced_frame.set_expanded(False)
         adv_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         adv_inner.get_style_context().add_class("expander-content")
         adv_inner.set_margin_start(4)
@@ -3158,12 +3405,7 @@ class AuroraGUI:
         self.raycast_origin_frame.set_sensitive(self.raycast_ray_origin_rb.get_active())
 
     def _raycast_log(self, message: str) -> None:
-        def append():
-            if hasattr(self, "log_buffer"):
-                main_end = self.log_buffer.get_end_iter()
-                self.log_buffer.insert(main_end, f"[Malla] {message}\n")
-
-        self._ui(append)
+        self._log(f"[Malla] {message}")
 
     def _run_raycast_clicked(self) -> None:
         if self.worker_thread and self.worker_thread.is_alive():
@@ -3186,6 +3428,40 @@ class AuroraGUI:
                 self._refresh_quick_status()
                 return
 
+        try:
+            max_distance_text = self.quick_ray_max_distance_entry.get_text().strip()
+            max_distance = (
+                self._parse_positive_entry(self.quick_ray_max_distance_entry, "El limite de espesor")
+                if max_distance_text
+                else None
+            )
+            poisson_depth = (
+                self._read_numeric_entry(self.quick_poisson_depth, "Profundidad Poisson", 5, 12, integer=True)
+                if mesh_method == "poisson"
+                else 9
+            )
+            density_trim = (
+                self._read_numeric_entry(self.quick_density_trim, "Recorte de densidad Poisson", 0, 0.20)
+                if mesh_method == "poisson"
+                else 0.02
+            )
+            delaunay_trim = (
+                self._read_numeric_entry(self.quick_delaunay_trim, "Limite Delaunay", 1, 10)
+                if mesh_method == "delaunay"
+                else 4.0
+            )
+            mesh_voxel_size = self._read_numeric_entry(
+                self.quick_mesh_voxel_entry, "Resolucion de malla", 0, 0.2
+            )
+            smooth_iterations = (
+                self._read_numeric_entry(self.quick_smooth_iterations, "Iteraciones Taubin", 1, 30, integer=True)
+                if self.quick_smooth_check.get_active()
+                else 0
+            )
+        except ValueError as exc:
+            self._show_error("Parametros invalidos", str(exc))
+            return
+
         base_origin = updated_origin = None
         if ray_method == "origin":
             try:
@@ -3206,14 +3482,16 @@ class AuroraGUI:
             base_path=base_file,
             updated_path=updated_file,
             output_dir=Path(self.output_dir),
+            max_distance=max_distance,
             base_origin=base_origin,
             updated_origin=updated_origin,
             mesh_method=mesh_method,
+            mesh_voxel_size=float(mesh_voxel_size),
             ray_method=ray_method,
-            poisson_depth=int(self.quick_poisson_depth.get_value_as_int())
-            if self.quick_mesh_check.get_active() else 9,
-            mesh_smoothing_iterations=int(self.quick_smooth_iterations.get_value_as_int())
-            if self.quick_mesh_check.get_active() and self.quick_smooth_check.get_active() else 0,
+            density_trim_quantile=float(density_trim),
+            poisson_depth=int(poisson_depth),
+            mesh_smoothing_iterations=int(smooth_iterations),
+            delaunay_max_edge_trim_factor=float(delaunay_trim),
         )
 
         self._invalidate_results()
@@ -3221,9 +3499,9 @@ class AuroraGUI:
         self.log_buffer.set_text("")
         self.raycast_run_button.set_sensitive(False)
         self.quick_calculate_button.set_sensitive(False)
+        self.result_recalculate_button.set_sensitive(False)
         self.raycast_status_label.set_text("Calculando...")
-        self.status_spinner.start()
-        self.status_spinner.set_visible(True)
+        self._start_calculation_progress("Preparando reconstruccion de malla")
         self.status_label.set_text("Calculando espesor con malla...")
         self.stack.set_visible_child_name("resultados")
 
@@ -3234,7 +3512,69 @@ class AuroraGUI:
 
     def _run_raycast_worker(self, params: RaycastPipelineParams, generation: int) -> None:
         try:
-            result = run_raycast_pipeline(params, log=self._raycast_log)
+            payload = {
+                "base_path": str(params.base_path),
+                "updated_path": str(params.updated_path),
+                "output_dir": str(params.output_dir),
+                "max_distance": params.max_distance,
+                "base_origin": params.base_origin,
+                "updated_origin": params.updated_origin,
+                "mesh_method": params.mesh_method,
+                "mesh_voxel_size": params.mesh_voxel_size,
+                "ray_method": params.ray_method,
+                "density_trim_quantile": params.density_trim_quantile,
+                "poisson_depth": params.poisson_depth,
+                "mesh_smoothing_iterations": params.mesh_smoothing_iterations,
+                "delaunay_max_edge_trim_factor": params.delaunay_max_edge_trim_factor,
+            }
+            self._raycast_log("Iniciando calculo aislado; la interfaz seguira disponible...")
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(PROJECT_ROOT / "scripts" / "raycast_worker.py"),
+                    json.dumps(payload),
+                ],
+                cwd=str(PROJECT_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            output_lines = []
+            assert process.stdout is not None
+            for line in process.stdout:
+                message = line.rstrip("\r\n")
+                if message:
+                    output_lines.append(message)
+                    self._raycast_log(message)
+            return_code = process.wait()
+            if return_code != 0:
+                details = "\n".join(output_lines[-20:]) or f"El proceso termino con codigo {return_code}."
+                raise RuntimeError(details)
+
+            self._raycast_log("Cargando el resultado en la interfaz...")
+            import open3d as o3d
+
+            stats_data = json.loads(
+                (params.output_dir / "raycast_stats.json").read_text(encoding="utf-8")
+            )
+            stats = DistanceStats(**stats_data)
+            csv_path = params.output_dir / "thickness_raycast_per_point.csv"
+            rows = np.loadtxt(csv_path, delimiter=",", skiprows=1, ndmin=2)
+            base_mesh = o3d.io.read_triangle_mesh(str(params.output_dir / "raycast_base_mesh.ply"))
+            updated_mesh = o3d.io.read_triangle_mesh(str(params.output_dir / "raycast_updated_mesh.ply"))
+            heatmap_path = params.output_dir / "thickness_raycast_heatmap.ply"
+            result = RaycastPipelineResult(
+                stats=stats,
+                distances=rows[:, 3].copy(),
+                hit_points=rows[:, :3].copy(),
+                base_mesh=base_mesh,
+                updated_mesh=updated_mesh,
+                heatmap_cloud=load_point_cloud(heatmap_path),
+                csv_path=csv_path,
+                histogram_path=params.output_dir / "thickness_raycast_histogram.png",
+                heatmap_path=heatmap_path,
+            )
             self._raycast_log("\nListo.")
             self._ui(self._on_raycast_success, result, generation)
         except Exception as exc:
@@ -3243,12 +3583,12 @@ class AuroraGUI:
         finally:
             self._ui(self.raycast_run_button.set_sensitive, True)
             self._ui(self.quick_calculate_button.set_sensitive, True)
-            self._ui(self.status_spinner.stop)
-            self._ui(self.status_spinner.set_visible, False)
+            self._ui(self._refresh_recalculate_button)
 
     def _on_raycast_success(self, result, generation: int) -> None:
         if generation != self._result_generation:
             return
+        self._finish_calculation_progress(True)
         self.raycast_result = result
         stats = self.raycast_result.stats
         self._active_result_kind = "raycast"
@@ -3277,6 +3617,10 @@ class AuroraGUI:
         self.raycast_status_label.set_text(f"Listo — espesor promedio {stats.mean * 100:.2f} cm")
         self._show_quick_mesh_result_actions()
         self._generate_alerts()
+        self._set_calculation_method("raycast")
+        self.results_ray_method_combo.set_active_id(
+            "origin" if self.raycast_ray_origin_rb.get_active() else "normal"
+        )
         self.stack.set_visible_child_name("resultados")
         self._view_raycast_result()
 
@@ -3284,6 +3628,7 @@ class AuroraGUI:
         if generation != self._result_generation:
             return
         self._hide_quick_mesh_result_actions()
+        self._finish_calculation_progress(False)
         self.raycast_status_label.set_text("Error al calcular")
         self.quick_status_label.set_text(f"No se pudo calcular la malla: {message}")
         self.status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  El analisis con malla fallo')
@@ -3298,25 +3643,37 @@ class AuroraGUI:
     def _view_raycast_meshes(self) -> None:
         if not self.raycast_result:
             return
-        import open3d as o3d
+        base_source = self.raycast_result.base_mesh
+        updated_source = self.raycast_result.updated_mesh
+        temp_dir = Path(tempfile.mkdtemp(prefix="aurora_mesh_inspect_"))
 
-        # Copias pintadas de un color solido para distinguir las dos mallas
-        # superpuestas (a diferencia del heatmap, aca no interesa el
-        # espesor sino inspeccionar la reconstruccion en si: huecos de
-        # Poisson, triangulos largos sin recortar de Delaunay, etc.).
-        base_mesh = o3d.geometry.TriangleMesh(self.raycast_result.base_mesh)
-        updated_mesh = o3d.geometry.TriangleMesh(self.raycast_result.updated_mesh)
-        base_mesh.paint_uniform_color((0.55, 0.6, 0.65))
-        updated_mesh.paint_uniform_color((1.0, 0.549, 0.0))
-        base_mesh.compute_vertex_normals()
-        updated_mesh.compute_vertex_normals()
+        def worker():
+            try:
+                import open3d as o3d
 
-        o3d.visualization.draw_geometries(
-            [base_mesh, updated_mesh],
-            window_name="Aurora - Raycasting (prueba): mallas reconstruidas "
-            "(gris = original, naranja = con shotcrete)",
-            mesh_show_back_face=True,
-        )
+                base_mesh = o3d.geometry.TriangleMesh(base_source)
+                updated_mesh = o3d.geometry.TriangleMesh(updated_source)
+                base_mesh.paint_uniform_color((0.55, 0.6, 0.65))
+                updated_mesh.paint_uniform_color((1.0, 0.549, 0.0))
+                base_path = temp_dir / "malla_antes.ply"
+                updated_path = temp_dir / "malla_despues.ply"
+                if not o3d.io.write_triangle_mesh(str(base_path), base_mesh):
+                    raise RuntimeError("No se pudo guardar temporalmente la malla ANTES.")
+                if not o3d.io.write_triangle_mesh(str(updated_path), updated_mesh):
+                    raise RuntimeError("No se pudo guardar temporalmente la malla DESPUES.")
+                self._ui(
+                    self._launch_viewer_process,
+                    "meshes",
+                    [str(base_path), str(updated_path)],
+                    "Aurora - Mallas reconstruidas (gris = original, naranja = con shotcrete)",
+                    "No se pudieron abrir las mallas",
+                    str(temp_dir),
+                )
+            except Exception as exc:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                self._ui(self._show_error, "No se pudieron abrir las mallas", str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # -- Helpers de layout -----------------------------------------------------
 
@@ -3327,6 +3684,32 @@ class AuroraGUI:
         page.set_margin_top(10)
         page.set_margin_bottom(10)
         return page
+
+    @staticmethod
+    def _numeric_entry(value: str, width: int, integer: bool = False) -> Gtk.Entry:
+        entry = Gtk.Entry()
+        entry.set_text(value)
+        entry.set_width_chars(width)
+        entry.set_alignment(0.5)
+        entry.set_input_purpose(Gtk.InputPurpose.DIGITS if integer else Gtk.InputPurpose.NUMBER)
+        return entry
+
+    @staticmethod
+    def _read_numeric_entry(
+        entry: Gtk.Entry, label: str, minimum: float, maximum: float, integer: bool = False
+    ) -> float | int:
+        raw = entry.get_text().strip().replace(",", ".")
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise ValueError(f"{label}: escribe un numero valido.") from exc
+        if not np.isfinite(value) or value < minimum or value > maximum:
+            raise ValueError(f"{label}: el valor debe estar entre {minimum:g} y {maximum:g}.")
+        if integer:
+            if not value.is_integer():
+                raise ValueError(f"{label}: usa un numero entero.")
+            return int(value)
+        return value
 
     def _scrolled(self, widget: Gtk.Widget) -> Gtk.Widget:
         scroller = Gtk.ScrolledWindow()
@@ -3526,6 +3909,98 @@ class AuroraGUI:
 
     def _log(self, message: str) -> None:
         self.log_queue.put(message)
+        progress = self._progress_for_log(message)
+        if progress is not None:
+            fraction, label = progress
+            self._ui(self._advance_calculation_progress, fraction, label)
+
+    @staticmethod
+    def _progress_for_log(message: str) -> tuple[float, str] | None:
+        text = message.lower()
+        if "listo." in text:
+            return 1.0, "Calculo terminado"
+        if "heatmap guardado" in text:
+            return 0.97, "Preparando mapa de espesor"
+        if "histograma guardado" in text:
+            return 0.92, "Generando histograma"
+        if "csv guardado" in text:
+            return 0.87, "Guardando distancias"
+        if "tirando rayos" in text:
+            return 0.74, "Midiendo espesor sobre las mallas"
+        if "malla actualizada:" in text:
+            return 0.70, "Malla DESPUES lista"
+        if "reconstruyendo malla" in text and "actualizada" in text:
+            return 0.48, "Reconstruyendo malla DESPUES"
+        if "malla base:" in text:
+            return 0.43, "Malla ANTES lista"
+        if "reconstruyendo malla" in text:
+            return 0.14, "Reconstruyendo malla ANTES"
+        if "reduciendo densidad de malla" in text or "ajustando resolucion" in text:
+            return 0.08, "Ajustando resolucion de las nubes"
+        if "resultados:" in text:
+            return 0.82, "Calculando estadisticas"
+        if "calculando distancia cloud-to-cloud" in text:
+            return 0.66, "Calculando distancias entre superficies"
+        if "alineando nubes" in text:
+            return 0.44, "Alineando las capturas"
+        if "nubes listas para medir" in text:
+            return 0.42, "Nubes preparadas"
+        if "nube antes lista" in text:
+            return 0.30, "Nube ANTES preparada"
+        if "preparando nube despues" in text:
+            return 0.32, "Preparando nube DESPUES"
+        if "preparando nube antes" in text:
+            return 0.22, "Preparando nube ANTES"
+        if "preparando nubes" in text:
+            return 0.20, "Filtrando y preparando nubes"
+        if "cargando nubes" in text:
+            return 0.06, "Cargando archivos"
+        return None
+
+    def _start_calculation_progress(self, label: str) -> None:
+        self._progress_started_at = time.monotonic()
+        self._progress_stage = label
+        self.calculation_label.set_text(label)
+        self.calculation_indicator.set_no_show_all(False)
+        self.calculation_indicator.show_all()
+        self.calculation_spinner.start()
+        if self._progress_timer_source is None:
+            self._progress_timer_source = GLib.timeout_add_seconds(1, self._update_calculation_indicator)
+        self._update_calculation_indicator()
+
+    def _update_calculation_indicator(self) -> bool:
+        if not self.calculation_indicator.get_visible():
+            self._progress_timer_source = None
+            return GLib.SOURCE_REMOVE
+        elapsed = max(0, int(time.monotonic() - self._progress_started_at))
+        minutes, seconds = divmod(elapsed, 60)
+        self.calculation_label.set_text(
+            f"Cargando · {self._progress_stage} · {minutes:02d}:{seconds:02d}"
+        )
+        return GLib.SOURCE_CONTINUE
+
+    def _advance_calculation_progress(self, fraction: float, label: str) -> None:
+        self._progress_stage = label
+        self._update_calculation_indicator()
+
+    def _finish_calculation_progress(self, succeeded: bool) -> None:
+        if self._progress_timer_source is not None:
+            GLib.source_remove(self._progress_timer_source)
+            self._progress_timer_source = None
+        self.calculation_spinner.stop()
+        self.calculation_indicator.set_no_show_all(True)
+        self.calculation_indicator.hide()
+
+    def _refresh_recalculate_button(self) -> None:
+        if not hasattr(self, "result_recalculate_button"):
+            return
+        ready = bool(
+            self.base_path
+            and self.updated_path
+            and Path(self.base_path).is_file()
+            and Path(self.updated_path).is_file()
+        )
+        self.result_recalculate_button.set_sensitive(ready)
 
     def _poll_log_queue(self) -> bool:
         try:
@@ -3767,16 +4242,12 @@ class AuroraGUI:
             self._show_info("Sin captura", "Todavia no capturaste este tunel.")
             return
         label = "Tunel original" if target == "base" else "Tunel con shotcrete"
-
-        def worker():
-            try:
-                cloud = load_point_cloud(Path(path))
-            except Exception as exc:
-                self._ui(self._show_error, "Error al abrir la captura", str(exc))
-                return
-            show_point_cloud(cloud, window_name=f"Aurora - {label} (ultima captura)")
-
-        threading.Thread(target=worker, daemon=True).start()
+        self._launch_viewer_process(
+            "cloud",
+            [path],
+            f"Aurora - {label} (ultima captura)",
+            "Error al abrir la captura",
+        )
 
     def _on_capture_failed(self, exc: Exception) -> None:
         self.capture_base_button.set_sensitive(True)
@@ -3869,34 +4340,6 @@ class AuroraGUI:
                 self._log(f"No se pudo generar foto de referencia para {cloud_path.name}: {exc}")
         self._log("Fotos de referencia (sinteticas) guardadas junto a las nubes en vivo.")
 
-    # ---------------------------------------------------------------- Crop
-
-    def _pick_crop_interactively(self) -> None:
-        base_file = Path(self.base_path)
-        if not base_file.is_file():
-            self._show_error("Error", f"No se encontro la nube base:\n{base_file}")
-            return
-        try:
-            margin = float(self.crop_margin_entry.get_text() or 0.08)
-            cloud = load_point_cloud(base_file)
-            bounds = pick_crop_bounds(cloud, margin=margin)
-        except Exception as exc:
-            self._show_error("Error al abrir el visor 3D", str(exc))
-            return
-
-        if bounds is None:
-            self._show_info(
-                "Sin seleccion", "No se eligieron al menos 2 puntos. Repite usando Shift+Click sobre 2 esquinas."
-            )
-            return
-
-        crop_min, crop_max = bounds
-        self.crop_min_entry.set_text(f"{crop_min[0]:.4f} {crop_min[1]:.4f} {crop_min[2]:.4f}")
-        self.crop_max_entry.set_text(f"{crop_max[0]:.4f} {crop_max[1]:.4f} {crop_max[2]:.4f}")
-        self.use_crop_check.set_active(True)
-        self.crop_status_label.set_text("Zona seleccionada ✓")
-        self._show_info("Zona definida", "Se guardaron los limites de la zona a partir de los puntos elegidos.")
-
     # ---------------------------------------------------------- Pipeline
 
     def _confirm_missing_alignment(self) -> bool:
@@ -3951,8 +4394,8 @@ class AuroraGUI:
         generation = self._result_generation
         self.log_buffer.set_text("")
         self.quick_calculate_button.set_sensitive(False)
-        self.status_spinner.start()
-        self.status_spinner.set_visible(True)
+        self.result_recalculate_button.set_sensitive(False)
+        self._start_calculation_progress("Preparando Cloud-to-Cloud")
         self.status_label.set_markup("Calculando el espesor...")
         self.stack.set_visible_child_name("resultados")
 
@@ -3966,11 +4409,6 @@ class AuroraGUI:
         updated_path = Path(self.updated_path)
         output_dir = Path(self.output_dir)
 
-        crop_min = crop_max = None
-        if self.use_crop_check.get_active():
-            crop_min = self._parse_xyz(self.crop_min_entry.get_text(), "Esquina minima")
-            crop_max = self._parse_xyz(self.crop_max_entry.get_text(), "Esquina maxima")
-
         max_distance_text = self.max_distance_entry.get_text().strip()
         max_distance = float(max_distance_text) if max_distance_text else None
 
@@ -3982,8 +4420,6 @@ class AuroraGUI:
             remove_outliers=self.remove_outliers_check.get_active(),
             use_icp=self.use_icp_check.get_active(),
             icp_threshold=float(self.icp_threshold_entry.get_text() or 0.05),
-            crop_min=crop_min,
-            crop_max=crop_max,
             max_distance=max_distance,
         )
 
@@ -3997,12 +4433,12 @@ class AuroraGUI:
             self._ui(self._on_pipeline_failure, str(exc), generation)
         finally:
             self._ui(self.quick_calculate_button.set_sensitive, True)
-            self._ui(self.status_spinner.stop)
-            self._ui(self.status_spinner.set_visible, False)
+            self._ui(self._refresh_recalculate_button)
 
     def _on_pipeline_success(self, result, generation: int) -> None:
         if generation != self._result_generation:
             return
+        self._finish_calculation_progress(True)
         self.result = result
         stats = self.result.stats
         self._active_result_kind = "cloud_to_cloud"
@@ -4028,6 +4464,7 @@ class AuroraGUI:
             f"Medicion lista: promedio {stats.mean * 100:.2f} cm, "
             f"mediana {stats.median * 100:.2f} cm, P95 {stats.p95 * 100:.2f} cm."
         )
+        self._set_calculation_method("cloud_to_cloud")
         self._generate_alerts()
         self.stack.set_visible_child_name("resultados")
         self._show_result_in_viewer()
@@ -4035,6 +4472,7 @@ class AuroraGUI:
     def _on_pipeline_failure(self, message: str, generation: int) -> None:
         if generation != self._result_generation:
             return
+        self._finish_calculation_progress(False)
         self.quick_status_label.set_text(f"No se pudo calcular: {message}")
         self.status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  El analisis fallo')
         self.stack.set_visible_child_name("resultados")
@@ -4055,7 +4493,7 @@ class AuroraGUI:
             self.thickness_alert_label.hide()
             return
         try:
-            low_mm, high_mm = self._band_thresholds_mm()
+            low_cm, high_cm = self._band_thresholds_cm()
         except ValueError as exc:
             self.thickness_alert_label.set_markup(
                 f'<span foreground="{COLOR_WARN}"><b>Revisa los umbrales de espesor:</b> '
@@ -4064,16 +4502,16 @@ class AuroraGUI:
             self.thickness_alert_label.set_no_show_all(False)
             self.thickness_alert_label.show()
             return
-        mean_mm = result.stats.mean * 1000
+        mean_cm = result.stats.mean * 100
 
-        if mean_mm < low_mm:
+        if mean_cm < low_cm:
             message = (
-                f"Espesor medio: {mean_mm:.2f} mm, bajo el minimo de {low_mm} mm. "
+                f"Espesor medio: {mean_cm:.2f} cm, bajo el minimo de {low_cm:g} cm. "
                 "Falta aplicar shotcrete."
             )
-        elif mean_mm >= high_mm:
+        elif mean_cm >= high_cm:
             message = (
-                f"Espesor medio: {mean_mm:.2f} mm, sobre el maximo de {high_mm} mm. "
+                f"Espesor medio: {mean_cm:.2f} cm, sobre el maximo de {high_cm:g} cm. "
                 "Exceso de shotcrete."
             )
         else:
@@ -4095,10 +4533,9 @@ class AuroraGUI:
             return
 
         try:
-            low_mm, high_mm = self._band_thresholds_mm()
-            target_thickness_cm = self._parse_positive_entry(
-                self.target_thickness_entry, "El espesor objetivo"
-            )
+            legend = self._selected_color_legend()
+            low_cm, high_cm = (self._band_thresholds_cm()
+                               if self.color_banded_rb.get_active() else (None, None))
         except ValueError as exc:
             self._show_warning("Revisa los ajustes de visualizacion en Resultados", str(exc))
             self.stack.set_visible_child_name("resultados")
@@ -4135,16 +4572,20 @@ class AuroraGUI:
         report_path = default_dir / f"informe_aurora_{timestamp}.pdf"
 
         stats = result.stats
-        mean_mm = stats.mean * 1000
+        mean_cm = stats.mean * 100
 
-        if mean_mm < low_mm:
+        if low_cm is not None and mean_cm < low_cm:
             status_text, status_color = "FALTA SHOTCRETE (bajo el umbral)", rl_colors.HexColor("#FFCC00")
-        elif mean_mm >= high_mm:
+        elif high_cm is not None and mean_cm >= high_cm:
             status_text, status_color = "EXCESO DE SHOTCRETE (sobre el umbral)", rl_colors.HexColor("#FF3B30")
+        elif self.color_six_bands_rb.get_active() and mean_cm < float(legend["target_cm"]):
+            status_text, status_color = "ESPESOR OBJETIVO AUN NO ALCANZADO", rl_colors.HexColor("#FFCC00")
+        elif self.color_six_bands_rb.get_active():
+            status_text, status_color = "ESPESOR OBJETIVO ALCANZADO", rl_colors.HexColor("#34C759")
+        elif self.color_continuous_rb.get_active():
+            status_text, status_color = "MEDICION DE ESPESOR COMPLETADA", rl_colors.HexColor("#007AFF")
         else:
             status_text, status_color = "DENTRO DE PARAMETRO", rl_colors.HexColor("#34C759")
-
-        band_width_cm = target_thickness_cm / len(SIX_BAND_LABELS)
 
         styles = getSampleStyleSheet()
         title_style = ParagraphStyle(
@@ -4181,8 +4622,15 @@ class AuroraGUI:
                 f"<b>Metodo de calculo:</b> {'Raycasting con malla' if self._active_result_kind == 'raycast' else 'Cloud-to-Cloud'}",
                 body_style,
             ),
-            Paragraph("2. Umbrales de alerta", h2_style),
-            Paragraph(f"Umbral bajo (mínimo): {low_mm / 10:.2f} cm — Umbral alto (máximo): {high_mm / 10:.2f} cm", body_style),
+            Paragraph("2. Criterio de color", h2_style),
+            Paragraph(
+                (f"Umbral bajo: {low_cm:g} cm — Umbral alto: {high_cm:g} cm"
+                 if low_cm is not None else
+                 f"Espesor objetivo: {float(legend['target_cm']):.2f} cm"
+                 if self.color_six_bands_rb.get_active() else
+                 f"Escala continua entre 0 y {float(legend['continuous_max_cm']):.2f} cm"),
+                body_style,
+            ),
             Paragraph("3. Estadísticas de espesor", h2_style),
         ]
 
@@ -4216,8 +4664,7 @@ class AuroraGUI:
         )
         story.append(stats_table)
 
-        story.append(Paragraph("4. Escala de colores (6 niveles, según espesor objetivo)", h2_style))
-        story.append(Paragraph(f"Espesor objetivo: {target_thickness_cm:.2f} cm", body_style))
+        story.append(Paragraph(f"4. Escala de colores ({escape(legend['title'])})", h2_style))
         story.append(Spacer(1, 6))
         band_rows = [["Rango (cm)", "Nivel", "Color"]]
         band_styles = [
@@ -4229,13 +4676,23 @@ class AuroraGUI:
             ("TOPPADDING", (0, 0), (-1, -1), 6),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
         ]
-        for i, label in enumerate(SIX_BAND_LABELS):
-            band_low = band_width_cm * i
-            band_high = band_width_cm * (i + 1)
-            r, g, b = SIX_BAND_COLORS[i]
-            band_rows.append([f"{band_low:.2f} - {band_high:.2f}", label, ""])
-            row_idx = i + 1
-            band_styles.append(("BACKGROUND", (2, row_idx), (2, row_idx), rl_colors.Color(r, g, b)))
+        legend_rows = legend.get("rows")
+        if legend_rows:
+            for color, label, value in legend_rows:
+                r, g, b = color
+                band_rows.append([value, label, ""])
+                row_idx = len(band_rows) - 1
+                band_styles.append(("BACKGROUND", (2, row_idx), (2, row_idx), rl_colors.Color(r, g, b)))
+        else:
+            max_cm = float(legend["continuous_max_cm"])
+            band_rows.extend([
+                ["0 cm", "Mínimo", ""],
+                [f">= {max_cm:.2f} cm", "Máximo (color recortado)", ""],
+            ])
+            band_styles.extend([
+                ("BACKGROUND", (2, 1), (2, 1), rl_colors.Color(*legend["low_color"])),
+                ("BACKGROUND", (2, 2), (2, 2), rl_colors.Color(*legend["high_color"])),
+            ])
         band_table = Table(band_rows, colWidths=[5 * rl_cm, 5 * rl_cm, 4 * rl_cm])
         band_table.setStyle(TableStyle(band_styles))
         story.append(band_table)
@@ -4273,7 +4730,25 @@ class AuroraGUI:
             return
 
         self._log(f"Informe generado: {report_path}")
-        self._show_info("Informe generado", f"El informe (PDF) fue guardado en:\n{report_path}")
+        try:
+            opened = Gtk.show_uri_on_window(
+                self.window, report_path.resolve().as_uri(), Gdk.CURRENT_TIME
+            )
+            if not opened:
+                raise RuntimeError("Ubuntu no encontro una aplicacion asociada a archivos PDF.")
+        except Exception as exc:
+            self._log(f"No se pudo abrir automaticamente el PDF: {exc}")
+            self._show_info(
+                "Informe generado",
+                f"El informe se guardo en:\n{report_path}\n\n"
+                f"No se pudo abrir automaticamente: {exc}",
+            )
+            return
+
+        self._show_info(
+            "Informe generado",
+            f"El informe PDF se guardo y se abrio:\n{report_path}",
+        )
 
     # --------------------------------------------------------------- Viewer
 
@@ -4288,19 +4763,19 @@ class AuroraGUI:
             raise ValueError(f"{label} debe ser un numero mayor que cero.")
         return value
 
-    def _band_thresholds_mm(self) -> tuple[float, float]:
+    def _band_thresholds_cm(self) -> tuple[float, float]:
         try:
-            low_mm = float((self.band_low_entry.get_text().strip() or "50").replace(",", "."))
-            high_mm = float((self.band_high_entry.get_text().strip() or "100").replace(",", "."))
+            low_cm = float((self.band_low_entry.get_text().strip() or "5").replace(",", "."))
+            high_cm = float((self.band_high_entry.get_text().strip() or "10").replace(",", "."))
         except ValueError as exc:
-            raise ValueError("Los umbrales verde y rojo deben ser numeros en milimetros.") from exc
-        if not np.isfinite(low_mm) or not np.isfinite(high_mm) or low_mm < 0 or high_mm <= low_mm:
+            raise ValueError("Los umbrales verde y rojo deben ser numeros en centimetros.") from exc
+        if not np.isfinite(low_cm) or not np.isfinite(high_cm) or low_cm < 0 or high_cm <= low_cm:
             raise ValueError("El umbral rojo debe ser mayor que el verde y ambos deben ser cero o mas.")
-        return low_mm, high_mm
+        return low_cm, high_cm
 
     def _band_thresholds_m(self) -> tuple[float, float]:
-        low_mm, high_mm = self._band_thresholds_mm()
-        return low_mm / 1000.0, high_mm / 1000.0
+        low_cm, high_cm = self._band_thresholds_cm()
+        return low_cm / 100.0, high_cm / 100.0
 
     def _parse_live_filter_params(self) -> tuple[float | None, float | None]:
         max_distance = None
@@ -4328,19 +4803,150 @@ class AuroraGUI:
     def _open_active_result_visualization(self) -> None:
         self._show_result_in_viewer()
 
+    def _launch_viewer_process(
+        self,
+        kind: str,
+        paths: list[str],
+        title: str,
+        error_title: str,
+        cleanup_dir: str | None = None,
+        legend: dict | None = None,
+    ) -> subprocess.Popen | None:
+        command = [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "viewer_host.py"),
+            kind,
+            *paths,
+            "--title",
+            title,
+        ]
+        if cleanup_dir:
+            command.extend(("--cleanup-dir", cleanup_dir))
+        if legend is not None:
+            command.extend(("--legend-json", json.dumps(legend)))
+        try:
+            process = subprocess.Popen(command, cwd=PROJECT_ROOT, start_new_session=True)
+        except OSError as exc:
+            if cleanup_dir:
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+            self._show_error(error_title, str(exc))
+            return None
+
+        self.external_viewer_processes = [
+            child for child in self.external_viewer_processes if child.poll() is None
+        ]
+        self.external_viewer_processes.append(process)
+        return process
+
     def _show_result_in_viewer(self) -> None:
         result = self._active_result()
         if result is None:
             self._show_warning("Sin resultado", "Calcula el espesor antes de abrir la vista 3D.")
             return
+        temp_dir: Path | None = None
         try:
-            show_point_cloud(
-                result.heatmap_cloud,
-                window_name="Aurora - Espesor: Q para volver",
-            )
-            self._log("Vista 3D del espesor cerrada.")
+            colored_cloud, legend = self._build_result_heatmap(result)
+            temp_dir = Path(tempfile.mkdtemp(prefix="aurora_thickness_view_"))
+            heatmap_path = temp_dir / "espesor_coloreado.ply"
+            import open3d as o3d
+
+            if not o3d.io.write_point_cloud(str(heatmap_path), colored_cloud):
+                raise OSError("No se pudo preparar la nube coloreada para la vista 3D.")
+            viewer_kind = "cloud"
+            viewer_paths = [str(heatmap_path)]
+            if self._active_result_kind == "cloud_to_cloud":
+                before_path = temp_dir / "nube_antes.ply"
+                if not o3d.io.write_point_cloud(str(before_path), result.base_cloud):
+                    raise OSError("No se pudo preparar la nube ANTES para la vista 3D.")
+                viewer_kind = "thickness"
+                viewer_paths = [str(before_path), str(heatmap_path)]
         except Exception as exc:
-            self._show_error("No se pudo abrir la vista 3D", str(exc))
+            if temp_dir is not None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            self._show_error("No se pudo preparar la leyenda de espesor", str(exc))
+            return
+
+        process = self._launch_viewer_process(
+            viewer_kind,
+            viewer_paths,
+            "Aurora - Espesor: Q para volver",
+            "No se pudo abrir la vista 3D",
+            str(temp_dir),
+            legend,
+        )
+
+    def _selected_color_legend(self) -> dict:
+        """Single source of truth for the selected GUI and PDF thickness legend."""
+        if self.color_six_bands_rb.get_active():
+            target_cm = self._parse_positive_entry(self.target_thickness_entry, "El espesor objetivo")
+            band_width_cm = target_cm / len(SIX_BAND_LABELS)
+            rows = []
+            for index, (label, color) in enumerate(zip(SIX_BAND_LABELS, SIX_BAND_COLORS)):
+                lower = index * band_width_cm
+                value = (
+                    f">= {lower:.1f} cm (tope {target_cm:.1f})"
+                    if index == len(SIX_BAND_LABELS) - 1
+                    else f"{lower:.1f}-{(index + 1) * band_width_cm:.1f} cm"
+                )
+                rows.append((color, label, value))
+            return {"title": "6 niveles", "rows": rows, "target_cm": target_cm}
+
+        if self.color_banded_rb.get_active():
+            low_cm, high_cm = self._band_thresholds_cm()
+            return {
+                "title": "3 niveles",
+                "rows": [
+                    (BAND_COLOR_LOW, "Bajo", f"< {low_cm:g} cm"),
+                    (BAND_COLOR_MEDIUM, "Intermedio", f"{low_cm:g}-{high_cm:g} cm"),
+                    (BAND_COLOR_HIGH, "Alto", f">= {high_cm:g} cm"),
+                ],
+            }
+
+        max_text = self.max_distance_entry.get_text().strip().replace(",", ".")
+        max_distance = float(max_text) if max_text else None
+        result = self._active_result()
+        distances = np.asarray(result.distances, dtype=np.float64)
+        clip_max = max_distance if max_distance else float(np.percentile(distances, 98))
+        return {
+            "title": "Escala continua",
+            "continuous_max_cm": max(clip_max, 1e-9) * 100.0,
+            "low_color": HEATMAP_COLOR_LOW,
+            "high_color": HEATMAP_COLOR_HIGH,
+        }
+
+    def _build_result_heatmap(self, result) -> tuple[object, dict]:
+        """Make the result viewer colors match the selected legend exactly."""
+        import open3d as o3d
+
+        if self._active_result_kind == "raycast":
+            cloud = o3d.geometry.PointCloud()
+            cloud.points = o3d.utility.Vector3dVector(result.hit_points)
+        else:
+            cloud = o3d.geometry.PointCloud(result.updated_cloud)
+        distances = np.asarray(result.distances, dtype=np.float64)
+        if len(cloud.points) != distances.size or distances.size == 0:
+            raise ValueError("El resultado no contiene puntos y distancias compatibles.")
+
+        legend = self._selected_color_legend()
+        if self.color_six_bands_rb.get_active():
+            target_cm = self._parse_positive_entry(self.target_thickness_entry, "El espesor objetivo")
+            target_m = target_cm / 100.0
+            colored = build_heatmap_cloud_six_bands(cloud, distances, target_m)
+            return colored, {**legend, "title": "Espesor · 6 niveles"}
+
+        if self.color_banded_rb.get_active():
+            low_cm, high_cm = self._band_thresholds_cm()
+            colored = build_heatmap_cloud_banded(
+                cloud, distances, low_cm / 100.0, high_cm / 100.0
+            )
+            return colored, {**legend, "title": "Espesor · 3 niveles"}
+
+        max_text = self.max_distance_entry.get_text().strip().replace(",", ".")
+        max_distance = float(max_text) if max_text else None
+        clip_max = max_distance if max_distance else float(np.percentile(distances, 98))
+        clip_max = max(clip_max, 1e-9)
+        colored = build_heatmap_cloud(cloud, distances, max_distance)
+        return colored, {**legend, "title": "Espesor · escala continua"}
 
     def _open_viewer(self) -> None:
         base_file = Path(self.base_path)

@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 from typing import Tuple
 
 import numpy as np
@@ -164,8 +167,29 @@ def compute_rigid_transform(base_points: np.ndarray, moving_points: np.ndarray) 
     """
     base_points = np.asarray(base_points, dtype=np.float64)
     moving_points = np.asarray(moving_points, dtype=np.float64)
-    if base_points.shape != moving_points.shape or base_points.shape[0] < 3:
-        raise ValueError("Se necesitan al menos 3 puntos correspondientes, en igual cantidad en ambas nubes.")
+    if (
+        base_points.ndim != 2
+        or moving_points.ndim != 2
+        or base_points.shape != moving_points.shape
+        or base_points.shape[0] < 3
+        or base_points.shape[1] != 3
+    ):
+        raise ValueError("Se necesitan al menos 3 pares de puntos XYZ, en igual cantidad y orden.")
+    if not np.all(np.isfinite(base_points)) or not np.all(np.isfinite(moving_points)):
+        raise ValueError("Los puntos de referencia contienen valores no finitos.")
+
+    # Tres puntos colineales no determinan una rotacion 3D unica. Rechazarlos
+    # aqui evita que SVD elija un giro arbitrario alrededor de esa linea.
+    for label, points in (("ANTES", base_points), ("DESPUES", moving_points)):
+        singular_values = np.linalg.svd(points - points.mean(axis=0), compute_uv=False)
+        if (
+            singular_values[0] <= 1e-12
+            or singular_values[1] <= max(singular_values[0] * 1e-6, 1e-12)
+        ):
+            raise ValueError(
+                f"Los puntos de {label} estan repetidos o casi alineados. "
+                "Elige al menos 3 referencias separadas y no colineales."
+            )
 
     base_centroid = base_points.mean(axis=0)
     moving_centroid = moving_points.mean(axis=0)
@@ -234,16 +258,57 @@ def show_point_cloud(
     window_name: str = "Aurora - Vista de la captura",
     show_coordinate_frame: bool = True,
 ) -> None:
-    """Abre una ventana 3D simple (no editable) mostrando la nube tal cual,
-    con el mismo estilo del demo oficial del SDK, para verificar visualmente
-    que la captura salio bien. Arranca en el punto de vista del sensor."""
-    vis = o3d.visualization.Visualizer()
+    """Muestra una nube en el visor 3D comun, con ejes y cierre con Q."""
+    show_geometries([cloud], window_name, show_coordinate_frame=show_coordinate_frame)
+
+
+def _create_q_only_visualizer() -> o3d.visualization.VisualizerWithKeyCallback:
+    """Create a legacy viewer that consumes keys except unmodified Q."""
+    vis = o3d.visualization.VisualizerWithKeyCallback()
+
+    def on_key_action(visualizer, key: int, action: int, mods: int) -> bool:
+        if key == ord("Q") and action == 1 and mods == 0:
+            visualizer.close()
+        return False
+
+    # GLFW key codes cover printable keys, Escape, navigation keys, and
+    # modifiers. Registering each one prevents Open3D's default key actions.
+    for key_code in range(32, 349):
+        vis.register_key_action_callback(
+            key_code,
+            lambda visualizer, action, mods, key=key_code: on_key_action(
+                visualizer, key, action, mods
+            ),
+        )
+    return vis
+
+
+def show_geometries(
+    geometries,
+    window_name: str = "Aurora - Vista 3D",
+    show_coordinate_frame: bool = True,
+    mesh_show_back_face: bool = False,
+    style_cloud: o3d.geometry.PointCloud | None = None,
+) -> None:
+    """Abre geometrías 3D en una ventana Open3D común con estilo y controles consistentes."""
+    vis = _create_q_only_visualizer()
     vis.create_window(window_name=window_name)
-    vis.add_geometry(cloud)
+    for geometry in geometries:
+        vis.add_geometry(geometry)
     if show_coordinate_frame:
         coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
         vis.add_geometry(coord_frame)
-    _apply_sdk_render_style(vis, cloud)
+    point_cloud = style_cloud
+    if point_cloud is None:
+        point_cloud = next(
+            (geometry for geometry in geometries if isinstance(geometry, o3d.geometry.PointCloud)), None
+        )
+    if point_cloud is not None:
+        _apply_sdk_render_style(vis, point_cloud)
+    else:
+        opt = vis.get_render_option()
+        opt.background_color = np.asarray([0.1, 0.1, 0.1])
+        opt.mesh_show_back_face = mesh_show_back_face
     _start_at_sensor_pov(vis)
     vis.run()
     vis.destroy_window()
@@ -259,16 +324,46 @@ def show_point_cloud_pair(
     updated_view = o3d.geometry.PointCloud(updated_cloud)
     base_view.paint_uniform_color((0.68, 0.72, 0.78))
     updated_view.paint_uniform_color((0.10, 0.72, 0.95))
-    coordinate_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(window_name=f"{window_name} - gris = ANTES, celeste = DESPUES")
-    vis.add_geometry(base_view)
-    vis.add_geometry(updated_view)
-    vis.add_geometry(coordinate_frame)
-    _apply_sdk_render_style(vis, base_view)
-    _start_at_sensor_pov(vis)
-    vis.run()
-    vis.destroy_window()
+    show_geometries(
+        [base_view, updated_view],
+        window_name=f"{window_name} - gris = ANTES, celeste = DESPUES",
+        style_cloud=base_view,
+    )
+
+
+def _pick_points_in_shared_viewer(
+    cloud: o3d.geometry.PointCloud,
+    window_name: str,
+    prompt: str,
+    max_points: int = 0,
+) -> np.ndarray:
+    """Run the same decorated Open3D SceneWidget used by all inspection views."""
+    with tempfile.TemporaryDirectory(prefix="aurora_point_picker_") as temp_dir:
+        temp = Path(temp_dir)
+        cloud_path = temp / "selection_cloud.ply"
+        output_path = temp / "selected_points.npy"
+        if not o3d.io.write_point_cloud(str(cloud_path), cloud):
+            raise OSError("No se pudo preparar la nube para seleccionar puntos.")
+        viewer = Path(__file__).resolve().with_name("viewer_host.py")
+        command = [
+            sys.executable,
+            str(viewer),
+            "pick",
+            str(cloud_path),
+            "--title",
+            window_name,
+            "--selection-output",
+            str(output_path),
+            "--pick-count",
+            str(max_points),
+            "--pick-prompt",
+            prompt,
+        ]
+        subprocess.run(command, cwd=viewer.parent.parent, check=False)
+        if not output_path.exists():
+            return np.empty((0, 3), dtype=float)
+        points = np.asarray(np.load(output_path), dtype=float).reshape((-1, 3))
+        return points
 
 
 def pick_landmark_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np.ndarray | None:
@@ -279,20 +374,14 @@ def pick_landmark_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np
     Arranca en el punto de vista del sensor. Devuelve las coordenadas en el
     orden elegido, o None si se eligieron menos de 3 puntos.
     """
-    vis = o3d.visualization.VisualizerWithEditing()
-    vis.create_window(window_name=window_name)
-    vis.add_geometry(cloud)
-    _apply_sdk_render_style(vis, cloud)
-    _start_at_sensor_pov(vis)
-    vis.run()
-    vis.destroy_window()
-
-    picked_indices = vis.get_picked_points()
-    if len(picked_indices) < 3:
+    picked_points = _pick_points_in_shared_viewer(
+        cloud,
+        window_name,
+        "Shift + clic en los puntos de referencia en orden; Q para terminar",
+    )
+    if len(picked_points) < 3:
         return None
-
-    points = np.asarray(cloud.points)
-    return points[picked_indices]
+    return picked_points
 
 
 def reference_photo_path_for(ply_path: Path) -> Path:
@@ -305,6 +394,22 @@ def save_reference_photo(ply_path: Path, image: np.ndarray, point_grid: np.ndarr
     """Guarda la foto de referencia y su grid de puntos 3D junto a un .ply,
     para poder elegir puntos de alineacion sobre la foto mas adelante."""
     np.savez_compressed(reference_photo_path_for(ply_path), image=image, point_grid=point_grid)
+
+
+def save_transformed_reference_photo(
+    source_photo_path: Path,
+    target_ply_path: Path,
+    rotation: np.ndarray,
+    translation: np.ndarray,
+) -> None:
+    """Copy a reference photo sidecar while transforming its associated XYZ grid."""
+    image, point_grid = load_reference_photo_file(source_photo_path)
+    transformed_grid = np.asarray(point_grid, dtype=np.float64).copy()
+    valid = np.all(np.isfinite(transformed_grid), axis=2)
+    transformed_grid[valid] = (
+        np.asarray(rotation, dtype=np.float64) @ transformed_grid[valid].T
+    ).T + np.asarray(translation, dtype=np.float64)
+    save_reference_photo(target_ply_path, image, transformed_grid)
 
 
 def load_reference_photo_file(npz_path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -712,6 +817,9 @@ class RaycastPipelineParams:
     # "delaunay" (mesh_from_point_cloud_delaunay, pensado para un recorte
     # casi-plano, ver pestaña 'Preparar nubes').
     mesh_method: str = "poisson"
+    # Downsample dense scans before reconstruction; Delaunay in particular
+    # becomes prohibitively expensive when fed every raw sensor point.
+    mesh_voxel_size: float = 0.01
     # "origin": raycast_thickness, un rayo por cada vertice desde la pose
     # guardada del sensor (ver base_origin/updated_origin arriba) — asume
     # que el sensor no se movio entre capturas.
@@ -756,7 +864,17 @@ def mesh_from_point_cloud(
     cloud = o3d.geometry.PointCloud(cloud)
     if not cloud.has_normals():
         cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
-        cloud.orient_normals_consistent_tangent_plane(30)
+        try:
+            cloud.orient_normals_consistent_tangent_plane(30)
+        except RuntimeError:
+            # Open3D/Qhull puede fallar al orientar una nube perfectamente
+            # plana o regular. En la captura Aurora los puntos estan en el
+            # marco de la camara; orientar hacia el origen conserva una
+            # orientacion consistente sin perturbar la geometria medida.
+            cloud.orient_normals_towards_camera_location(np.zeros(3))
+
+    if not np.all(np.isfinite(np.asarray(cloud.normals))):
+        raise ValueError("No se pudieron estimar normales finitas para reconstruir la malla Poisson.")
 
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(cloud, depth=poisson_depth)
     if density_trim_quantile > 0:
@@ -1012,10 +1130,35 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
             )
 
     log("Cargando nubes de puntos...")
-    base_cloud = load_point_cloud(params.base_path)
-    updated_cloud = load_point_cloud(params.updated_path)
+    base_source = load_point_cloud(params.base_path)
+    updated_source = load_point_cloud(params.updated_path)
+    base_cloud = base_source
+    updated_cloud = updated_source
     log(f"  Base       : {len(base_cloud.points)} puntos")
     log(f"  Actualizada: {len(updated_cloud.points)} puntos")
+
+    voxel_size = max(0.0, float(params.mesh_voxel_size))
+    if voxel_size > 0:
+        log(f"Reduciendo densidad de malla (voxel {voxel_size * 100:.2f} cm)...")
+        base_cloud = base_cloud.voxel_down_sample(voxel_size)
+        updated_cloud = updated_cloud.voxel_down_sample(voxel_size)
+
+    # Keep Qhull/Poisson work bounded for full-resolution Aurora scans. Increase
+    # the voxel only when the selected resolution still leaves an unusually
+    # large cloud, and report the effective value in the calculation log.
+    max_mesh_points = 350_000
+    while max(len(base_cloud.points), len(updated_cloud.points)) > max_mesh_points:
+        voxel_size = max(voxel_size * 1.25, 0.005)
+        log(
+            f"Ajustando resolucion para limitar la malla a {max_mesh_points:,} puntos "
+            f"(voxel {voxel_size * 100:.2f} cm)..."
+        )
+        base_cloud = base_source.voxel_down_sample(voxel_size)
+        updated_cloud = updated_source.voxel_down_sample(voxel_size)
+    log(
+        f"  Nubes para malla: {len(base_cloud.points):,} y {len(updated_cloud.points):,} "
+        f"puntos (voxel efectivo {voxel_size * 100:.2f} cm)."
+    )
 
     mesh_label = "Poisson" if params.mesh_method == "poisson" else "Delaunay"
     log(f"Reconstruyendo malla ({mesh_label}) de la nube base...")
@@ -1096,8 +1239,8 @@ def save_histogram(path: Path, distances: np.ndarray) -> None:
     fig = Figure(figsize=(8, 5))
     FigureCanvasAgg(fig)
     ax = fig.add_subplot(111)
-    ax.hist(distances * 1000, bins=60, color="steelblue", edgecolor="black")
-    ax.set_xlabel("Espesor de shotcrete (mm)")
+    ax.hist(distances * 100, bins=60, color="steelblue", edgecolor="black")
+    ax.set_xlabel("Espesor de shotcrete (cm)")
     ax.set_ylabel("Cantidad de puntos")
     ax.set_title("Distribucion del espesor de shotcrete (Cloud-to-Cloud)")
     fig.tight_layout()
@@ -1112,15 +1255,13 @@ def visualize(
     if show_overlay:
         base_copy = o3d.geometry.PointCloud(base)
         base_copy.paint_uniform_color([0.6, 0.6, 0.6])
-        o3d.visualization.draw_geometries(
+        show_geometries(
             [base_copy, heatmap_cloud],
             window_name="Aurora - Superposicion (gris=base, heatmap=espesor)",
+            style_cloud=base_copy,
         )
     else:
-        o3d.visualization.draw_geometries(
-            [heatmap_cloud],
-            window_name="Aurora - Heatmap de espesor de shotcrete",
-        )
+        show_point_cloud(heatmap_cloud, window_name="Aurora - Heatmap de espesor de shotcrete")
 
 
 def pick_crop_bounds(
@@ -1137,20 +1278,14 @@ def pick_crop_bounds(
     opuestas de una cara y despues cerrar la ventana (tecla Q o el boton de
     cerrar). El margen opcional se agrega alrededor de los puntos elegidos.
     """
-    vis = o3d.visualization.VisualizerWithEditing()
-    vis.create_window(window_name=window_name)
-    vis.add_geometry(cloud)
-    _apply_sdk_render_style(vis, cloud)
-    _start_at_sensor_pov(vis)
-    vis.run()
-    vis.destroy_window()
-
-    picked_indices = vis.get_picked_points()
-    if len(picked_indices) < 2 or (exact_points and len(picked_indices) != 2):
+    picked_points = _pick_points_in_shared_viewer(
+        cloud,
+        window_name,
+        "Shift + clic en 2 esquinas opuestas; Q para terminar",
+        max_points=2 if exact_points else 0,
+    )
+    if len(picked_points) < 2 or (exact_points and len(picked_points) != 2):
         return None
-
-    points = np.asarray(cloud.points)
-    picked_points = points[picked_indices]
     crop_min = tuple((picked_points.min(axis=0) - margin).tolist())
     crop_max = tuple((picked_points.max(axis=0) + margin).tolist())
     return crop_min, crop_max
@@ -1185,14 +1320,19 @@ def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
     log(f"  Base       : {len(base_cloud.points)} puntos")
     log(f"  Actualizada: {len(updated_cloud.points)} puntos")
 
+    log("Preparando nubes (recorte, reduccion y filtrado)...")
+    log("Preparando nube ANTES...")
     base_cloud = preprocess(
         base_cloud, params.voxel_size, params.remove_outliers, params.crop_min, params.crop_max,
         cloud_label="la nube base",
     )
+    log("Nube ANTES lista.")
+    log("Preparando nube DESPUES...")
     updated_cloud = preprocess(
         updated_cloud, params.voxel_size, params.remove_outliers, params.crop_min, params.crop_max,
         cloud_label="la nube actualizada",
     )
+    log("Nubes listas para medir.")
     if params.crop_min is not None:
         log(f"  Tras recorte -> base: {len(base_cloud.points)} puntos, actualizada: {len(updated_cloud.points)} puntos")
 

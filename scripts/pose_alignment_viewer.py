@@ -34,6 +34,7 @@ from typing import Optional
 
 import numpy as np
 import open3d as o3d
+from pointcloud_core import _create_q_only_visualizer
 
 TARGET_COLOR = (0.20, 0.80, 0.35)  # verde - posicion objetivo / "en posicion"
 NEAR_COLOR = (0.95, 0.65, 0.10)  # ambar - acercandose
@@ -255,11 +256,11 @@ class PoseAlignmentViewer:
             self._current_position = np.asarray(position, dtype=np.float64)
 
     def _run(self) -> None:
-        vis = o3d.visualization.Visualizer()
+        vis = _create_q_only_visualizer()
         # left=340: deja lugar a la izquierda para la ventana de metricas
         # (ver _build_imu_hud_window en gui_gtk.py, que se abre en (20, 20)),
         # para que no queden superpuestas por default.
-        vis.create_window(window_name="Aurora - Alineacion IMU", width=760, height=760, left=340, top=20)
+        vis.create_window(window_name="Aurora - Alineacion IMU", width=1920, height=1080, left=340, top=20)
 
         opt = vis.get_render_option()
         opt.background_color = np.asarray([0.059, 0.067, 0.082])  # #0F1115
@@ -271,6 +272,10 @@ class PoseAlignmentViewer:
 
         target_marker = _marker_sphere(np.zeros(3), TARGET_COLOR)
         vis.add_geometry(target_marker, reset_bounding_box=False)
+        vis.add_geometry(
+            o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5),
+            reset_bounding_box=False,
+        )
 
         view = vis.get_view_control()
         # 'front'/'up' deben ser perpendiculares entre si: si no lo son,
