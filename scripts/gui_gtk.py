@@ -4363,6 +4363,9 @@ class AuroraGUI:
                 viewer.set_live_sensor(self.sensor_connection)
                 self.viewer = viewer
                 self.live_view_temp_dir = temp_dir
+                # Apply range, cone and color settings before the polling
+                # thread starts so the first live frame is filtered too.
+                self._apply_viewer_settings()
                 self.viewer.start()
                 process = self._launch_viewer_process(
                     "live",

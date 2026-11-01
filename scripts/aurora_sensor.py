@@ -276,13 +276,17 @@ def read_frame_points_and_colors(
     max_distance_m: float | None = None,
     cone_angle_deg: float | None = None,
     forward_axis: str = "z",
+    preserve_organization: bool = False,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
     """
     Igual que 'read_frame_points', pero ademas devuelve el color real de cada
     punto tomado de la imagen de camara alineada al frame de profundidad
     (mismo enfoque que el demo oficial 'examples/dense_point_cloud.py' del
     SDK). Si no hay imagen RGB correlacionada, usa gris neutro para que la
-    captura no parezca una medicion coloreada por altura.
+    captura no parezca una medicion coloreada por altura. Con
+    'preserve_organization=True', una nube organizada se devuelve como grids
+    HxWx3; los puntos invalidos llevan NaN para poder estabilizar la lectura
+    temporal por pixel en la vista en vivo.
     """
     _, _, DEPTHCAM_FRAME_TYPE_POINT3D, _ = _import_sdk()
     sdk = connection.sdk
@@ -331,18 +335,29 @@ def read_frame_points_and_colors(
 
     original_indices = np.arange(len(points))
     valid_indices = original_indices[valid]
-    points = points[valid]
-    if len(points) == 0:
+    if not np.any(valid):
+        if preserve_organization and is_organized:
+            empty_points = np.full((height, width, 3), np.nan, dtype=np.float32)
+            empty_colors = np.zeros((height, width, 3), dtype=np.float32)
+            return empty_points, empty_colors
         return None, None
 
-    colors = _colorize_from_camera(points, valid_indices, width, height, is_organized, camera_rgb)
+    valid_points = points[valid]
+    colors = _colorize_from_camera(valid_points, valid_indices, width, height, is_organized, camera_rgb)
 
-    if len(points) > max_points:
-        idx = np.random.choice(len(points), max_points, replace=False)
-        points = points[idx]
+    if preserve_organization and is_organized:
+        organized_points = np.full((len(points), 3), np.nan, dtype=np.float32)
+        organized_colors = np.zeros((len(points), 3), dtype=np.float32)
+        organized_points[valid] = valid_points
+        organized_colors[valid] = colors
+        return organized_points.reshape(height, width, 3), organized_colors.reshape(height, width, 3)
+
+    if len(valid_points) > max_points:
+        idx = np.random.choice(len(valid_points), max_points, replace=False)
+        valid_points = valid_points[idx]
         colors = colors[idx]
 
-    return points, colors
+    return valid_points, colors
 
 
 def capture_reference_frame(

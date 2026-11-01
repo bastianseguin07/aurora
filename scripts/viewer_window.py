@@ -543,6 +543,7 @@ def main() -> None:
         live_added = False
         last_live_mtime_ns = -1
         last_live_poll = 0.0
+        live_count_history: list[int] = []
 
         def refresh_live_frame() -> bool:
             nonlocal live_added, last_live_mtime_ns, last_live_poll
@@ -569,7 +570,10 @@ def main() -> None:
                     scene_widget.scene.remove_geometry("live")
                 scene_widget.scene.add_geometry("live", cloud, geometries[0][2])
                 live_added = True
-                live_status.text = f"En vivo · {len(points):,} puntos"
+                live_count_history.append(len(points))
+                del live_count_history[:-5]
+                count_estimate = int(np.median(live_count_history))
+                live_status.text = f"En vivo · ≈{round(count_estimate / 1000):,} mil puntos"
                 if last_live_mtime_ns < 0:
                     bounds = scene_widget.scene.bounding_box
                     center = bounds.get_center()
