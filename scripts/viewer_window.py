@@ -573,7 +573,7 @@ def main() -> None:
                 live_count_history.append(len(points))
                 del live_count_history[:-5]
                 count_estimate = int(np.median(live_count_history))
-                live_status.text = f"En vivo · ≈{round(count_estimate / 1000):,} mil puntos"
+                live_status.text = f"En vivo · aprox. {round(count_estimate / 1000):,} mil puntos"
                 if last_live_mtime_ns < 0:
                     bounds = scene_widget.scene.bounding_box
                     center = bounds.get_center()
