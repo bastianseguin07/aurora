@@ -838,6 +838,7 @@ class RaycastPipelineResult:
     stats: DistanceStats
     distances: np.ndarray
     hit_points: np.ndarray
+    unmatched_points: np.ndarray
     base_mesh: o3d.geometry.TriangleMesh
     updated_mesh: o3d.geometry.TriangleMesh
     heatmap_cloud: o3d.geometry.PointCloud
@@ -971,7 +972,7 @@ def raycast_thickness_along_normal(
     base_mesh: o3d.geometry.TriangleMesh,
     updated_mesh: o3d.geometry.TriangleMesh,
     max_distance: float | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Alternativa a 'raycast_thickness' que no depende de la pose del sensor:
     ajusta un plano a los vertices de 'base_mesh' (fit_plane) y tira, desde
@@ -988,8 +989,8 @@ def raycast_thickness_along_normal(
     metodo no tiene forma de detectar ni corregir un desplazamiento del
     sensor entre capturas, lo mediria como si fuera espesor real.
 
-    Devuelve (distancias, puntos de impacto sobre 'updated_mesh') solo para
-    los rayos que impactaron.
+    Devuelve distancias, puntos de impacto y vertices base cuyos rayos no
+    impactaron la malla actualizada (o excedieron max_distance).
     """
     base_vertices = np.asarray(base_mesh.vertices)
     centroid, _, _, normal = fit_plane(base_vertices)
@@ -1011,7 +1012,7 @@ def raycast_thickness_along_normal(
         valid &= t_hit <= max_distance
     distances = t_hit[valid].astype(np.float64)
     hit_points = base_vertices[valid] + normal * distances[:, None]
-    return distances, hit_points
+    return distances, hit_points, base_vertices[~valid]
 
 
 def raycast_thickness(
@@ -1019,7 +1020,7 @@ def raycast_thickness(
     updated_mesh: o3d.geometry.TriangleMesh,
     base_origin: np.ndarray,
     updated_origin: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Estima el espesor por raycasting en vez de vecino-mas-cercano (C2C):
     para cada vertice de la malla 'actualizada' (con shotcrete), tira un
@@ -1037,8 +1038,8 @@ def raycast_thickness(
     valido; quien llama a esta funcion es responsable de avisar si el
     desfasaje es grande (ver run_raycast_pipeline).
 
-    Devuelve (distancias, puntos de impacto sobre la malla actualizada)
-    solo para los rayos que impactaron ambas mallas.
+    Devuelve distancias, impactos sobre la malla actualizada y vertices de
+    esa malla cuyos rayos no impactaron ambas superficies.
     """
     scene_updated = o3d.t.geometry.RaycastingScene()
     scene_updated.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(updated_mesh))
@@ -1070,7 +1071,9 @@ def raycast_thickness(
     valid_hit = np.isfinite(t_updated) & np.isfinite(t_base)
     distances = t_base[valid_hit] - t_updated[valid_hit]
     hit_points = origins_updated[valid_hit] + directions[valid_hit] * t_updated[valid_hit, None]
-    return distances, hit_points
+    valid_vertices = vertices[valid_dir]
+    unmatched_points = np.concatenate((vertices[~valid_dir], valid_vertices[~valid_hit]), axis=0)
+    return distances, hit_points, unmatched_points
 
 
 def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPipelineResult:
@@ -1179,10 +1182,14 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
 
     if params.ray_method == "normal":
         log("Tirando rayos a lo largo de la normal de la malla base hacia la malla actualizada...")
-        distances, hit_points = raycast_thickness_along_normal(base_mesh, updated_mesh, params.max_distance)
+        distances, hit_points, unmatched_points = raycast_thickness_along_normal(
+            base_mesh, updated_mesh, params.max_distance
+        )
     else:
         log("Tirando rayos desde el origen del sensor hacia ambas mallas...")
-        distances, hit_points = raycast_thickness(base_mesh, updated_mesh, base_origin, updated_origin)
+        distances, hit_points, unmatched_points = raycast_thickness(
+            base_mesh, updated_mesh, base_origin, updated_origin
+        )
     if distances.size == 0:
         raise ValueError(
             "Ningun rayo impacto ambas mallas. Revisa que las dos capturas cubran "
@@ -1212,6 +1219,7 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
         stats=stats,
         distances=distances,
         hit_points=hit_points,
+        unmatched_points=unmatched_points,
         base_mesh=base_mesh,
         updated_mesh=updated_mesh,
         heatmap_cloud=heatmap_cloud,

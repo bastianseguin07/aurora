@@ -3568,6 +3568,7 @@ class AuroraGUI:
                 stats=stats,
                 distances=rows[:, 3].copy(),
                 hit_points=rows[:, :3].copy(),
+                unmatched_points=np.load(params.output_dir / "raycast_unmatched_points.npy"),
                 base_mesh=base_mesh,
                 updated_mesh=updated_mesh,
                 heatmap_cloud=load_point_cloud(heatmap_path),
@@ -3668,6 +3669,13 @@ class AuroraGUI:
                     "Aurora - Mallas reconstruidas (gris = original, naranja = con shotcrete)",
                     "No se pudieron abrir las mallas",
                     str(temp_dir),
+                    {
+                        "title": "Mallas reconstruidas",
+                        "rows": [
+                            ((0.55, 0.60, 0.65), "ANTES", "Original"),
+                            ((1.0, 0.549, 0.0), "DESPUÉS", "Con shotcrete"),
+                        ],
+                    },
                 )
             except Exception as exc:
                 shutil.rmtree(temp_dir, ignore_errors=True)
@@ -4932,21 +4940,40 @@ class AuroraGUI:
             target_cm = self._parse_positive_entry(self.target_thickness_entry, "El espesor objetivo")
             target_m = target_cm / 100.0
             colored = build_heatmap_cloud_six_bands(cloud, distances, target_m)
-            return colored, {**legend, "title": "Espesor · 6 niveles"}
+            legend = {**legend, "title": "Espesor · 6 niveles"}
+            return self._append_raycast_unmatched(colored, legend, result)
 
         if self.color_banded_rb.get_active():
             low_cm, high_cm = self._band_thresholds_cm()
             colored = build_heatmap_cloud_banded(
                 cloud, distances, low_cm / 100.0, high_cm / 100.0
             )
-            return colored, {**legend, "title": "Espesor · 3 niveles"}
+            legend = {**legend, "title": "Espesor · 3 niveles"}
+            return self._append_raycast_unmatched(colored, legend, result)
 
         max_text = self.max_distance_entry.get_text().strip().replace(",", ".")
         max_distance = float(max_text) if max_text else None
         clip_max = max_distance if max_distance else float(np.percentile(distances, 98))
         clip_max = max(clip_max, 1e-9)
         colored = build_heatmap_cloud(cloud, distances, max_distance)
-        return colored, {**legend, "title": "Espesor · escala continua"}
+        legend = {**legend, "title": "Espesor · escala continua"}
+        return self._append_raycast_unmatched(colored, legend, result)
+
+    @staticmethod
+    def _append_raycast_unmatched(colored, legend: dict, result):
+        """Show ray misses in neutral gray without inventing thickness values."""
+        if getattr(result, "unmatched_points", np.empty((0, 3))).size:
+            import open3d as o3d
+
+            unmatched = o3d.geometry.PointCloud()
+            unmatched.points = o3d.utility.Vector3dVector(result.unmatched_points)
+            unmatched.paint_uniform_color((0.58, 0.60, 0.63))
+            colored += unmatched
+            legend = {
+                **legend,
+                "extra_rows": [((0.58, 0.60, 0.63), "Sin dato", "Sin impacto de rayo")],
+            }
+        return colored, legend
 
     def _open_viewer(self) -> None:
         base_file = Path(self.base_path)

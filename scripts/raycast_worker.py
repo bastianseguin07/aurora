@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import open3d as o3d
+import numpy as np
 
 from pointcloud_core import RaycastPipelineParams, run_raycast_pipeline
 
@@ -35,6 +36,7 @@ def main() -> int:
         base_mesh_path = params.output_dir / "raycast_base_mesh.ply"
         updated_mesh_path = params.output_dir / "raycast_updated_mesh.ply"
         print("Guardando mallas reconstruidas...", flush=True)
+        np.save(params.output_dir / "raycast_unmatched_points.npy", result.unmatched_points)
         if not o3d.io.write_triangle_mesh(str(base_mesh_path), result.base_mesh):
             raise RuntimeError(f"No se pudo guardar la malla base: {base_mesh_path}")
         if not o3d.io.write_triangle_mesh(str(updated_mesh_path), result.updated_mesh):

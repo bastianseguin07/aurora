@@ -62,6 +62,17 @@ def _legend_panel(spec: dict, em: int) -> gui.Vert:
         high_label.text_color = gui.Color(0.12, 0.14, 0.17, 1.0)
         labels.add_child(high_label)
         panel.add_child(labels)
+    for color, label, value in spec.get("extra_rows", []):
+        row = gui.Horiz(0.45 * em)
+        row.add_child(gui.ImageWidget(_rgb_image(tuple(color))))
+        label_widget = gui.Label(str(label))
+        label_widget.text_color = gui.Color(0.12, 0.14, 0.17, 1.0)
+        row.add_child(label_widget)
+        row.add_stretch()
+        value_widget = gui.Label(str(value))
+        value_widget.text_color = gui.Color(0.12, 0.14, 0.17, 1.0)
+        row.add_child(value_widget)
+        panel.add_child(row)
     return panel
 
 
@@ -99,7 +110,7 @@ def _read_geometries(kind: str, paths: list[Path]):
     updated_mesh.paint_uniform_color((1.0, 0.549, 0.0))
     base_mesh.compute_vertex_normals()
     updated_mesh.compute_vertex_normals()
-    return [("malla_antes", base_mesh, mesh_material), ("malla_despues", updated_mesh, mesh_material)]
+    return [("antes", base_mesh, mesh_material), ("despues", updated_mesh, mesh_material)]
 
 
 def main() -> None:
@@ -137,7 +148,7 @@ def main() -> None:
         legend = json.loads(args.legend_json) if args.legend_json else None
         legend_widget = _legend_panel(legend, window.theme.font_size) if legend else None
         pair_controls = None
-        if args.kind in ("pair", "thickness"):
+        if args.kind in ("pair", "thickness", "meshes"):
             pair_controls = gui.Horiz(
                 0.5 * window.theme.font_size,
                 gui.Margins(0.5 * window.theme.font_size, 0.35 * window.theme.font_size,
