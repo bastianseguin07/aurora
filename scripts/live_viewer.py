@@ -15,14 +15,17 @@ from __future__ import annotations
 import threading
 import time
 import os
-from collections import deque
 from typing import Optional
 from pathlib import Path
 
 import numpy as np
 import open3d as o3d
 
-from aurora_sensor import AuroraConnection, read_frame_points_and_colors
+from aurora_sensor import (
+    AuroraConnection,
+    TemporalFrameMedianFilter,
+    read_frame_points_and_colors,
+)
 from live_stream_server import LiveStreamServer
 from pointcloud_core import (
     _create_q_only_visualizer,
@@ -34,58 +37,6 @@ from pointcloud_core import (
 )
 
 LIVE_STREAM_INTERVAL_S = 0.2  # ritmo de envio al celular, mas lento que el redibujado local
-
-
-class _LiveFrameMedianFilter:
-    """Suppress depth jitter and intermittent returns in a short frame window."""
-
-    def __init__(self, window: int = 5):
-        self.window = max(1, int(window))
-        self._frames: deque[tuple[np.ndarray, np.ndarray]] = deque(maxlen=self.window)
-        self._shape: tuple[int, int, int] | None = None
-
-    def update(
-        self,
-        points_grid: np.ndarray,
-        colors_grid: np.ndarray,
-        max_points: int = 40000,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        points = np.asarray(points_grid, dtype=np.float32)
-        colors = np.asarray(colors_grid, dtype=np.float32)
-        if points.ndim != 3 or points.shape[-1] != 3 or colors.shape != points.shape:
-            raise ValueError("La estabilizacion requiere grids de puntos y colores HxWx3 compatibles.")
-        if self._shape != points.shape:
-            self._frames.clear()
-            self._shape = points.shape
-        self._frames.append((points.copy(), colors.copy()))
-
-        point_stack = np.stack([frame[0] for frame in self._frames])
-        color_stack = np.stack([frame[1] for frame in self._frames])
-        valid_stack = np.isfinite(point_stack).all(axis=3)
-        valid_count = valid_stack.sum(axis=0)
-        minimum_observations = (len(self._frames) + 1) // 2
-        valid = valid_count >= minimum_observations
-        # Sorting the short time axis is much faster than nanmedian on the
-        # full camera grid and avoids a 0.4 s UI stall on each live update.
-        point_values = np.where(valid_stack[..., None], point_stack, np.inf)
-        color_values = np.where(valid_stack[..., None], color_stack, np.inf)
-        point_values.sort(axis=0)
-        color_values.sort(axis=0)
-        median_index = np.maximum(valid_count - 1, 0) // 2
-        gather_index = np.broadcast_to(
-            median_index[None, :, :, None], (1, *median_index.shape, 3)
-        )
-        filtered_points = np.take_along_axis(point_values, gather_index, axis=0)[0]
-        filtered_colors = np.take_along_axis(color_values, gather_index, axis=0)[0]
-        filtered_points[~valid] = np.nan
-        filtered_colors[~valid] = 0.0
-
-        indices = np.flatnonzero(valid)
-        if len(indices) > max_points:
-            indices = indices[np.linspace(0, len(indices) - 1, max_points, dtype=np.int64)]
-        flat_points = filtered_points.reshape((-1, 3))
-        flat_colors = filtered_colors.reshape((-1, 3))
-        return flat_points[indices].copy(), flat_colors[indices].copy()
 
 
 class LiveViewer:
@@ -323,7 +274,7 @@ class LiveViewer:
         last_colored: o3d.geometry.PointCloud | None = None
         last_sensor_poll = 0.0
         last_stream_send = 0.0
-        live_smoother = _LiveFrameMedianFilter(window=5)
+        live_smoother = TemporalFrameMedianFilter(window=5)
 
         while not self._stop_event.is_set():
             with self._lock:
@@ -421,7 +372,7 @@ class LiveViewer:
         """Poll the sensor and publish colored frames for the modern 3D window."""
         last_sensor_poll = 0.0
         last_stream_send = 0.0
-        live_smoother = _LiveFrameMedianFilter(window=5)
+        live_smoother = TemporalFrameMedianFilter(window=5)
         while not self._stop_event.is_set():
             with self._lock:
                 connection = self.aurora_connection

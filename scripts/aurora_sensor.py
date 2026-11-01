@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -269,6 +270,57 @@ def _colorize_from_camera(
     return colors
 
 
+class TemporalFrameMedianFilter:
+    """Median-filter an organized Aurora frame over a short time window."""
+
+    def __init__(self, window: int = 5):
+        self.window = max(1, int(window))
+        self._frames: deque[tuple[np.ndarray, np.ndarray]] = deque(maxlen=self.window)
+        self._shape: tuple[int, int, int] | None = None
+
+    def update(
+        self,
+        points_grid: np.ndarray,
+        colors_grid: np.ndarray,
+        max_points: int = 40000,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        points = np.asarray(points_grid, dtype=np.float32)
+        colors = np.asarray(colors_grid, dtype=np.float32)
+        if points.ndim != 3 or points.shape[-1] != 3 or colors.shape != points.shape:
+            raise ValueError("La mediana temporal requiere grids de puntos y colores HxWx3 compatibles.")
+        if self._shape != points.shape:
+            self._frames.clear()
+            self._shape = points.shape
+        self._frames.append((points.copy(), colors.copy()))
+
+        point_stack = np.stack([frame[0] for frame in self._frames])
+        color_stack = np.stack([frame[1] for frame in self._frames])
+        valid_stack = np.isfinite(point_stack).all(axis=3)
+        valid_count = valid_stack.sum(axis=0)
+        minimum_observations = (len(self._frames) + 1) // 2
+        valid = valid_count >= minimum_observations
+        # Sorting the short time axis is faster than nanmedian on the full grid.
+        point_values = np.where(valid_stack[..., None], point_stack, np.inf)
+        color_values = np.where(valid_stack[..., None], color_stack, np.inf)
+        point_values.sort(axis=0)
+        color_values.sort(axis=0)
+        median_index = np.maximum(valid_count - 1, 0) // 2
+        gather_index = np.broadcast_to(
+            median_index[None, :, :, None], (1, *median_index.shape, 3)
+        )
+        filtered_points = np.take_along_axis(point_values, gather_index, axis=0)[0]
+        filtered_colors = np.take_along_axis(color_values, gather_index, axis=0)[0]
+        filtered_points[~valid] = np.nan
+        filtered_colors[~valid] = 0.0
+
+        indices = np.flatnonzero(valid)
+        if len(indices) > max_points:
+            indices = indices[np.linspace(0, len(indices) - 1, max_points, dtype=np.int64)]
+        flat_points = filtered_points.reshape((-1, 3))
+        flat_colors = filtered_colors.reshape((-1, 3))
+        return flat_points[indices].copy(), flat_colors[indices].copy()
+
+
 def read_frame_points_and_colors(
     connection: AuroraConnection,
     max_points: int = 50000,
@@ -444,8 +496,10 @@ def capture_snapshot(
     """
     Acumula frames del sensor durante 'duration_s' segundos en una sola nube
     de puntos ("foto fija"), tal como los entrega el sensor (sin alineacion,
-    sin transformar por pose/SLAM). Para evitar que particulas de polvo en
-    el aire (que solo aparecen en algunos frames, en posiciones distintas
+    sin transformar por pose/SLAM). Cada frame organizado se estabiliza con
+    una mediana temporal de cinco frames para reducir ruido de profundidad
+    antes de acumularlo. Para evitar que particulas de polvo en el aire
+    (que solo aparecen en algunos frames, en posiciones distintas
     cada vez) contaminen la captura, cada celda de voxel debe estar presente
     en al menos 'persistence_ratio' de los frames capturados para
     conservarse; el resto se descarta por no ser lo suficientemente
@@ -469,9 +523,12 @@ def capture_snapshot(
         raise ValueError("max_points_per_frame debe ser mayor que cero.")
     if not np.isfinite(voxel_size) or voxel_size < 0:
         raise ValueError("voxel_size debe ser cero o mayor.")
+    if persistence_ratio > 0 and voxel_size <= 0:
+        raise ValueError("La persistencia requiere un voxel_size mayor que cero.")
 
     collected_points: list[np.ndarray] = []
     collected_colors: list[np.ndarray] = []
+    temporal_filter = TemporalFrameMedianFilter(window=5)
     start = time.time()
 
     while time.time() - start < duration_s:
@@ -484,8 +541,17 @@ def capture_snapshot(
             max_distance_m=max_distance_m,
             cone_angle_deg=cone_angle_deg,
             forward_axis=forward_axis,
+            preserve_organization=True,
         )
         if points is None:
+            continue
+        if points.ndim == 3:
+            points, colors = temporal_filter.update(
+                points,
+                colors,
+                max_points=max_points_per_frame,
+            )
+        if not len(points):
             continue
 
         collected_points.append(points)

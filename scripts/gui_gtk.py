@@ -652,9 +652,10 @@ class AuroraGUI:
         self._capture_progress_duration_s: float | None = None
         self._capture_progress_timer: int | None = None
         self._live_view_monitor_source: int | None = None
+        self._log_poll_source: int | None = None
 
         self._build_layout()
-        GLib.timeout_add(150, self._poll_log_queue)
+        self._log_poll_source = GLib.timeout_add(150, self._poll_log_queue)
 
     # ------------------------------------------------------------------ UI
 
@@ -1563,7 +1564,8 @@ class AuroraGUI:
                 "configurada abajo y guarda el resultado automaticamente como la nube "
                 "'original' o 'con shotcrete' segun el boton elegido. Manten el sensor "
                 "quieto mientras captura: combina varios frames en coordenadas de camara "
-                "sin alinearlos entre si."
+                "sin alinearlos entre si y aplica una mediana temporal de cinco frames "
+                "para reducir ruido de profundidad."
             ),
             False,
             False,
@@ -4031,7 +4033,10 @@ class AuroraGUI:
                 message = self.log_queue.get_nowait()
                 end_iter = self.log_buffer.get_end_iter()
                 self.log_buffer.insert(end_iter, message + "\n")
-                self.log_view.scroll_to_iter(self.log_buffer.get_end_iter(), 0.0, False, 0, 0)
+                if self.log_view.get_mapped():
+                    self.log_view.scroll_to_iter(
+                        self.log_buffer.get_end_iter(), 0.0, False, 0, 0
+                    )
         except queue.Empty:
             pass
         return True
@@ -5275,6 +5280,9 @@ class AuroraGUI:
         self._apply_viewer_settings()
 
     def _on_close(self, *_args) -> None:
+        if self._log_poll_source is not None:
+            GLib.source_remove(self._log_poll_source)
+            self._log_poll_source = None
         self._close_viewer()
         self._finish_capture_progress()
         self._close_imu_pose_viewer()
