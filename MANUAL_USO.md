@@ -22,7 +22,7 @@ La interfaz calcula un par ANTES/DESPUES por vez y no mantiene un historial de c
 
 Conecta la PC al Aurora por red y usa la direccion del sensor (por defecto `192.168.11.1`). Pulsa **Conectar** y espera el indicador conectado. **Capturar tunel original** asigna la toma a ANTES; **Capturar tunel con shotcrete** la asigna a DESPUES. Ambas capturan durante 15 segundos por defecto y luego piden donde guardar el `.ply`. **Detener captura** termina antes con los frames acumulados.
 
-En **Ajustes de captura (opcional)**, la persistencia minima por defecto es `0` (sin filtro de persistencia); valores mayores conservan puntos presentes en mas frames y pueden eliminar puntos reales si el sensor se mueve. El limite de campo de vision y la distancia maxima tambien descartan puntos: dejalos desactivados salvo que tengas claro que la zona de pared medida queda dentro del filtro. Revisa la toma con **Ver ultima captura**.
+En **Ajustes de captura (opcional)**, la persistencia minima por defecto es `0` (sin filtro de persistencia); valores mayores conservan puntos presentes en mas frames y pueden eliminar puntos reales si el sensor se mueve. Manten el sensor quieto: los frames se fusionan en coordenadas de camara y no se alinean entre si. El limite de campo de vision y la distancia maxima tambien descartan puntos: dejalos desactivados salvo que tengas claro que la zona de pared medida queda dentro del filtro. Revisa la toma con **Ver ultima captura**.
 
 La captura puede guardar datos auxiliares de pose y referencia junto al archivo. Si no estan disponibles, el `.ply` se puede cargar y alinear manualmente por puntos 3D; la guia IMU requerira pose guardada.
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
@@ -46,6 +46,7 @@ def _import_sdk():
 class AuroraConnection:
     sdk: object
     depth_enabled: bool = False
+    sdk_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
 def connect(connection_string: str = "192.168.11.1") -> AuroraConnection:
@@ -76,12 +77,13 @@ def connect(connection_string: str = "192.168.11.1") -> AuroraConnection:
 
 def disconnect(connection: AuroraConnection) -> None:
     _, ENHANCED_IMAGE_TYPE_DEPTH, _, _ = _import_sdk()
-    try:
-        if connection.depth_enabled:
-            connection.sdk.controller.set_enhanced_imaging_subscription(ENHANCED_IMAGE_TYPE_DEPTH, False)
-    finally:
-        connection.sdk.disconnect()
-        connection.sdk.release()
+    with connection.sdk_lock:
+        try:
+            if connection.depth_enabled:
+                connection.sdk.controller.set_enhanced_imaging_subscription(ENHANCED_IMAGE_TYPE_DEPTH, False)
+        finally:
+            connection.sdk.disconnect()
+            connection.sdk.release()
 
 
 @dataclass
@@ -98,7 +100,8 @@ def get_current_pose(connection: AuroraConnection) -> SensorPose:
     usuario a devolver el sensor a la posicion donde capturo la nube base
     (pestana 'Alineacion IMU'), sin necesidad de recorrer toda la nube."""
     try:
-        position, rpy, timestamp_ns = connection.sdk.get_current_pose(use_se3=False)
+        with connection.sdk_lock:
+            position, rpy, timestamp_ns = connection.sdk.get_current_pose(use_se3=False)
     except Exception as exc:
         raise RuntimeError(f"No se pudo obtener la posicion actual del sensor: {exc}") from exc
     return SensorPose(
@@ -127,17 +130,18 @@ def read_frame_points(
     """
     _, _, DEPTHCAM_FRAME_TYPE_POINT3D, _ = _import_sdk()
     sdk = connection.sdk
+    with connection.sdk_lock:
+        if not sdk.enhanced_imaging.wait_depth_camera_next_frame(timeout_ms):
+            return None
 
-    if not sdk.enhanced_imaging.wait_depth_camera_next_frame(timeout_ms):
-        return None
+        frame = sdk.enhanced_imaging.peek_depth_camera_frame(DEPTHCAM_FRAME_TYPE_POINT3D)
+        if frame is None or not frame.data:
+            return None
 
-    frame = sdk.enhanced_imaging.peek_depth_camera_frame(DEPTHCAM_FRAME_TYPE_POINT3D)
-    if frame is None or not frame.data:
-        return None
-
-    points = frame.to_point3d_array()
-    if points is None or len(points) == 0:
-        return None
+        points = frame.to_point3d_array()
+        if points is None or len(points) == 0:
+            return None
+        points = np.asarray(points).copy()
 
     valid = ~np.all(points == 0, axis=1)
     valid &= np.all(np.isfinite(points), axis=1)
@@ -222,19 +226,9 @@ def _extract_camera_rgb_image(camera_image) -> np.ndarray | None:
     return None
 
 
-def _height_based_colors(points_xyz: np.ndarray) -> np.ndarray:
-    """Degrade por altura usado como respaldo cuando no hay imagen de camara
-    disponible para colorear (mismo criterio que el demo oficial)."""
-    if len(points_xyz) == 0:
-        return np.zeros((0, 3))
-    heights = points_xyz[:, 1]
-    span = heights.max() - heights.min() + 1e-8
-    height_normalized = (heights - heights.min()) / span
-    colors = np.zeros((len(points_xyz), 3))
-    colors[:, 0] = height_normalized * 0.8 + 0.1
-    colors[:, 1] = (1 - height_normalized) * 0.8 + 0.1
-    colors[:, 2] = 0.5
-    return colors
+def _neutral_gray_colors(points_xyz: np.ndarray) -> np.ndarray:
+    """Use the GUI's neutral gray when no aligned camera RGB is available."""
+    return np.full((len(points_xyz), 3), 0.72, dtype=np.float32)
 
 
 def _colorize_from_camera(
@@ -243,11 +237,11 @@ def _colorize_from_camera(
     width: int,
     height: int,
     is_organized: bool,
-    camera_image,
+    camera_rgb: np.ndarray | None,
 ) -> np.ndarray:
-    img_rgb = _extract_camera_rgb_image(camera_image) if camera_image is not None else None
+    img_rgb = camera_rgb
     if img_rgb is None or not is_organized:
-        return _height_based_colors(points_xyz)
+        return _neutral_gray_colors(points_xyz)
 
     img_height, img_width = img_rgb.shape[0], img_rgb.shape[1]
     rows = valid_indices // width
@@ -259,9 +253,16 @@ def _colorize_from_camera(
     cols = np.clip(cols, 0, img_width - 1)
     colors = img_rgb[rows, cols]
 
-    avg_brightness = colors.mean() if colors.size else 0.0
-    if avg_brightness > 0.9 or avg_brightness < 0.1:
-        return _height_based_colors(points_xyz)
+    if not colors.size:
+        return _neutral_gray_colors(points_xyz)
+    # Aurora often returns a dark, monochrome infrared image. Brightness is
+    # not a reliable way to decide whether the RGB frame is useful: rejecting
+    # a dark frame loses its native grayscale contrast and paints every point
+    # the same gray. Fall back only when the sampled image has almost no
+    # contrast at all (for example, an all-black unavailable image).
+    luminance = colors @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    if float(np.percentile(luminance, 99) - np.percentile(luminance, 1)) < 0.02:
+        return _neutral_gray_colors(points_xyz)
     return colors
 
 
@@ -277,26 +278,35 @@ def read_frame_points_and_colors(
     Igual que 'read_frame_points', pero ademas devuelve el color real de cada
     punto tomado de la imagen de camara alineada al frame de profundidad
     (mismo enfoque que el demo oficial 'examples/dense_point_cloud.py' del
-    SDK). Si no hay imagen de camara disponible, usa un degrade por altura
-    como respaldo.
+    SDK). Si no hay imagen RGB correlacionada, usa gris neutro para que la
+    captura no parezca una medicion coloreada por altura.
     """
     _, _, DEPTHCAM_FRAME_TYPE_POINT3D, _ = _import_sdk()
     sdk = connection.sdk
+    with connection.sdk_lock:
+        if not sdk.enhanced_imaging.wait_depth_camera_next_frame(timeout_ms):
+            return None, None
 
-    if not sdk.enhanced_imaging.wait_depth_camera_next_frame(timeout_ms):
-        return None, None
+        frame = sdk.enhanced_imaging.peek_depth_camera_frame(DEPTHCAM_FRAME_TYPE_POINT3D)
+        if frame is None or not frame.data:
+            return None, None
 
-    frame = sdk.enhanced_imaging.peek_depth_camera_frame(DEPTHCAM_FRAME_TYPE_POINT3D)
-    if frame is None or not frame.data:
-        return None, None
-
-    points = frame.to_point3d_array()
-    if points is None or len(points) == 0:
-        return None, None
-
-    width = frame.width
-    height = frame.height
-    is_organized = len(points) == width * height
+        points = frame.to_point3d_array()
+        if points is None or len(points) == 0:
+            return None, None
+        points = np.asarray(points).copy()
+        width = frame.width
+        height = frame.height
+        is_organized = len(points) == width * height
+        camera_rgb = None
+        if hasattr(frame, "timestamp_ns") and frame.timestamp_ns > 0:
+            try:
+                camera_image = sdk.enhanced_imaging.peek_depth_camera_related_rectified_image(
+                    frame.timestamp_ns
+                )
+                camera_rgb = _extract_camera_rgb_image(camera_image)
+            except Exception:
+                camera_rgb = None
 
     valid = ~np.all(points == 0, axis=1)
     valid &= np.all(np.isfinite(points), axis=1)
@@ -322,14 +332,7 @@ def read_frame_points_and_colors(
     if len(points) == 0:
         return None, None
 
-    camera_image = None
-    if hasattr(frame, "timestamp_ns") and frame.timestamp_ns > 0:
-        try:
-            camera_image = sdk.enhanced_imaging.peek_depth_camera_related_rectified_image(frame.timestamp_ns)
-        except Exception:
-            camera_image = None
-
-    colors = _colorize_from_camera(points, valid_indices, width, height, is_organized, camera_image)
+    colors = _colorize_from_camera(points, valid_indices, width, height, is_organized, camera_rgb)
 
     if len(points) > max_points:
         idx = np.random.choice(len(points), max_points, replace=False)
@@ -358,30 +361,32 @@ def capture_reference_frame(
     """
     _, _, DEPTHCAM_FRAME_TYPE_POINT3D, _ = _import_sdk()
     sdk = connection.sdk
+    with connection.sdk_lock:
+        if not sdk.enhanced_imaging.wait_depth_camera_next_frame(timeout_ms):
+            return None, None
 
-    if not sdk.enhanced_imaging.wait_depth_camera_next_frame(timeout_ms):
-        return None, None
+        frame = sdk.enhanced_imaging.peek_depth_camera_frame(DEPTHCAM_FRAME_TYPE_POINT3D)
+        if frame is None or not frame.data:
+            return None, None
 
-    frame = sdk.enhanced_imaging.peek_depth_camera_frame(DEPTHCAM_FRAME_TYPE_POINT3D)
-    if frame is None or not frame.data:
-        return None, None
+        points = frame.to_point3d_array()
+        if points is None or len(points) == 0:
+            return None, None
+        points = np.asarray(points).copy()
+        width, height = frame.width, frame.height
+        if len(points) != width * height:
+            return None, None  # necesitamos un grid organizado para mapear pixel -> punto
 
-    points = frame.to_point3d_array()
-    if points is None or len(points) == 0:
-        return None, None
+        camera_image = None
+        if hasattr(frame, "timestamp_ns") and frame.timestamp_ns > 0:
+            try:
+                camera_image = sdk.enhanced_imaging.peek_depth_camera_related_rectified_image(
+                    frame.timestamp_ns
+                )
+            except Exception:
+                camera_image = None
 
-    width, height = frame.width, frame.height
-    if len(points) != width * height:
-        return None, None  # necesitamos un grid organizado para mapear pixel -> punto
-
-    camera_image = None
-    if hasattr(frame, "timestamp_ns") and frame.timestamp_ns > 0:
-        try:
-            camera_image = sdk.enhanced_imaging.peek_depth_camera_related_rectified_image(frame.timestamp_ns)
-        except Exception:
-            camera_image = None
-
-    img_rgb = _extract_camera_rgb_image(camera_image) if camera_image is not None else None
+        img_rgb = _extract_camera_rgb_image(camera_image) if camera_image is not None else None
     if img_rgb is None:
         return None, None
 
@@ -438,6 +443,15 @@ def capture_snapshot(
     que ese valor. Sin ninguno de los dos, se captura todo el campo de
     vision del sensor.
     """
+    if not np.isfinite(duration_s) or duration_s <= 0:
+        raise ValueError("La duracion de captura debe ser mayor que cero.")
+    if not np.isfinite(persistence_ratio) or not 0.0 <= persistence_ratio <= 1.0:
+        raise ValueError("La persistencia debe estar entre 0 y 1.")
+    if max_points_per_frame <= 0:
+        raise ValueError("max_points_per_frame debe ser mayor que cero.")
+    if not np.isfinite(voxel_size) or voxel_size < 0:
+        raise ValueError("voxel_size debe ser cero o mayor.")
+
     collected_points: list[np.ndarray] = []
     collected_colors: list[np.ndarray] = []
     start = time.time()
@@ -467,6 +481,20 @@ def capture_snapshot(
         )
 
     num_frames = len(collected_points)
+    if persistence_ratio <= 0:
+        # A zero persistence threshold means keep every sampled point. The
+        # per-frame voxel-key counting below would do redundant work (build
+        # millions of keys, count them, and test them again) before performing
+        # the same final voxel downsample.
+        merged_points = np.concatenate(collected_points, axis=0)
+        merged_colors = np.clip(np.concatenate(collected_colors, axis=0), 0.0, 1.0)
+        cloud = o3d.geometry.PointCloud()
+        cloud.points = o3d.utility.Vector3dVector(merged_points)
+        cloud.colors = o3d.utility.Vector3dVector(merged_colors)
+        if voxel_size and voxel_size > 0:
+            cloud = cloud.voxel_down_sample(voxel_size)
+        return cloud
+
     frame_keys = [np.unique(_voxel_keys(points, voxel_size)) for points in collected_points]
     unique_keys, counts = np.unique(np.concatenate(frame_keys), return_counts=True)
     min_frames = max(1, int(round(persistence_ratio * num_frames)))

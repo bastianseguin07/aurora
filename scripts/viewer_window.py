@@ -76,6 +76,29 @@ def _legend_panel(spec: dict, em: int) -> gui.Vert:
     return panel
 
 
+def _look_at_sensor_pov(scene_widget, points: np.ndarray, fov_deg: float = 60.0) -> None:
+    """Frame the main point mass; isolated bad depth returns must not zoom it away."""
+    points = np.asarray(points, dtype=np.float64).reshape((-1, 3))
+    points = points[np.isfinite(points).all(axis=1)]
+    if not len(points):
+        return
+    if len(points) > 250_000:
+        indices = np.linspace(0, len(points) - 1, 250_000, dtype=np.int64)
+        points = points[indices]
+    low, high = np.percentile(points, (1.0, 99.0), axis=0)
+    center = 0.5 * (low + high)
+    radius = 0.5 * float(np.linalg.norm(high - low))
+    off_axis = float(np.linalg.norm(center[:2]))
+    distance = (radius + off_axis) / max(math.sin(math.radians(fov_deg) / 2.0), 1e-6) * 1.1
+    distance = max(distance, 0.5)
+    target = np.array([0.0, 0.0, float(center[2])])
+    scene_widget.look_at(
+        target,
+        target - np.array([0.0, 0.0, distance]),
+        np.array([0.0, -1.0, 0.0]),
+    )
+
+
 def _read_geometries(kind: str, paths: list[Path]):
     material = rendering.MaterialRecord()
     material.shader = "defaultUnlit"
@@ -86,6 +109,9 @@ def _read_geometries(kind: str, paths: list[Path]):
         if not cloud.has_colors():
             cloud.paint_uniform_color((0.7, 0.72, 0.76))
         return [("nube", cloud, material)]
+    if kind == "live":
+        cloud = o3d.geometry.PointCloud()
+        return [("live", cloud, material)]
     if kind == "pair":
         base = load_point_cloud(paths[0])
         updated = load_point_cloud(paths[1])
@@ -115,7 +141,7 @@ def _read_geometries(kind: str, paths: list[Path]):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("kind", choices=("cloud", "pair", "thickness", "meshes", "pick"))
+    parser.add_argument("kind", choices=("cloud", "pair", "thickness", "meshes", "live", "pick"))
     parser.add_argument("paths", nargs="+")
     parser.add_argument("--title", default="Aurora - Vista 3D")
     parser.add_argument("--cleanup-dir")
@@ -139,7 +165,8 @@ def main() -> None:
         scene_widget.scene = rendering.Open3DScene(window.renderer)
 
         for name, geometry, material in geometries:
-            scene_widget.scene.add_geometry(name, geometry, material)
+            if args.kind != "live":
+                scene_widget.scene.add_geometry(name, geometry, material)
         axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
         axes_material = rendering.MaterialRecord()
         axes_material.shader = "defaultUnlit"
@@ -177,6 +204,11 @@ def main() -> None:
                 label_line.add_child(label_widget)
                 group.add_child(label_line)
                 pair_controls.add_child(group)
+        live_status = None
+        if args.kind == "live":
+            live_status = gui.Label("Esperando el primer frame del sensor...")
+            live_status.background_color = gui.Color(0.0, 0.0, 0.0, 0.0)
+            live_status.text_color = gui.Color(0.12, 0.14, 0.17, 1.0)
         pick_status = None
         picked_points: list[np.ndarray] = []
         preview_widget = None
@@ -223,6 +255,14 @@ def main() -> None:
                     min(bounds.width - 2 * window.theme.font_size, pref.width + window.theme.font_size),
                     pref.height + 0.5 * window.theme.font_size,
                 )
+            if live_status is not None:
+                pref = live_status.calc_preferred_size(layout_context, gui.Widget.Constraints())
+                live_status.frame = gui.Rect(
+                    bounds.x + window.theme.font_size,
+                    bounds.y + window.theme.font_size,
+                    min(bounds.width - 2 * window.theme.font_size, pref.width + window.theme.font_size),
+                    pref.height + 0.5 * window.theme.font_size,
+                )
 
         window.set_on_layout(on_layout)
         window.add_child(scene_widget)
@@ -240,22 +280,30 @@ def main() -> None:
         # distance that setup_camera calculated from the full scene bounds.
         # Putting the eye at (0, 0, 0) made the cloud look unnaturally close;
         # viewer zoom is framing and does not change the cloud's metric data.
-        fitted_eye = np.asarray(scene_widget.scene.camera.get_model_matrix())[:3, 3]
-        view_distance = float(np.linalg.norm(fitted_eye - np.asarray(center)))
-        if not np.isfinite(view_distance) or view_distance < 1e-6:
-            view_distance = max(float(bounds.get_max_extent()) * 1.5, 0.5)
-        radius = 0.5 * float(np.linalg.norm(bounds.get_extent()))
-        off_axis = float(np.linalg.norm(np.asarray(center)[:2]))
-        sensor_axis_fit = (radius + off_axis) / max(
-            math.sin(math.radians(camera_fov_deg) / 2.0), 1e-6
-        ) * 1.1
-        view_distance = max(view_distance, sensor_axis_fit)
-        axis_target = np.array([0.0, 0.0, float(center[2])])
-        scene_widget.look_at(
-            axis_target,
-            axis_target - np.array([0.0, 0.0, view_distance]),
-            np.array([0.0, -1.0, 0.0]),
-        )
+        point_sets = [
+            np.asarray(geometry.points)
+            for _name, geometry, _material in geometries
+            if isinstance(geometry, o3d.geometry.PointCloud) and len(geometry.points)
+        ]
+        if point_sets:
+            _look_at_sensor_pov(scene_widget, np.concatenate(point_sets, axis=0), camera_fov_deg)
+        else:
+            fitted_eye = np.asarray(scene_widget.scene.camera.get_model_matrix())[:3, 3]
+            view_distance = float(np.linalg.norm(fitted_eye - np.asarray(center)))
+            if not np.isfinite(view_distance) or view_distance < 1e-6:
+                view_distance = max(float(bounds.get_max_extent()) * 1.5, 0.5)
+            radius = 0.5 * float(np.linalg.norm(bounds.get_extent()))
+            off_axis = float(np.linalg.norm(np.asarray(center)[:2]))
+            sensor_axis_fit = (radius + off_axis) / max(
+                math.sin(math.radians(camera_fov_deg) / 2.0), 1e-6
+            ) * 1.1
+            view_distance = max(view_distance, sensor_axis_fit)
+            axis_target = np.array([0.0, 0.0, float(center[2])])
+            scene_widget.look_at(
+                axis_target,
+                axis_target - np.array([0.0, 0.0, view_distance]),
+                np.array([0.0, -1.0, 0.0]),
+            )
         # Render the scene before mapping the native window. Show this prepared
         # frame as a temporary image while the interactive SceneWidget draws
         # its first on-screen frames behind it.
@@ -273,6 +321,8 @@ def main() -> None:
             window.add_child(legend_widget)
         if pick_status is not None:
             window.add_child(pick_status)
+        if live_status is not None:
+            window.add_child(live_status)
         del warmup_image
 
         modifier_keys = {
@@ -490,9 +540,56 @@ def main() -> None:
             return gui.Widget.IGNORED
 
         preview_frames = 0
+        live_added = False
+        last_live_mtime_ns = -1
+        last_live_poll = 0.0
+
+        def refresh_live_frame() -> bool:
+            nonlocal live_added, last_live_mtime_ns, last_live_poll
+            now = time.monotonic()
+            if now - last_live_poll < 0.08:
+                return False
+            last_live_poll = now
+            try:
+                mtime_ns = paths[0].stat().st_mtime_ns
+                if mtime_ns == last_live_mtime_ns:
+                    return False
+                with np.load(paths[0], allow_pickle=False) as frame:
+                    points = np.asarray(frame["points"], dtype=np.float64)
+                    colors = np.asarray(frame["colors"], dtype=np.float64)
+                if points.ndim != 2 or points.shape[1] != 3 or len(points) == 0:
+                    return False
+                cloud = o3d.geometry.PointCloud()
+                cloud.points = o3d.utility.Vector3dVector(points)
+                if colors.shape == points.shape:
+                    cloud.colors = o3d.utility.Vector3dVector(np.clip(colors, 0.0, 1.0))
+                else:
+                    cloud.paint_uniform_color((0.10, 0.72, 0.95))
+                if live_added:
+                    scene_widget.scene.remove_geometry("live")
+                scene_widget.scene.add_geometry("live", cloud, geometries[0][2])
+                live_added = True
+                live_status.text = f"En vivo · {len(points):,} puntos"
+                if last_live_mtime_ns < 0:
+                    bounds = scene_widget.scene.bounding_box
+                    center = bounds.get_center()
+                    scene_widget.setup_camera(60.0, bounds, center)
+                    _look_at_sensor_pov(scene_widget, points)
+                last_live_mtime_ns = mtime_ns
+                scene_widget.force_redraw()
+                return True
+            except FileNotFoundError:
+                return False
+            except Exception:
+                logger.exception("No se pudo actualizar el frame del sensor en vivo")
+                return False
 
         def on_tick() -> bool:
             nonlocal preview_frames
+            if args.kind == "live":
+                changed = refresh_live_frame()
+                if preview_widget is None or not preview_widget.visible:
+                    return changed
             if preview_widget is None or not preview_widget.visible:
                 return False
             preview_frames += 1

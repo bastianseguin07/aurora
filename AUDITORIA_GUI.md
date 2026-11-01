@@ -55,3 +55,15 @@ La revisión visual de escritorio cubrió esta composición: la barra superior s
 ## Verificación pendiente en terreno
 
 La GUI se puede comprobar en escritorio, pero la precisión de la guía IMU, la continuidad del tracking y la utilidad de cada reconstrucción Poisson/Delaunay dependen del sensor y de la geometría real del túnel. Esos puntos requieren capturas reales antes de declarar la medición lista para producción.
+
+## Auditoría ampliada de captura y vistas (2026-11-01)
+
+- Se conectó el Aurora encendido por Ethernet a `192.168.11.1`, se leyeron frames y se desconectó correctamente.
+- Se midió una captura real de 5 s con el límite actual de 50.000 puntos por frame: 1.056.590 puntos después de fusionar, en 8,93 s incluyendo procesamiento. La versión previa de la captura de 5 s con 100.000 puntos por frame tardó 11,53 s. El formato principal guardado sigue siendo `.ply`; los `.npz` son sidecars opcionales de referencia de cámara y pose, no el archivo de nube principal.
+- Se repitió el flujo dentro de GTK: recorrió las nueve páginas, conectó el sensor, mostró el spinner, capturó 1 s y guardó un `.ply` de 326.889 puntos sin errores.
+- Tras conservar la intensidad de la imagen monocroma del sensor, se repitió la captura desde GTK: guardó 342.607 puntos con contraste real en grises (rango percentil 5–95 de luminancia: 0,180). La prueba guardó el `.ply` más `capture_ref.npz` y `capture_pose.npz` en una carpeta temporal.
+- Se abrieron en escritorio tanto la vista 3D estática de `data/seg y se demora .ply` como la vista en vivo alimentada por un frame NPZ de prueba. Ambas permanecieron activas hasta el cierre de la prueba, sin excepciones.
+- Se ejecutaron Cloud-to-Cloud sobre capturas recortadas reales y se reconstruyeron y midieron mallas Poisson y Delaunay sobre el mismo par; ambos métodos generaron CSV, histograma y mapa de espesor en directorios temporales.
+- `compileall`, `py_compile` y `git diff --check` terminaron correctamente.
+
+La imagen de referencia del sensor muestra un objeto rectangular en el centro inferior, junto con mucho más entorno del túnel. El archivo real conserva puntos de esa región; algunos retornos lejanos aislados amplían la caja envolvente y hacían que la cámara inicial alejase visualmente la escena principal. La vista ahora centra y escala usando los percentiles 1–99, sin borrar esos puntos del archivo. La fusión sigue siendo en coordenadas de cámara y no compensa el movimiento del operador: para evitar bordes dobles o objetos deformados, hay que mantener el Aurora inmóvil durante cada captura. La intensidad monocroma alineada se conserva como grises; si la imagen no tiene contraste útil, se usa gris neutro en vez de asignar colores falsos según la altura. El efecto de los filtros de captura, la validez física del espesor y la calidad requerida para producción deben confirmarse con una superficie de referencia y medidas conocidas en terreno.

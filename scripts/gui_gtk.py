@@ -634,6 +634,8 @@ class AuroraGUI:
         self._result_generation = 0
         self.alignment_applied = False
         self.viewer: LiveViewer | None = None
+        self.live_viewer_process: subprocess.Popen | None = None
+        self.live_view_temp_dir: Path | None = None
         self.pose_viewer: PoseAlignmentViewer | None = None
         self.imu_hud_window: Gtk.Window | None = None
         self.imu_hud_labels: dict[str, Gtk.Label] | None = None
@@ -645,6 +647,11 @@ class AuroraGUI:
         self._progress_timer_source: int | None = None
         self._progress_started_at = 0.0
         self._progress_stage = ""
+        self._capture_progress_started_at = 0.0
+        self._capture_progress_stage = ""
+        self._capture_progress_duration_s: float | None = None
+        self._capture_progress_timer: int | None = None
+        self._live_view_monitor_source: int | None = None
 
         self._build_layout()
         GLib.timeout_add(150, self._poll_log_queue)
@@ -1554,7 +1561,9 @@ class AuroraGUI:
             self._info_button(
                 "Con el sensor conectado, acumula frames del tunel durante la duracion "
                 "configurada abajo y guarda el resultado automaticamente como la nube "
-                "'original' o 'con shotcrete' segun el boton elegido."
+                "'original' o 'con shotcrete' segun el boton elegido. Manten el sensor "
+                "quieto mientras captura: combina varios frames en coordenadas de camara "
+                "sin alinearlos entre si."
             ),
             False,
             False,
@@ -1581,8 +1590,14 @@ class AuroraGUI:
         )
 
         row = self._row(sensor_box)
+        self.capture_progress_spinner = Gtk.Spinner()
+        self.capture_progress_spinner.set_size_request(18, 18)
+        self.capture_progress_spinner.set_no_show_all(True)
+        self.capture_progress_spinner.hide()
+        row.pack_start(self.capture_progress_spinner, False, False, 0)
         self.capture_status_label = Gtk.Label(xalign=0)
-        row.pack_start(self.capture_status_label, False, False, 0)
+        self.capture_status_label.set_hexpand(True)
+        row.pack_start(self.capture_status_label, True, True, 0)
 
         capture_options_expander = Gtk.Expander(label="Ajustes de captura (opcional)")
         capture_options_expander.set_expanded(False)
@@ -4109,6 +4124,12 @@ class AuroraGUI:
         except ValueError:
             self._show_error("Parametros invalidos", "Duracion y persistencia deben ser numeros.")
             return
+        if not np.isfinite(duration_s) or duration_s <= 0:
+            self._show_error("Parametros invalidos", "La duracion debe ser un numero mayor que cero.")
+            return
+        if not np.isfinite(persistence_ratio) or not 0 <= persistence_ratio <= 1:
+            self._show_error("Parametros invalidos", "La persistencia debe estar entre 0 y 1.")
+            return
 
         cone_angle_deg = None
         max_distance_m = None
@@ -4117,11 +4138,13 @@ class AuroraGUI:
                 cone_text = self.capture_cone_angle_entry.get_text().strip()
                 if cone_text:
                     cone_angle_deg = float(cone_text)
-                    if cone_angle_deg <= 0 or cone_angle_deg > 180:
+                    if not np.isfinite(cone_angle_deg) or cone_angle_deg <= 0 or cone_angle_deg > 180:
                         raise ValueError("El cono debe estar entre 0 y 180 grados.")
             dist_text = self.capture_max_distance_entry.get_text().strip()
             if dist_text:
                 max_distance_m = float(dist_text)
+                if not np.isfinite(max_distance_m) or max_distance_m <= 0:
+                    raise ValueError("La distancia maxima debe ser un numero mayor que cero.")
         except ValueError as exc:
             self._show_error("Parametros invalidos", str(exc) or "Cono y distancia maxima deben ser numeros.")
             return
@@ -4132,7 +4155,7 @@ class AuroraGUI:
         self.stop_capture_button.set_sensitive(True)
         self.capture_stop_event = threading.Event()
         label = "tunel original" if target == "base" else "tunel con shotcrete"
-        self.capture_status_label.set_text(f"Capturando {label} durante {duration_s:.0f} s...")
+        self._start_capture_progress(f"Capturando {label}", duration_s)
         self._log(f"Capturando nube ({label}) durante {duration_s:.0f} s, persistencia >= {persistence_ratio:.2f}...")
 
         stop_event = self.capture_stop_event
@@ -4142,6 +4165,7 @@ class AuroraGUI:
                 cloud = aurora_sensor.capture_snapshot(
                     self.sensor_connection,
                     duration_s=duration_s,
+                    max_points_per_frame=50000,
                     persistence_ratio=persistence_ratio,
                     stop_event=stop_event,
                     max_distance_m=max_distance_m,
@@ -4168,14 +4192,20 @@ class AuroraGUI:
         if self.capture_stop_event is not None:
             self.capture_stop_event.set()
             self.stop_capture_button.set_sensitive(False)
-            self.capture_status_label.set_text("Deteniendo captura...")
+            self._capture_progress_stage = "Deteniendo y procesando frames"
+            self._capture_progress_duration_s = None
+            self._update_capture_progress()
             self._log("Captura detenida manualmente, procesando frames acumulados hasta ahora...")
 
     def _on_capture_done(self, target: str, cloud, ref_image=None, ref_point_grid=None, ref_pose=None) -> None:
+        self._finish_capture_progress()
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
         self.stop_capture_button.set_sensitive(False)
         self.capture_stop_event = None
+        self.capture_status_label.set_text(
+            "Captura lista. Selecciona dónde guardar la nube..."
+        )
 
         import datetime
 
@@ -4258,6 +4288,7 @@ class AuroraGUI:
         )
 
     def _on_capture_failed(self, exc: Exception) -> None:
+        self._finish_capture_progress()
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
         self.stop_capture_button.set_sensitive(False)
@@ -4265,17 +4296,107 @@ class AuroraGUI:
         self.capture_status_label.set_text("")
         self._show_error("Error de captura", str(exc))
 
+    def _start_capture_progress(self, label: str, duration_s: float) -> None:
+        self._capture_progress_started_at = time.monotonic()
+        self._capture_progress_stage = label
+        self._capture_progress_duration_s = duration_s
+        self.capture_progress_spinner.set_no_show_all(False)
+        self.capture_progress_spinner.show()
+        self.capture_progress_spinner.start()
+        if self._capture_progress_timer is None:
+            self._capture_progress_timer = GLib.timeout_add_seconds(
+                1, self._update_capture_progress
+            )
+        self._update_capture_progress()
+
+    def _update_capture_progress(self) -> bool:
+        elapsed = max(0, int(time.monotonic() - self._capture_progress_started_at))
+        minutes, seconds = divmod(elapsed, 60)
+        if self._capture_progress_duration_s is not None:
+            duration_s = max(0, int(round(self._capture_progress_duration_s)))
+            duration_min, duration_sec = divmod(
+                duration_s, 60
+            )
+            if elapsed <= duration_s:
+                stage = self._capture_progress_stage
+                text = f"{stage} · {minutes:02d}:{seconds:02d} / {duration_min:02d}:{duration_sec:02d}"
+            else:
+                text = f"Procesando la nube · {minutes:02d}:{seconds:02d}"
+        else:
+            text = f"{self._capture_progress_stage} · {minutes:02d}:{seconds:02d}"
+        self.capture_status_label.set_text(text)
+        return GLib.SOURCE_CONTINUE
+
+    def _finish_capture_progress(self) -> None:
+        if self._capture_progress_timer is not None:
+            GLib.source_remove(self._capture_progress_timer)
+            self._capture_progress_timer = None
+        self.capture_progress_spinner.stop()
+        self.capture_progress_spinner.set_no_show_all(True)
+        self.capture_progress_spinner.hide()
+
     # ------------------------------------------------------- Captura en vivo (MVP)
 
     def _ensure_live_capture_running(self) -> bool:
         self.source_live_rb.set_active(True)
-        if self.viewer is None or not self.viewer.is_running():
-            self._open_viewer()
-            if self.viewer is None:
+        process_running = (
+            self.live_viewer_process is not None
+            and self.live_viewer_process.poll() is None
+        )
+        if self.viewer is None or not self.viewer.is_running() or not process_running:
+            self._close_viewer()
+            try:
+                import open3d as o3d
+
+                base_file = Path(self.base_path) if self.base_path else None
+                if base_file is not None and base_file.is_file():
+                    base_cloud = load_point_cloud(base_file)
+                else:
+                    base_cloud = o3d.geometry.PointCloud()
+                temp_dir = Path(tempfile.mkdtemp(prefix="aurora_live_view_"))
+                live_path = temp_dir / "live_frame.npz"
+                viewer = LiveViewer(
+                    base_cloud,
+                    log=self._log,
+                    live_output_path=live_path,
+                )
+                viewer.set_live_sensor(self.sensor_connection)
+                self.viewer = viewer
+                self.live_view_temp_dir = temp_dir
+                self.viewer.start()
+                process = self._launch_viewer_process(
+                    "live",
+                    [str(live_path)],
+                    "Aurora - Captura en vivo",
+                    "No se pudo abrir la vista en vivo",
+                    str(temp_dir),
+                )
+                if process is None:
+                    self._close_viewer()
+                    return False
+                self.live_viewer_process = process
+                if self._live_view_monitor_source is None:
+                    self._live_view_monitor_source = GLib.timeout_add(
+                        500, self._monitor_live_viewer_process
+                    )
+            except Exception as exc:
+                self._close_viewer()
+                self._show_error("No se pudo iniciar la vista en vivo", str(exc))
                 return False
         self._apply_viewer_settings()
         self.viewer.set_live_sensor(self.sensor_connection)
         return True
+
+    def _monitor_live_viewer_process(self) -> bool:
+        if self.live_viewer_process is None:
+            self._live_view_monitor_source = None
+            return GLib.SOURCE_REMOVE
+        if self.live_viewer_process.poll() is None:
+            return GLib.SOURCE_CONTINUE
+        self._log("La ventana 3D en vivo se cerro; se detuvo la lectura continua del sensor.")
+        self._live_view_monitor_source = None
+        self._close_viewer()
+        return GLib.SOURCE_REMOVE
 
     def _start_live_capture_clicked(self) -> None:
         if self.sensor_connection is None:
@@ -4976,17 +5097,28 @@ class AuroraGUI:
         return colored, legend
 
     def _open_viewer(self) -> None:
-        base_file = Path(self.base_path)
-        if not base_file.is_file():
-            self._show_error("Error", f"No se encontro la nube base:\n{base_file}")
-            return
-
         if self.viewer is not None and self.viewer.is_running():
             self._show_info("Vista 3D", "La vista 3D ya esta abierta.")
             return
 
         try:
-            base_cloud = self.result.base_cloud if self.result is not None else load_point_cloud(base_file)
+            base_file = Path(self.base_path) if self.base_path else None
+            has_base_file = base_file is not None and base_file.is_file()
+            live_without_baseline = (
+                self.source_live_rb.get_active()
+                and self.sensor_connection is not None
+                and not has_base_file
+            )
+            if live_without_baseline:
+                import open3d as o3d
+
+                base_cloud = o3d.geometry.PointCloud()
+            elif not has_base_file:
+                expected_path = base_file if base_file is not None else "(sin seleccionar)"
+                self._show_error("Error", f"No se encontro la nube base:\n{expected_path}")
+                return
+            else:
+                base_cloud = self.result.base_cloud if self.result is not None else load_point_cloud(base_file)
         except Exception as exc:
             self._show_error("Error", str(exc))
             return
@@ -5001,6 +5133,20 @@ class AuroraGUI:
         if self.viewer is not None:
             self.viewer.stop()
             self.viewer = None
+        if self.live_viewer_process is not None:
+            if self.live_viewer_process.poll() is None:
+                self.live_viewer_process.terminate()
+                try:
+                    self.live_viewer_process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    self.live_viewer_process.kill()
+            self.live_viewer_process = None
+        if self.live_view_temp_dir is not None:
+            shutil.rmtree(self.live_view_temp_dir, ignore_errors=True)
+            self.live_view_temp_dir = None
+        if self._live_view_monitor_source is not None:
+            GLib.source_remove(self._live_view_monitor_source)
+            self._live_view_monitor_source = None
         self.close_viewer_button.set_sensitive(False)
         self._clear_stream_ui()
 
@@ -5128,6 +5274,7 @@ class AuroraGUI:
 
     def _on_close(self, *_args) -> None:
         self._close_viewer()
+        self._finish_capture_progress()
         self._close_imu_pose_viewer()
         if self.sensor_connection is not None:
             try:

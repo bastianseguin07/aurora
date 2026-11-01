@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import threading
 import time
+import os
 from typing import Optional
+from pathlib import Path
 
 import numpy as np
 import open3d as o3d
@@ -34,11 +36,17 @@ LIVE_STREAM_INTERVAL_S = 0.2  # ritmo de envio al celular, mas lento que el redi
 
 
 class LiveViewer:
-    def __init__(self, base_cloud: o3d.geometry.PointCloud, log=print):
+    def __init__(
+        self,
+        base_cloud: o3d.geometry.PointCloud,
+        log=print,
+        live_output_path: Path | None = None,
+    ):
         self._base_cloud_initial = o3d.geometry.PointCloud(base_cloud)
         self._distance_reference_cloud = o3d.geometry.PointCloud(base_cloud)
         self._using_live_baseline = False
         self._log = log
+        self.live_output_path = Path(live_output_path) if live_output_path else None
 
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -213,6 +221,12 @@ class LiveViewer:
         cloud.points = o3d.utility.Vector3dVector(points_xyz)
         with self._lock:
             reference_cloud = o3d.geometry.PointCloud(self._distance_reference_cloud)
+        if len(reference_cloud.points) == 0:
+            # Live viewing does not require a saved baseline. Until the user
+            # fixes a live baseline, show the sensor cloud in one neutral color
+            # instead of trying to compute distances against an empty cloud.
+            cloud.paint_uniform_color((0.10, 0.72, 0.95))
+            return cloud
         distances = np.asarray(cloud.compute_point_cloud_distance(reference_cloud))
         with self._lock:
             mode = self.color_mode
@@ -226,6 +240,10 @@ class LiveViewer:
         return build_heatmap_cloud(cloud, distances, max_d)
 
     def _run(self) -> None:
+        if self.live_output_path is not None:
+            self._run_live_feed()
+            return
+
         vis = _create_q_only_visualizer()
         vis.create_window(window_name="Aurora - Vista 3D")
 
@@ -332,3 +350,68 @@ class LiveViewer:
             time.sleep(0.01)
 
         vis.destroy_window()
+
+    def _run_live_feed(self) -> None:
+        """Poll the sensor and publish colored frames for the modern 3D window."""
+        last_sensor_poll = 0.0
+        last_stream_send = 0.0
+        while not self._stop_event.is_set():
+            with self._lock:
+                connection = self.aurora_connection
+                max_distance = self.live_max_distance_m
+                cone_angle = self.live_cone_angle_deg
+                forward_axis = self.live_forward_axis
+                invert_y = self.live_invert_y
+                invert_z = self.live_invert_z
+                stream_server = self._stream_server
+
+            now = time.monotonic()
+            if connection is not None and now - last_sensor_poll >= 0.08:
+                try:
+                    points = read_frame_points(
+                        connection,
+                        max_points=40000,
+                        timeout_ms=50,
+                        max_distance_m=max_distance,
+                        cone_angle_deg=cone_angle,
+                        forward_axis=forward_axis,
+                    )
+                    if points is not None and len(points):
+                        points = self._apply_axis_transform(points, invert_y, invert_z)
+                        with self._lock:
+                            self._last_live_points = points.copy()
+                        colored = self._colorize(points)
+                        path = self.live_output_path
+                        if path is not None:
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            temp_path = path.with_name(path.name + ".tmp")
+                            with temp_path.open("wb") as stream:
+                                np.savez(
+                                    stream,
+                                    points=np.asarray(colored.points),
+                                    colors=np.asarray(colored.colors),
+                                )
+                            os.replace(temp_path, path)
+                        if stream_server is not None and stream_server.is_running():
+                            if not self._stream_base_sent:
+                                with self._lock:
+                                    base = self._distance_reference_cloud
+                                base_colors = (
+                                    np.asarray(base.colors)
+                                    if base.has_colors()
+                                    else np.full((len(base.points), 3), 0.6)
+                                )
+                                self._stream_base_sent = stream_server.broadcast_base(
+                                    np.asarray(base.points), base_colors
+                                )
+                            if now - last_stream_send >= LIVE_STREAM_INTERVAL_S:
+                                stream_server.broadcast_live(
+                                    np.asarray(colored.points), np.asarray(colored.colors)
+                                )
+                                last_stream_send = now
+                except Exception as exc:
+                    self._log(f"Error leyendo el frame en vivo: {exc}")
+                    time.sleep(0.1)
+                last_sensor_poll = now
+            else:
+                time.sleep(0.01)
