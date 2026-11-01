@@ -22,6 +22,10 @@ import queue
 import threading
 from pathlib import Path
 
+# Pide a GTK que muestre Gtk.FileChooserNative mediante el portal del escritorio
+# GNOME cuando está disponible, incluso fuera de una aplicación empaquetada.
+os.environ.setdefault("GTK_USE_PORTAL", "1")
+
 import gi
 
 gi.require_version("Gdk", "3.0")
@@ -605,6 +609,15 @@ class AuroraGUI:
         self.base_path = ""
         self.updated_path = ""
         self.output_dir = str(PROJECT_ROOT / "output")
+        config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        self._last_file_dialog_dir_file = config_home / "aurora" / "last_file_dialog_dir"
+        self._last_file_dialog_dir: Path | None = None
+        try:
+            saved_dir = Path(self._last_file_dialog_dir_file.read_text(encoding="utf-8").strip())
+            if saved_dir.is_dir():
+                self._last_file_dialog_dir = saved_dir
+        except (OSError, ValueError):
+            pass
 
         self.sensor_connection = None
         self.capture_stop_event: threading.Event | None = None
@@ -689,11 +702,9 @@ class AuroraGUI:
         self.stack.add_titled(self._build_quick_measurement_page(), "medicion_rapida", "Medicion rapida")
         self.stack.add_titled(self._build_capture_page(), "captura", "Captura")
         self.stack.add_titled(self._build_imu_alignment_page(), "alineacion_imu", "Guia de pose IMU")
-        self.stack.add_titled(self._build_comparison_page(), "comparacion", "Comparacion")
         self.stack.add_titled(self._build_alignment_page(), "alineacion", "Alineacion")
         self.stack.add_titled(self._build_prepare_clouds_page(), "preparar_nubes", "Preparar nubes")
         self.stack.add_titled(self._build_processing_page(), "procesamiento", "Ajustes de analisis")
-        self.stack.add_titled(self._build_visualization_page(), "visualizacion", "Visualizacion 3D")
         self.stack.add_titled(self._build_results_page(), "resultados", "Resultados")
         self.stack.add_titled(self._build_embedded_test_page(), "prueba_embebida", "Comparacion (prueba)")
         self.stack.add_titled(self._build_raycast_test_page(), "prueba_raycasting", "Raycasting (prueba)")
@@ -701,11 +712,9 @@ class AuroraGUI:
             "medicion_rapida",
             "captura",
             "alineacion_imu",
-            "comparacion",
             "alineacion",
             "preparar_nubes",
             "procesamiento",
-            "visualizacion",
             "resultados",
             "prueba_embebida",
             "prueba_raycasting",
@@ -838,9 +847,7 @@ class AuroraGUI:
         add_page("Preparar nubes", "preparar_nubes")
 
         add_header("Configuracion")
-        add_page("Archivos ANTES / DESPUES", "comparacion")
         add_page("Ajustes de analisis", "procesamiento")
-        add_page("Visualizacion 3D", "visualizacion")
 
         add_header("Resultados")
         add_page("Resultados del calculo", "resultados")
@@ -865,9 +872,6 @@ class AuroraGUI:
             if name == "prueba_raycasting":
                 self._set_path_label(self.raycast_base_path_label, self.base_path)
                 self._set_path_label(self.raycast_updated_path_label, self.updated_path)
-            if name == "comparacion":
-                self._set_path_label(self.base_path_label, self.base_path)
-                self._set_path_label(self.updated_path_label, self.updated_path)
 
         self.stack.connect("notify::visible-child-name", on_stack_page_changed)
 
@@ -945,6 +949,8 @@ class AuroraGUI:
         self.result_mesh_actions.pack_start(self.result_mesh_inspect_button, False, False, 0)
         self.result_mesh_actions.hide()
         page.pack_start(stats_frame, False, True, 0)
+
+        self._build_visualization_controls(page)
 
         log_frame, log_box = self._section("Registro del calculo")
         log_expander = Gtk.Expander(label="Detalles tecnicos")
@@ -1836,33 +1842,6 @@ class AuroraGUI:
 
         return True
 
-    # -- Pagina: Comparacion ------------------------------------------------------
-
-    def _build_comparison_page(self) -> Gtk.Widget:
-        page = self._new_page()
-
-        base_frame, base_box = self._section("Tunel original (antes del shotcrete)")
-        self.base_path_label = self._file_row(
-            base_box,
-            self.base_path,
-            lambda p: self._set_base_path(p),
-            info_text="La nube de puntos del tunel ANTES de aplicar el shotcrete. "
-            "Puede ser un archivo ya guardado o una captura hecha en la pestaña 'Captura'.",
-        )
-        page.pack_start(base_frame, False, True, 0)
-
-        updated_frame, updated_box = self._section("Tunel con shotcrete (despues)")
-        self.updated_path_label = self._file_row(
-            updated_box,
-            self.updated_path,
-            lambda p: self._set_updated_path(p),
-            info_text="La nube de puntos del mismo tunel DESPUES de aplicar el shotcrete. "
-            "Puede ser un archivo ya guardado o una captura hecha en la pestaña 'Captura'.",
-        )
-        page.pack_start(updated_frame, False, True, 0)
-
-        return self._scrolled(page)
-
     def _invalidate_results(self) -> None:
         """Clear output tied to the previous pair so it cannot be reported as current."""
         self._result_generation += 1
@@ -2049,20 +2028,18 @@ class AuroraGUI:
         return self._scrolled(page)
 
     def _load_manual_reference_photo(self, which: str) -> None:
-        dialog = Gtk.FileChooserDialog(
-                title="Seleccionar foto de referencia (_ref.npz)",
-                parent=self.window,
-                action=Gtk.FileChooserAction.OPEN,
+        dialog = Gtk.FileChooserNative.new(
+            "Seleccionar foto de referencia (_ref.npz)",
+            self.window,
+            Gtk.FileChooserAction.OPEN,
+            "_Abrir",
+            "_Cancelar",
         )
-        dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Abrir", Gtk.ResponseType.OK)
         filter_npz = Gtk.FileFilter()
         filter_npz.set_name("Foto de referencia (*_ref.npz)")
         filter_npz.add_pattern("*.npz")
         dialog.add_filter(filter_npz)
-        path = None
-        if dialog.run() == Gtk.ResponseType.OK:
-            path = dialog.get_filename()
-        dialog.destroy()
+        path = self._run_native_file_chooser(dialog)
         if not path:
             return
 
@@ -2193,8 +2170,7 @@ class AuroraGUI:
         self._invalidate_results()
         self.alignment_applied = True
         self.updated_path = aligned_path
-        self._set_path_label(self.updated_path_label, aligned_path)
-        for name in ("raycast_updated_path_label", "quick_updated_path_label"):
+        for name in ("updated_path_label", "raycast_updated_path_label", "quick_updated_path_label"):
             label = getattr(self, name, None)
             if label is not None:
                 self._set_path_label(label, aligned_path)
@@ -2261,8 +2237,7 @@ class AuroraGUI:
             self._invalidate_results()
             self.alignment_applied = True
             self.updated_path = str(aligned_path)
-            self._set_path_label(self.updated_path_label, str(aligned_path))
-            for name in ("raycast_updated_path_label", "quick_updated_path_label"):
+            for name in ("updated_path_label", "raycast_updated_path_label", "quick_updated_path_label"):
                 label = getattr(self, name, None)
                 if label is not None:
                     self._set_path_label(label, str(aligned_path))
@@ -2470,18 +2445,16 @@ class AuroraGUI:
             self.test_crop_output_dir_label.set_tooltip_text(str(self.test_crop_output_dir))
 
     def _choose_test_crop_output_dir(self) -> None:
-        dialog = Gtk.FileChooserDialog(
-                title="Elegir carpeta para los dos recortes",
-                parent=self.window,
-                action=Gtk.FileChooserAction.SELECT_FOLDER,
+        dialog = Gtk.FileChooserNative.new(
+            "Elegir carpeta para los dos recortes",
+            self.window,
+            Gtk.FileChooserAction.SELECT_FOLDER,
+            "_Seleccionar",
+            "_Cancelar",
         )
-        dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Seleccionar", Gtk.ResponseType.OK)
         if self.test_crop_output_dir and self.test_crop_output_dir.is_dir():
             dialog.set_current_folder(str(self.test_crop_output_dir))
-        path = None
-        if dialog.run() == Gtk.ResponseType.OK:
-            path = dialog.get_filename()
-        dialog.destroy()
+        path = self._run_native_file_chooser(dialog)
         if path:
             self.test_crop_output_dir = Path(path)
             self.test_crop_output_dir_is_custom = True
@@ -2802,10 +2775,9 @@ class AuroraGUI:
 
         return expander, box
 
-    # -- Pagina: Visualizacion 3D --------------------------------------------------
+    # -- Controles de visualizacion integrados en Resultados ----------------------
 
-    def _build_visualization_page(self) -> Gtk.Widget:
-        page = self._new_page()
+    def _build_visualization_controls(self, page: Gtk.Box) -> None:
 
         color_frame, color_box = self._section("Color del espesor")
 
@@ -2988,8 +2960,6 @@ class AuroraGUI:
         self.live_invert_z_check.connect("toggled", lambda _check: self._apply_viewer_settings())
 
         page.pack_start(live_frame, False, True, 0)
-        return self._scrolled(page)
-
     # -- Pagina: Comparacion (prueba / experimental) ----------------------------
 
     def _build_embedded_test_page(self) -> Gtk.Widget:
@@ -2999,7 +2969,7 @@ class AuroraGUI:
         note = Gtk.Label(
             label=(
                 "Prueba: visor 3D embebido directamente en la ventana (a diferencia de la "
-                "pestaña 'Visualizacion 3D', que abre una ventana aparte). Muestra ambas "
+                "vista 3D disponible en Resultados, que abre una ventana aparte). Muestra ambas "
                 "nubes superpuestas, con un resaltado sutil donde difieren. Todavia no esta "
                 "decidido si esto queda en la version final."
             ),
@@ -3010,7 +2980,7 @@ class AuroraGUI:
 
         row = self._row(note_box)
         load_button = Gtk.Button(label="Cargar comparacion aqui")
-        load_button.set_tooltip_text("Usa los archivos elegidos en la pestaña 'Comparacion'.")
+        load_button.set_tooltip_text("Usa los archivos elegidos en Medicion rapida.")
         load_button.connect("clicked", lambda _b: self._load_embedded_comparison())
         row.pack_start(load_button, False, False, 0)
         self.embedded_status_label = Gtk.Label(label="(nada cargado todavia)")
@@ -3030,7 +3000,7 @@ class AuroraGUI:
         updated_file = Path(self.updated_path)
         if not base_file.is_file() or not updated_file.is_file():
             self._show_error(
-                "Error", "Elige ambos archivos en la pestaña 'Comparacion' antes de cargar la vista."
+                "Error", "Elige ambos archivos en Medicion rapida antes de cargar la vista."
             )
             return
 
@@ -3068,7 +3038,7 @@ class AuroraGUI:
                 "Prueba: en vez de Cloud-to-Cloud (vecino mas cercano), reconstruye una "
                 "malla de cada nube y mide el espesor por raycasting en vez de por "
                 "distancia euclidiana al vecino mas cercano. Los archivos se comparten "
-                "con la pestaña 'Comparacion' (elegirlos aca o alla es lo mismo). "
+                "con Medicion rapida (elegirlos aqui o alla es lo mismo). "
                 "Todavia no esta decidido si esto reemplaza al metodo Cloud-to-Cloud "
                 "actual."
             ),
@@ -3131,15 +3101,15 @@ class AuroraGUI:
             files_box,
             self.base_path,
             lambda p: self._set_base_path(p),
-            info_text="Tunel original (antes del shotcrete). Comparte archivo con la "
-            "pestaña 'Comparacion' — elegirlo aca tambien lo actualiza alla.",
+            info_text="Tunel original (antes del shotcrete). Comparte archivo con "
+            "Medicion rapida — elegirlo aqui tambien lo actualiza alla.",
         )
         self.raycast_updated_path_label = self._file_row(
             files_box,
             self.updated_path,
             lambda p: self._set_updated_path(p),
-            info_text="Tunel con shotcrete (despues). Comparte archivo con la pestaña "
-            "'Comparacion' — elegirlo aca tambien lo actualiza alla.",
+            info_text="Tunel con shotcrete (despues). Comparte archivo con "
+            "Medicion rapida — elegirlo aqui tambien lo actualiza alla.",
         )
         page.pack_start(files_frame, False, True, 0)
 
@@ -3204,7 +3174,7 @@ class AuroraGUI:
         updated_file = Path(self.updated_path)
         if not base_file.is_file() or not updated_file.is_file():
             self._show_error(
-                "Error", "Elige ambos archivos (arriba, o en la pestaña 'Comparacion') antes de calcular."
+                "Error", "Elige ambos archivos (arriba, o en Medicion rapida) antes de calcular."
             )
             return
 
@@ -3323,22 +3293,7 @@ class AuroraGUI:
     def _view_raycast_result(self) -> None:
         if not self.raycast_result:
             return
-        try:
-            base_cloud = load_point_cloud(Path(self.base_path))
-        except Exception as exc:
-            self._show_error("No se pudo abrir la vista 3D", str(exc))
-            return
-
-        if self.viewer is None or not self.viewer.is_running():
-            self.viewer = LiveViewer(base_cloud, log=self._log)
-            self.viewer.start()
-            self.close_viewer_button.set_sensitive(True)
-
-        # Raycasting ya calculo los espesores sobre una malla, asi que entrega
-        # su heatmap directamente al visor compartido en vez de recalcular C2C.
-        self._apply_viewer_settings()
-        self.viewer.push_static_result(base_cloud, self.raycast_result.heatmap_cloud)
-        self._log("Vista 3D de resultados abierta.")
+        self._show_result_in_viewer()
 
     def _view_raycast_meshes(self) -> None:
         if not self.raycast_result:
@@ -3470,40 +3425,66 @@ class AuroraGUI:
         return label
 
     def _run_open_file_dialog(self) -> str | None:
-        dialog = Gtk.FileChooserDialog(
-            title="Seleccionar archivo .ply", parent=self.window, action=Gtk.FileChooserAction.OPEN
+        dialog = Gtk.FileChooserNative.new(
+            "Seleccionar archivo .ply",
+            self.window,
+            Gtk.FileChooserAction.OPEN,
+            "_Abrir",
+            "_Cancelar",
         )
-        dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Abrir", Gtk.ResponseType.OK)
         filter_ply = Gtk.FileFilter()
         filter_ply.set_name("Archivos PLY")
         filter_ply.add_pattern("*.ply")
         dialog.add_filter(filter_ply)
-        path = None
-        if dialog.run() == Gtk.ResponseType.OK:
-            path = dialog.get_filename()
-        dialog.destroy()
-        return path
+        return self._run_native_file_chooser(dialog)
 
     def _browse_output_dir(self) -> None:
-        dialog = Gtk.FileChooserDialog(
-            title="Seleccionar carpeta de salida", parent=self.window, action=Gtk.FileChooserAction.SELECT_FOLDER
+        dialog = Gtk.FileChooserNative.new(
+            "Seleccionar carpeta de salida",
+            self.window,
+            Gtk.FileChooserAction.SELECT_FOLDER,
+            "_Seleccionar",
+            "_Cancelar",
         )
-        dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Seleccionar", Gtk.ResponseType.OK)
-        if dialog.run() == Gtk.ResponseType.OK:
-            self.output_dir = dialog.get_filename()
+        path = self._run_native_file_chooser(dialog)
+        if path:
+            self.output_dir = path
             self._set_path_label(self.output_dir_label, self.output_dir)
-        dialog.destroy()
 
     def _save_file_dialog(self, title: str, initial_dir: Path, initial_name: str) -> str | None:
-        dialog = Gtk.FileChooserDialog(title=title, parent=self.window, action=Gtk.FileChooserAction.SAVE)
-        dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Guardar", Gtk.ResponseType.OK)
+        dialog = Gtk.FileChooserNative.new(
+            title,
+            self.window,
+            Gtk.FileChooserAction.SAVE,
+            "_Guardar",
+            "_Cancelar",
+        )
         dialog.set_do_overwrite_confirmation(True)
         dialog.set_current_folder(str(initial_dir))
         dialog.set_current_name(initial_name)
+        return self._run_native_file_chooser(dialog)
+
+    def _run_native_file_chooser(self, dialog) -> str | None:
+        """Muestra el selector nativo y recuerda la ultima carpeta entre sesiones."""
+        action = dialog.get_action()
+        if action != Gtk.FileChooserAction.SAVE and self._last_file_dialog_dir is not None:
+            if self._last_file_dialog_dir.is_dir():
+                dialog.set_current_folder(str(self._last_file_dialog_dir))
+
         path = None
-        if dialog.run() == Gtk.ResponseType.OK:
+        if dialog.run() == Gtk.ResponseType.ACCEPT:
             path = dialog.get_filename()
-        dialog.destroy()
+            if path:
+                selected = Path(path)
+                folder = selected if action == Gtk.FileChooserAction.SELECT_FOLDER else selected.parent
+                if folder.is_dir():
+                    self._last_file_dialog_dir = folder
+                    try:
+                        self._last_file_dialog_dir_file.parent.mkdir(parents=True, exist_ok=True)
+                        self._last_file_dialog_dir_file.write_text(str(folder), encoding="utf-8")
+                    except OSError:
+                        pass
+        dialog.hide()
         return path
 
     def _show_error(self, title: str, message: str) -> None:
@@ -3823,7 +3804,7 @@ class AuroraGUI:
             return
         if not self._ensure_live_capture_running():
             return
-        self.stack.set_visible_child_name("visualizacion")
+        self.stack.set_visible_child_name("resultados")
         self._log("Captura en tiempo real activa en la vista 3D.")
 
     def _capture_live_baseline_clicked(self) -> None:
@@ -3855,16 +3836,14 @@ class AuroraGUI:
             self._show_info("Sin frame disponible", "Aun no hay nube en vivo para guardar.")
             return
 
-        dialog = Gtk.FileChooserDialog(
-                title="Seleccionar carpeta para guardar nubes en vivo",
-                parent=self.window,
-                action=Gtk.FileChooserAction.SELECT_FOLDER,
+        dialog = Gtk.FileChooserNative.new(
+            "Seleccionar carpeta para guardar nubes en vivo",
+            self.window,
+            Gtk.FileChooserAction.SELECT_FOLDER,
+            "_Seleccionar",
+            "_Cancelar",
         )
-        dialog.add_buttons("_Cancelar", Gtk.ResponseType.CANCEL, "_Seleccionar", Gtk.ResponseType.OK)
-        target_dir = None
-        if dialog.run() == Gtk.ResponseType.OK:
-            target_dir = dialog.get_filename()
-        dialog.destroy()
+        target_dir = self._run_native_file_chooser(dialog)
         if not target_dir:
             self._log("Guardado de nubes en vivo cancelado.")
             return
@@ -4121,8 +4100,8 @@ class AuroraGUI:
                 self.target_thickness_entry, "El espesor objetivo"
             )
         except ValueError as exc:
-            self._show_warning("Revisa los ajustes de visualizacion", str(exc))
-            self.stack.set_visible_child_name("visualizacion")
+            self._show_warning("Revisa los ajustes de visualizacion en Resultados", str(exc))
+            self.stack.set_visible_child_name("resultados")
             return
 
         import datetime
@@ -4347,16 +4326,21 @@ class AuroraGUI:
         return max_distance, cone_angle
 
     def _open_active_result_visualization(self) -> None:
-        if self._active_result_kind == "raycast":
-            self._view_raycast_result()
-        else:
-            self._show_result_in_viewer()
+        self._show_result_in_viewer()
 
     def _show_result_in_viewer(self) -> None:
-        if self.viewer is not None and self.viewer.is_running():
-            self._apply_viewer_settings()
-        else:
-            self._open_viewer()
+        result = self._active_result()
+        if result is None:
+            self._show_warning("Sin resultado", "Calcula el espesor antes de abrir la vista 3D.")
+            return
+        try:
+            show_point_cloud(
+                result.heatmap_cloud,
+                window_name="Aurora - Espesor: Q para volver",
+            )
+            self._log("Vista 3D del espesor cerrada.")
+        except Exception as exc:
+            self._show_error("No se pudo abrir la vista 3D", str(exc))
 
     def _open_viewer(self) -> None:
         base_file = Path(self.base_path)
