@@ -2197,7 +2197,7 @@ class AuroraGUI:
         row = self._row(step_box)
         pick_base_button = Gtk.Button(label="1. Elegir puntos en el tunel original...")
         pick_base_button.set_tooltip_text(
-            "Shift+Click sobre cada punto de referencia, en orden, despues cerrar la ventana."
+            "Clic izquierdo sobre cada punto de referencia, en orden. Puedes usar Shift+clic tambien; despues cierra la ventana con Q."
         )
         pick_base_button.connect("clicked", lambda _b: self._pick_alignment_points("base"))
         row.pack_start(pick_base_button, False, False, 0)
@@ -2343,7 +2343,7 @@ class AuroraGUI:
                 try:
                     cloud = load_point_cloud(path)
                     title = (
-                        "Tunel original - Shift+Click en cada punto de referencia, en orden, luego cerrar (Q)"
+                        "Tunel original - clic en cada punto de referencia, en orden; Q para terminar"
                         if which == "base"
                         else "Tunel con shotcrete - Elige los MISMOS puntos, en el mismo orden, luego cerrar (Q)"
                     )

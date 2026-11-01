@@ -111,7 +111,7 @@ def main() -> None:
     parser.add_argument("--legend-json")
     parser.add_argument("--selection-output")
     parser.add_argument("--pick-count", type=int, default=0)
-    parser.add_argument("--pick-prompt", default="Shift + clic para marcar puntos; Q para terminar")
+    parser.add_argument("--pick-prompt", default="Clic izquierdo para marcar puntos; Q para terminar")
     parser.add_argument("--exit-status-file")
     args = parser.parse_args()
     exit_reason: str | None = None
@@ -168,6 +168,7 @@ def main() -> None:
                 pair_controls.add_child(group)
         pick_status = None
         picked_points: list[np.ndarray] = []
+        preview_widget = None
         cloud_points = np.asarray(geometries[0][1].points) if args.kind == "pick" else None
         if args.kind == "pick":
             pick_status = gui.Label(args.pick_prompt)
@@ -179,6 +180,8 @@ def main() -> None:
         def on_layout(layout_context):
             bounds = window.content_rect
             scene_widget.frame = bounds
+            if preview_widget is not None:
+                preview_widget.frame = bounds
             if pair_controls is not None:
                 preferred = pair_controls.calc_preferred_size(
                     layout_context, gui.Widget.Constraints()
@@ -212,12 +215,6 @@ def main() -> None:
 
         window.set_on_layout(on_layout)
         window.add_child(scene_widget)
-        if pair_controls is not None:
-            window.add_child(pair_controls)
-        if legend_widget is not None:
-            window.add_child(legend_widget)
-        if pick_status is not None:
-            window.add_child(pick_status)
 
         # Give SceneWidget a real viewport before configuring its camera.
         # Calling setup_camera() while its frame is still 0x0 leaves the first
@@ -248,13 +245,23 @@ def main() -> None:
             axis_target - np.array([0.0, 0.0, view_distance]),
             np.array([0.0, -1.0, 0.0]),
         )
-        # Render the fully populated scene once before mapping the native
-        # window. This initializes the renderer's first frame synchronously.
+        # Render the scene before mapping the native window. Show this prepared
+        # frame as a temporary image while the interactive SceneWidget draws
+        # its first on-screen frames behind it.
         warmup_image = app.render_to_image(
             scene_widget.scene,
             max(1, scene_widget.frame.width),
             max(1, scene_widget.frame.height),
         )
+        preview_widget = gui.ImageWidget(warmup_image)
+        preview_widget.frame = window.content_rect
+        window.add_child(preview_widget)
+        if pair_controls is not None:
+            window.add_child(pair_controls)
+        if legend_widget is not None:
+            window.add_child(legend_widget)
+        if pick_status is not None:
+            window.add_child(pick_status)
         del warmup_image
 
         modifier_keys = {
@@ -325,7 +332,7 @@ def main() -> None:
         # Shift+left-drag pans across the cloud; the wheel remains the zoom
         # gesture. Wheel events while a button is held are consumed.
         drag_origin: tuple[float, float] | None = None
-        drag_shift_down = False
+        drag_left_button = False
         last_drag_y: float | None = None
         last_drag_x: float | None = None
 
@@ -338,15 +345,12 @@ def main() -> None:
             )
 
         def on_mouse(event):
-            nonlocal drag_origin, drag_shift_down, last_drag_x, last_drag_y
+            nonlocal drag_origin, drag_left_button, last_drag_x, last_drag_y
             left_down = event.is_button_down(gui.MouseButton.LEFT)
             shift_down = event.is_modifier_down(gui.KeyModifier.SHIFT)
             if event.type == gui.MouseEvent.Type.BUTTON_DOWN:
                 drag_origin = (event.x, event.y)
-                drag_shift_down = shift_down or bool(
-                    pressed_modifiers
-                    & {gui.KeyName.LEFT_SHIFT, gui.KeyName.RIGHT_SHIFT}
-                )
+                drag_left_button = left_down
                 last_drag_x = event.x
                 last_drag_y = event.y
                 # Prevent a press/release click from reaching Open3D's default
@@ -355,7 +359,6 @@ def main() -> None:
             if event.type == gui.MouseEvent.Type.WHEEL and event.buttons != gui.MouseButton.NONE:
                 return gui.Widget.CONSUMED
             if event.type == gui.MouseEvent.Type.DRAG and left_down and last_drag_y is not None and last_drag_x is not None:
-                drag_shift_down = drag_shift_down or shift_down
                 delta_x = event.x - last_drag_x
                 delta_y = event.y - last_drag_y
                 last_drag_x = event.x
@@ -401,26 +404,35 @@ def main() -> None:
                 return gui.Widget.CONSUMED
             if event.type == gui.MouseEvent.Type.BUTTON_UP and drag_origin is not None:
                 start = drag_origin
-                shift_clicked = drag_shift_down or shift_down or bool(
-                    pressed_modifiers
-                    & {gui.KeyName.LEFT_SHIFT, gui.KeyName.RIGHT_SHIFT}
-                )
+                was_left_click = drag_left_button
                 drag_origin = None
-                drag_shift_down = False
+                drag_left_button = False
                 last_drag_x = None
                 last_drag_y = None
                 moved = math.hypot(event.x - start[0], event.y - start[1])
-                if args.kind == "pick" and shift_clicked and moved < 5 and (args.pick_count <= 0 or len(picked_points) < args.pick_count):
+                # The landmark picker is a dedicated selection window, so a
+                # left click always selects. Shift+click remains supported;
+                # this also works on desktops that do not report Shift in the
+                # Open3D mouse event reliably.
+                if args.kind == "pick" and was_left_click and moved < 5 and (args.pick_count <= 0 or len(picked_points) < args.pick_count):
                     x, y = int(event.x - scene_widget.frame.x), int(event.y - scene_widget.frame.y)
 
                     if x < 0 or y < 0 or x >= scene_widget.frame.width or y >= scene_widget.frame.height:
                         return gui.Widget.CONSUMED
                     camera = scene_widget.scene.camera
                     near = np.asarray(camera.unproject(float(x), float(y), 0.0, scene_widget.frame.width, scene_widget.frame.height)).reshape(3)
-                    far = np.asarray(camera.unproject(float(x), float(y), 1.0, scene_widget.frame.width, scene_widget.frame.height)).reshape(3)
-                    ray = far - near
+                    ray_probe = np.asarray(
+                        camera.unproject(
+                            float(x), float(y), 0.5,
+                            scene_widget.frame.width, scene_widget.frame.height,
+                        )
+                    ).reshape(3)
+                    # Open3D's perspective projection has an infinite far
+                    # plane; unprojecting depth=1 returns infinities. A finite
+                    # mid-depth sample gives the same click-ray direction.
+                    ray = ray_probe - near
                     ray_length = float(np.linalg.norm(ray))
-                    if ray_length <= 1e-9:
+                    if not np.all(np.isfinite(ray)) or ray_length <= 1e-9:
                         return gui.Widget.CONSUMED
                     ray /= ray_length
                     # Project all cloud points onto the exact click ray. The
@@ -428,7 +440,7 @@ def main() -> None:
                     # the camera's far plane was large, so clicks often missed.
                     offsets = cloud_points - near
                     along = offsets @ ray
-                    in_depth = (along >= 0.0) & (along <= ray_length)
+                    in_depth = along >= 0.0
                     if not np.any(in_depth):
                         return gui.Widget.CONSUMED
                     perpendicular = offsets - along[:, None] * ray
@@ -456,12 +468,32 @@ def main() -> None:
                             pick_status.text = f"{args.pick_prompt}   ·   Puntos: {len(picked_points)}{limit}"
                         if args.selection_output:
                             np.save(args.selection_output, np.asarray(picked_points, dtype=float).reshape((-1, 3)))
+                    elif pick_status is not None:
+                        pick_status.text = (
+                            "No encontre un punto bajo el clic; acerca el zoom y vuelve a hacer clic."
+                        )
 
                     # Camera/ray picking is synchronous; keeping it inside the
                     # event callback avoids races with closing the window.
-                        return gui.Widget.CONSUMED
+                    return gui.Widget.CONSUMED
             return gui.Widget.IGNORED
 
+        preview_frames = 0
+
+        def on_tick() -> bool:
+            nonlocal preview_frames
+            if preview_widget is None or not preview_widget.visible:
+                return False
+            preview_frames += 1
+            if preview_frames >= 12:
+                preview_widget.visible = False
+            # Keep drawing the SceneWidget underneath the prepared image until
+            # its first interactive frames have reached the visible window.
+            return True
+
+        window.set_on_tick_event(on_tick)
+        if preview_widget is not None and args.kind == "pick":
+            preview_widget.set_on_mouse(on_mouse)
         scene_widget.set_on_mouse(on_mouse)
         scene_widget.force_redraw()
         window.show(True)

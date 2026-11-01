@@ -369,7 +369,7 @@ def _pick_points_in_shared_viewer(
 def pick_landmark_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np.ndarray | None:
     """
     Abre un visor 3D interactivo para elegir puntos de referencia (landmarks)
-    en orden: Shift + click izquierdo sobre cada punto, en el mismo orden en
+    con clic izquierdo sobre cada punto, en el mismo orden en
     que se van a elegir en la otra nube, despues cerrar la ventana (Q).
     Arranca en el punto de vista del sensor. Devuelve las coordenadas en el
     orden elegido, o None si se eligieron menos de 3 puntos.
@@ -377,7 +377,7 @@ def pick_landmark_points(cloud: o3d.geometry.PointCloud, window_name: str) -> np
     picked_points = _pick_points_in_shared_viewer(
         cloud,
         window_name,
-        "Shift + clic en los puntos de referencia en orden; Q para terminar",
+        "Clic izquierdo en los puntos de referencia en orden; Q para terminar",
     )
     if len(picked_points) < 3:
         return None
