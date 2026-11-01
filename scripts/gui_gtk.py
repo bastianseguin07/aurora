@@ -4348,11 +4348,11 @@ class AuroraGUI:
             try:
                 import open3d as o3d
 
-                base_file = Path(self.base_path) if self.base_path else None
-                if base_file is not None and base_file.is_file():
-                    base_cloud = load_point_cloud(base_file)
-                else:
-                    base_cloud = o3d.geometry.PointCloud()
+                # The live preview is a raw sensor view by default. Only the
+                # explicit "Fijar BASE en vivo" action should enable thickness
+                # coloring; a previously selected analysis file is not an
+                # implicit reference for this preview.
+                base_cloud = o3d.geometry.PointCloud()
                 temp_dir = Path(tempfile.mkdtemp(prefix="aurora_live_view_"))
                 live_path = temp_dir / "live_frame.npz"
                 viewer = LiveViewer(
@@ -4407,7 +4407,6 @@ class AuroraGUI:
             return
         if not self._ensure_live_capture_running():
             return
-        self.stack.set_visible_child_name("resultados")
         self._log("Captura en tiempo real activa en la vista 3D.")
 
     def _capture_live_baseline_clicked(self) -> None:
