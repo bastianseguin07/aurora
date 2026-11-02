@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Abre la GUI de Aurora (GTK3). Pensado para lanzarse con doble click desde
 # el acceso directo del Escritorio (Aurora.desktop), no solo desde terminal.
-set -e
-cd "$(dirname "$0")"
+set -u
+cd "$(dirname "$(readlink -f "$0")")"
 
 if [ ! -x "./venv/bin/python3" ]; then
-    echo "No se encontro el entorno virtual (./venv). Corre ./setup.sh primero."
-    read -n 1 -s -r -p "Presiona una tecla para cerrar..."
+    message="No se encontro el entorno virtual (./venv). Corre ./setup.sh primero."
+    if command -v zenity >/dev/null 2>&1; then
+        zenity --error --title="Aurora" --text="$message"
+    else
+        echo "$message" >&2
+        read -r -n 1 -s -p "Presiona una tecla para cerrar..." || true
+        echo
+    fi
     exit 1
 fi
 
@@ -14,7 +20,12 @@ fi
 status=$?
 
 if [ $status -ne 0 ]; then
-    echo ""
-    echo "Aurora se cerro con un error (codigo $status)."
-    read -n 1 -s -r -p "Presiona una tecla para cerrar..."
+    message="Aurora se cerro con un error (codigo $status)."
+    if command -v zenity >/dev/null 2>&1; then
+        zenity --error --title="Aurora" --text="$message"
+    else
+        echo "$message" >&2
+        read -r -n 1 -s -p "Presiona una tecla para cerrar..." || true
+        echo
+    fi
 fi

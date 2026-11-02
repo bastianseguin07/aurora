@@ -1232,12 +1232,15 @@ class AuroraGUI:
         self.quick_crop_preview_button.connect("clicked", lambda _b: self._preview_test_crop_bounds())
         self.quick_crop_preview_button.set_sensitive(False)
         crop_row.pack_start(self.quick_crop_preview_button, False, False, 0)
-        self.quick_crop_apply_button = Gtk.Button(label="Aplicar y sobrescribir")
+        self.quick_crop_apply_button = Gtk.Button(label="Aplicar, sobrescribir y calcular")
+        self.quick_crop_apply_button.get_style_context().add_class("suggested-action")
         self.quick_crop_apply_button.set_tooltip_text(
-            "Recorta ANTES y DESPUES y reemplaza sus archivos .ply actuales."
+            "Recorta y sobrescribe ANTES y DESPUES, conserva copias originales ocultas para rehacer el box y calcula el espesor."
         )
         self.quick_crop_apply_button.connect(
-            "clicked", lambda _b: self._apply_test_crop(overwrite_inputs=True)
+            "clicked", lambda _b: self._apply_test_crop(
+                overwrite_inputs=True, calculate_after=True
+            )
         )
         self.quick_crop_apply_button.set_sensitive(False)
         crop_row.pack_start(self.quick_crop_apply_button, False, False, 0)
@@ -3032,8 +3035,8 @@ class AuroraGUI:
     def _load_test_crop_pair(self, compensate_pose: bool = True):
         if not self.test_crop_before_path or not self.test_crop_after_path:
             raise RuntimeError("Selecciona ANTES y DESPUES en Medicion rapida primero.")
-        before_path = Path(self.test_crop_before_path)
-        after_path = Path(self.test_crop_after_path)
+        before_path = self._crop_source_path(Path(self.test_crop_before_path))
+        after_path = self._crop_source_path(Path(self.test_crop_after_path))
         before = load_point_cloud(before_path)
         after = load_point_cloud(after_path)
         before_pose = load_reference_pose(before_path)
@@ -3042,6 +3045,27 @@ class AuroraGUI:
             rotation, translation = compute_pose_relative_transform(before_pose, after_pose)
             after = apply_rigid_transform(after, rotation, translation)
         return before, after
+
+    @staticmethod
+    def _crop_original_backup_path(path: Path) -> Path:
+        return path.with_name(f".{path.stem}.aurora_original{path.suffix}")
+
+    def _crop_source_path(self, selected_path: Path) -> Path:
+        """Use the first full capture again when redefining an applied crop."""
+        original = self._crop_original_backup_path(selected_path)
+        return original if original.is_file() else selected_path
+
+    def _preserve_crop_original(self, path: Path) -> None:
+        """Keep one hidden, durable original plus its pose/photo sidecars."""
+        backup = self._crop_original_backup_path(path)
+        if backup.exists():
+            return
+        shutil.copy2(path, backup)
+        for suffix in ("_pose.npz", "_ref.npz"):
+            sidecar = path.with_name(path.stem + suffix)
+            backup_sidecar = backup.with_name(backup.stem + suffix)
+            if sidecar.is_file() and not backup_sidecar.exists():
+                shutil.copy2(sidecar, backup_sidecar)
 
     def _view_test_crop_pair(self) -> None:
         if not self.test_crop_before_path or not self.test_crop_after_path:
@@ -3110,6 +3134,48 @@ class AuroraGUI:
         return {
             "mode": "continuous",
             "max_distance_m": max_distance_m if max_distance_m > 0 else None,
+        }
+
+    def _preview_thickness_legend(
+        self, heatmap_spec: dict, before_cloud, after_cloud
+    ) -> dict | None:
+        """Build the same legend as the selected preview palette, without a saved result."""
+        if not len(after_cloud.points):
+            return None
+        mode = heatmap_spec.get("mode", "continuous")
+        if mode == "six":
+            target_cm = float(heatmap_spec["target_m"]) * 100.0
+            band_width_cm = target_cm / len(SIX_BAND_LABELS)
+            rows = []
+            for index, (label, color) in enumerate(zip(SIX_BAND_LABELS, SIX_BAND_COLORS)):
+                lower = index * band_width_cm
+                value = (
+                    f">= {lower:.1f} cm (tope {target_cm:.1f})"
+                    if index == len(SIX_BAND_LABELS) - 1
+                    else f"{lower:.1f}-{(index + 1) * band_width_cm:.1f} cm"
+                )
+                rows.append((color, label, value))
+            return {"title": "Espesor · 6 niveles", "rows": rows}
+        if mode == "three":
+            low_cm = float(heatmap_spec["low_m"]) * 100.0
+            high_cm = float(heatmap_spec["high_m"]) * 100.0
+            return {
+                "title": "Espesor · 3 niveles",
+                "rows": [
+                    (BAND_COLOR_LOW, "Bajo", f"< {low_cm:g} cm"),
+                    (BAND_COLOR_MEDIUM, "Intermedio", f"{low_cm:g}-{high_cm:g} cm"),
+                    (BAND_COLOR_HIGH, "Alto", f">= {high_cm:g} cm"),
+                ],
+            }
+        distances = compute_c2c_distance(after_cloud, before_cloud)
+        maximum = heatmap_spec.get("max_distance_m")
+        if maximum is None:
+            maximum = float(np.percentile(distances, 98)) if distances.size else 1e-9
+        return {
+            "title": "Espesor · escala continua",
+            "continuous_max_cm": max(float(maximum), 1e-9) * 100.0,
+            "low_color": HEATMAP_COLOR_LOW,
+            "high_color": HEATMAP_COLOR_HIGH,
         }
 
     def _pick_test_crop_seed(self) -> None:
@@ -3304,6 +3370,11 @@ class AuroraGUI:
                 else:
                     after_path = camera_after_path
                     empty_stages.append("despues")
+                legend = self._preview_thickness_legend(
+                    heatmap_spec,
+                    before_cut if len(before_cut.points) else before_source,
+                    after_cut,
+                )
                 self._ui(
                     self._launch_test_crop_preview_viewer,
                     temp_dir,
@@ -3313,6 +3384,7 @@ class AuroraGUI:
                     heatmap_spec,
                     [str(camera_before_path), str(camera_after_path)],
                     empty_stages,
+                    legend,
                 )
             except Exception as exc:
                 shutil.rmtree(temp_dir, ignore_errors=True)
@@ -3322,7 +3394,7 @@ class AuroraGUI:
 
     def _launch_test_crop_preview_viewer(
         self, temp_dir: Path, before_path: str, after_path: str, box_bounds, heatmap_spec,
-        camera_reference_paths: list[str], empty_stages: list[str],
+        camera_reference_paths: list[str], empty_stages: list[str], legend: dict | None,
     ) -> None:
         self._close_test_crop_preview_viewer()
         process = self._launch_viewer_process(
@@ -3331,6 +3403,7 @@ class AuroraGUI:
             "Aurora - Vista previa del box",
             "Error en la vista previa de las dos nubes",
             str(temp_dir),
+            legend=legend,
             box_bounds=box_bounds,
             heatmap_spec=heatmap_spec,
             camera_reference_paths=camera_reference_paths,
@@ -3363,39 +3436,44 @@ class AuroraGUI:
             self.quick_crop_status_label.set_text("No se pudo generar la vista previa del recorte.")
         self._show_error("Error en la vista previa de las dos nubes", error)
 
-    def _apply_test_crop(self, overwrite_inputs: bool = False) -> None:
+    def _apply_test_crop(
+        self, overwrite_inputs: bool = False, calculate_after: bool = False
+    ) -> None:
         if not self.test_crop_before_path or not self.test_crop_after_path or self.test_crop_bounds is None:
             self._show_warning(
                 "Faltan datos",
                 "Selecciona ANTES y DESPUES en Medicion rapida y define la region antes de guardar.",
             )
             return
-        before_source = Path(self.test_crop_before_path)
-        after_source = Path(self.test_crop_after_path)
-        if overwrite_inputs and before_source.resolve() == after_source.resolve():
+        selected_before = Path(self.test_crop_before_path)
+        selected_after = Path(self.test_crop_after_path)
+        if overwrite_inputs and selected_before.resolve() == selected_after.resolve():
             self._show_error(
                 "Capturas repetidas",
                 "ANTES y DESPUES apuntan al mismo archivo. Selecciona dos nubes distintas para sobrescribirlas.",
             )
             return
-        output_dir = self.test_crop_output_dir or before_source.parent
+        output_dir = self.test_crop_output_dir or selected_before.parent
         if not overwrite_inputs and not output_dir.is_dir():
             self._show_warning("Carpeta invalida", "Elige una carpeta de destino que exista.")
             return
 
         if overwrite_inputs:
-            before_destination = before_source
-            after_destination = after_source
+            before_destination = selected_before
+            after_destination = selected_after
         else:
             suffix = ""
             index = 2
-            before_destination = output_dir / f"ANTES_{before_source.stem}_recortada.ply"
-            after_destination = output_dir / f"DESPUES_{after_source.stem}_recortada.ply"
+            before_destination = output_dir / f"ANTES_{selected_before.stem}_recortada.ply"
+            after_destination = output_dir / f"DESPUES_{selected_after.stem}_recortada.ply"
             while before_destination.exists() or after_destination.exists():
                 suffix = f"_{index}"
-                before_destination = output_dir / f"ANTES_{before_source.stem}_recortada{suffix}.ply"
-                after_destination = output_dir / f"DESPUES_{after_source.stem}_recortada{suffix}.ply"
+                before_destination = output_dir / f"ANTES_{selected_before.stem}_recortada{suffix}.ply"
+                after_destination = output_dir / f"DESPUES_{selected_after.stem}_recortada{suffix}.ply"
                 index += 1
+
+        before_source = self._crop_source_path(selected_before)
+        after_source = self._crop_source_path(selected_after)
 
         bounds = self.test_crop_bounds
         compensate_pose = self.quick_imu_compensate_check.get_active()
@@ -3445,6 +3523,8 @@ class AuroraGUI:
                 if overwrite_inputs:
                     if before_backup.exists() or after_backup.exists():
                         raise RuntimeError("Ya existe un respaldo temporal de esta operación; no se sobrescribió nada.")
+                    self._preserve_crop_original(before_destination)
+                    self._preserve_crop_original(after_destination)
                     os.replace(before_destination, before_backup)
                     os.replace(after_destination, after_backup)
                     os.replace(before_temp, before_destination)
@@ -3518,6 +3598,7 @@ class AuroraGUI:
                 len(before.points),
                 len(after.points),
                 overwrite_inputs,
+                calculate_after,
             )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -3529,6 +3610,7 @@ class AuroraGUI:
         before_count: int,
         after_count: int,
         overwrite_inputs: bool = False,
+        calculate_after: bool = False,
     ) -> None:
         if overwrite_inputs:
             # Re-select the same paths to invalidate any previous calculation and
@@ -3559,6 +3641,8 @@ class AuroraGUI:
         self.test_crop_status_label.set_text(message)
         if hasattr(self, "quick_crop_status_label"):
             self.quick_crop_status_label.set_text(message)
+        if calculate_after:
+            self._quick_calculate()
 
     def _on_test_crop_failed(self, message: str) -> None:
         self._refresh_test_crop_controls()

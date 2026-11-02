@@ -16,6 +16,7 @@ import open3d as o3d
 from open3d.visualization import gui, rendering
 
 from pointcloud_core import (
+    compute_pose_relative_transform,
     load_point_cloud,
     prepare_thickness_overlay,
     grayscale_point_cloud,
@@ -107,6 +108,7 @@ def _look_at_sensor_pov(scene_widget, points: np.ndarray, fov_deg: float = 60.0)
 def _read_geometries(
     kind: str, paths: list[Path], heatmap_spec: dict | None = None,
     empty_stages: set[str] | None = None,
+    fallback_base_path: Path | None = None,
 ):
     material = rendering.MaterialRecord()
     material.shader = "defaultUnlit"
@@ -126,6 +128,11 @@ def _read_geometries(
         updated = o3d.geometry.PointCloud() if "despues" in empty_stages else o3d.io.read_point_cloud(str(paths[1]))
         if len(base.points) and len(updated.points):
             base, updated = prepare_thickness_overlay(base, updated, heatmap_spec)
+        elif not len(base.points) and len(updated.points) and fallback_base_path is not None:
+            # If the box contains no ANTES samples, keep the display clipped
+            # but color DESPUES against the full ANTES cloud as a reference.
+            fallback_base = load_point_cloud(fallback_base_path)
+            _, updated = prepare_thickness_overlay(fallback_base, updated, heatmap_spec)
         else:
             if len(base.points):
                 base = grayscale_point_cloud(base)
@@ -202,6 +209,29 @@ def _pose_metrics_panel(em: int):
     return status, titles, labels, total, widgets
 
 
+def _rotation_from_forward(direction: np.ndarray) -> np.ndarray:
+    """Rotate the mesh arrow's local +Z axis onto a normalized direction."""
+    target = np.asarray(direction, dtype=np.float64).reshape(3)
+    norm = float(np.linalg.norm(target))
+    if not np.isfinite(norm) or norm < 1e-12:
+        return np.eye(3, dtype=np.float64)
+    target /= norm
+    source = np.array([0.0, 0.0, 1.0])
+    cross = np.cross(source, target)
+    sine = float(np.linalg.norm(cross))
+    cosine = float(np.clip(np.dot(source, target), -1.0, 1.0))
+    if sine < 1e-12:
+        if cosine >= 0.0:
+            return np.eye(3, dtype=np.float64)
+        return np.array(
+            [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
+            dtype=np.float64,
+        )
+    x, y, z = cross / sine
+    skew = np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
+    return np.eye(3) + skew * sine + (skew @ skew) * (1.0 - cosine)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -237,6 +267,9 @@ def main() -> None:
                 paths,
                 heatmap_spec,
                 set(args.empty_stage),
+                Path(args.camera_reference[0])
+                if args.kind == "pair_box" and args.camera_reference
+                else None,
             )
         )
         if args.kind == "pick":
@@ -364,7 +397,8 @@ def main() -> None:
                 ("antes", before_toggle, "ANTES"), ("despues", after_toggle, "DESPUES")
             ):
                 if stage in args.empty_stage:
-                    continue
+                    toggle.enabled = False
+                    label = f"{label} (sin puntos)"
                 group = gui.Horiz(0.12 * window.theme.font_size)
                 group.add_child(toggle)
                 label_widget = gui.Label(label)
@@ -808,13 +842,37 @@ def main() -> None:
                 rpy = np.asarray(state["rpy_deg"], dtype=float)
                 ref_position, ref_rpy = pose_reference
                 offset = world_to_sensor_view_rotation(ref_rpy) @ (position - ref_position)
+                current_rotation, _ = compute_pose_relative_transform(
+                    pose_reference, (position, rpy)
+                )
+                forward = current_rotation @ np.array([0.0, 0.0, 1.0])
+                forward /= max(float(np.linalg.norm(forward)), 1e-12)
                 rotation_error = ((ref_rpy - rpy + 180.0) % 360.0) - 180.0
                 distance = float(np.linalg.norm(offset))
-                color = (0.20, 0.80, 0.35) if distance <= args.pose_tolerance_m else ((0.95, 0.65, 0.10) if distance <= 4 * args.pose_tolerance_m else (0.90, 0.25, 0.25))
                 scene_widget.scene.remove_geometry("pose_actual")
-                marker = o3d.geometry.TriangleMesh.create_sphere(radius=0.025, resolution=18)
-                marker.compute_vertex_normals(); marker.paint_uniform_color(color); marker.translate(offset)
+                marker = o3d.geometry.TriangleMesh.create_sphere(radius=0.032, resolution=20)
+                marker.compute_vertex_normals()
+                marker.paint_uniform_color((0.90, 0.25, 0.25))
+                marker.translate(offset)
                 scene_widget.scene.add_geometry("pose_actual", marker, rendering.MaterialRecord())
+                scene_widget.scene.remove_geometry("pose_actual_front")
+                front_arrow = o3d.geometry.TriangleMesh.create_arrow(
+                    cylinder_radius=0.006,
+                    cone_radius=0.016,
+                    cylinder_height=0.17,
+                    cone_height=0.06,
+                    resolution=16,
+                )
+                front_rotation = _rotation_from_forward(forward)
+                front_arrow.rotate(front_rotation, center=np.zeros(3))
+                front_arrow.translate(offset + forward * 0.025)
+                front_arrow.paint_uniform_color((0.05, 0.24, 1.0))
+                front_arrow.compute_vertex_normals()
+                front_material = rendering.MaterialRecord()
+                front_material.shader = "defaultUnlit"
+                scene_widget.scene.add_geometry(
+                    "pose_actual_front", front_arrow, front_material
+                )
                 active = next((i for i, axis in enumerate(("x", "y", "z")) if abs(offset[i]) > args.pose_tolerance_m), None)
                 if active is None:
                     pose_status.text = "Sensor en posición"

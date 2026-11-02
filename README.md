@@ -103,7 +103,7 @@ red que el sensor. La IP por defecto del dispositivo suele ser `192.168.11.1`
 
 ## 4. Usar la GUI
 
-La aplicacion GTK3 se inicia con `./run_gui.sh` en Ubuntu. El flujo de operador y las instrucciones detalladas estan en [MANUAL_USO.md](MANUAL_USO.md); la revision de proposito, limites y decisiones de interfaz esta en [AUDITORIA_GUI.md](AUDITORIA_GUI.md).
+La aplicacion GTK3 se inicia con `./run_gui.sh` en Ubuntu. El flujo de operador y las instrucciones detalladas estan en [MANUAL_USO.md](MANUAL_USO.md).
 
 La barra lateral organiza las secciones en **Flujo de trabajo** (Captura, Guia de pose IMU, Alineacion por puntos, Preparar nubes), **Configuracion** (Archivos ANTES/DESPUES, Ajustes de analisis y Visualizacion 3D) y **Resultados**. **Medicion rapida** es la entrada principal; ahi se eligen o capturan ambas nubes y se calcula el espesor. Preparar nubes permite recortar un PLY grande a una copia mas pequena para aislar cajas u otros objetos. La guia IMU ayuda a repetir una pose bajo el mismo tracking, pero no registra las nubes por software. Si las poses difieren, usa la alineacion por puntos antes de calcular.
 

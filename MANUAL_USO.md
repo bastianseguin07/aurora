@@ -1,6 +1,6 @@
 # Manual de uso — Aurora
 
-Guia de la interfaz GTK3 para medir diferencias entre nubes del tunel antes y despues de aplicar shotcrete. La GUI está preparada para Ubuntu. Consulta [README.md](README.md) para instalarla y [AUDITORIA_GUI.md](AUDITORIA_GUI.md) para los limites y decisiones del proyecto.
+Guia de la interfaz GTK3 para medir diferencias entre nubes del tunel antes y despues de aplicar shotcrete. La GUI está preparada para Ubuntu. Consulta [README.md](README.md) para instalarla.
 
 ## Medicion rapida
 
