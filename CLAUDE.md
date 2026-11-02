@@ -85,11 +85,9 @@ PipelineResult`. Llamado tanto por el CLI como por `_run_pipeline_worker` en
   orientacion), `direction_word_pairs_for_axes` (que palabra
   'adelante'/'atras'/'izquierda'/'derecha'/'arriba'/'abajo' le corresponde
   a moverse en +X/-X, +Y/-Y, +Z/-Z del mundo, segun hacia donde miraba el
-  sensor al capturar la base). La convencion de ejes propios del sensor
-  (adelante=+Y, derecha=+X, arriba=+Z en su marco local) se ajusto a mano
-  contra el hardware real para adelante/atras; izquierda/derecha y
-  arriba/abajo son la mejor aproximacion disponible pero no estan
-  confirmados.
+  sensor al capturar la base). El marco del Aurora sigue la convención
+  documentada del fabricante: X=adelante, Y=izquierda, Z=arriba. La nube
+  óptica usa X=derecha, Y=abajo, Z=adelante.
 - **Segmentacion por box orientado**: `_quad_box_axes`,
   `crop_cloud_by_quad_box`, `build_quad_box_wireframe`,
   `show_quad_box_preview` — ajusta un plano a 4 puntos elegidos y recorta una

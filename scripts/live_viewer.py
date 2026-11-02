@@ -317,7 +317,7 @@ class LiveViewer:
                 if now - last_sensor_poll > 0.08:
                     points, colors = read_frame_points_and_colors(
                         connection,
-                        max_points=40000,
+                        max_points=None,
                         timeout_ms=50,
                         max_distance_m=live_max_distance_m,
                         cone_angle_deg=live_cone_angle_deg,
@@ -326,7 +326,7 @@ class LiveViewer:
                     )
                     if points is not None and len(points) > 0:
                         if points.ndim == 3:
-                            points, colors = live_smoother.update(points, colors, max_points=40000)
+                            points, colors = live_smoother.update(points, colors)
                         points = self._apply_axis_transform(points, live_invert_y, live_invert_z)
                         with self._lock:
                             self._last_live_points = points.copy()
@@ -388,7 +388,7 @@ class LiveViewer:
                 try:
                     points, colors = read_frame_points_and_colors(
                         connection,
-                        max_points=40000,
+                        max_points=None,
                         timeout_ms=50,
                         max_distance_m=max_distance,
                         cone_angle_deg=cone_angle,
@@ -397,7 +397,7 @@ class LiveViewer:
                     )
                     if points is not None and len(points):
                         if points.ndim == 3:
-                            points, colors = live_smoother.update(points, colors, max_points=40000)
+                            points, colors = live_smoother.update(points, colors)
                         points = self._apply_axis_transform(points, invert_y, invert_z)
                         with self._lock:
                             self._last_live_points = points.copy()

@@ -18,6 +18,18 @@ import open3d as o3d
 
 Vec3 = Tuple[float, float, float]
 
+# Aurora SLAM pose axes are X=forward, Y=left, Z=up. Depth-camera point grids
+# use X=right, Y=down, Z=forward. Convert vectors between those frames before
+# applying a pose transform to a depth point.
+_POSE_TO_SENSOR_VIEW = np.array(
+    [
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [1.0, 0.0, 0.0],
+    ],
+    dtype=np.float64,
+)
+
 
 @dataclass
 class DistanceStats:
@@ -34,10 +46,7 @@ class DistanceStats:
             f"  Puntos analizados : {self.n_points}\n"
             f"  Espesor medio     : {self.mean * 100:.2f} cm\n"
             f"  Espesor mediano   : {self.median * 100:.2f} cm\n"
-            f"  Desv. estandar    : {self.std * 100:.2f} cm\n"
-            f"  Minimo            : {self.min * 100:.2f} cm\n"
-            f"  Maximo            : {self.max * 100:.2f} cm\n"
-            f"  Percentil 95      : {self.p95 * 100:.2f} cm"
+            f"  Desv. estandar    : {self.std * 100:.2f} cm"
         )
 
 
@@ -90,7 +99,7 @@ def crop_cloud_by_face_depth(
     face_bounds: tuple[Vec3, Vec3],
     depth_m: float,
 ) -> o3d.geometry.PointCloud:
-    """Extrude a two-corner face selection along its smallest XYZ extent."""
+    """Extrude the selected face symmetrically along its thinnest axis."""
     if depth_m <= 0:
         raise ValueError("La profundidad debe ser mayor que cero.")
     low = np.asarray(face_bounds[0], dtype=np.float64)
@@ -102,6 +111,56 @@ def crop_cloud_by_face_depth(
     low[depth_axis] = center - depth_m / 2.0
     high[depth_axis] = center + depth_m / 2.0
     return crop_point_cloud(cloud, tuple(low.tolist()), tuple(high.tolist()))
+
+
+def crop_pair_by_face_depth(
+    before: o3d.geometry.PointCloud,
+    after: o3d.geometry.PointCloud,
+    face_bounds: tuple[Vec3, Vec3],
+    depth_m: float,
+    seed: np.ndarray | None = None,
+) -> tuple[o3d.geometry.PointCloud, o3d.geometry.PointCloud, tuple[Vec3, Vec3], tuple[Vec3, Vec3], int, float]:
+    """Apply the same face/depth box independently to both point clouds."""
+    if depth_m <= 0:
+        raise ValueError("La profundidad debe ser mayor que cero.")
+    low = np.asarray(face_bounds[0], dtype=np.float64)
+    high = np.asarray(face_bounds[1], dtype=np.float64)
+    if low.shape != (3,) or high.shape != (3,) or np.any(high < low):
+        raise ValueError("Los limites de la cara no son validos.")
+
+    depth_axis = int(np.argmin(high - low))
+    center = 0.5 * (low[depth_axis] + high[depth_axis])
+    box_low, box_high = low.copy(), high.copy()
+    box_low[depth_axis] = center - depth_m / 2.0
+    box_high[depth_axis] = center + depth_m / 2.0
+    before_cut = crop_point_cloud(before, tuple(box_low.tolist()), tuple(box_high.tolist()))
+    after_cut = crop_point_cloud(after, tuple(box_low.tolist()), tuple(box_high.tolist()))
+    if not len(before_cut.points) and not len(after_cut.points):
+        raise ValueError("El box no contiene puntos. Aumenta el lado de la cara o la profundidad.")
+    bounds = (tuple(low.tolist()), tuple(high.tolist()))
+    box_bounds = (tuple(box_low.tolist()), tuple(box_high.tolist()))
+    return before_cut, after_cut, bounds, box_bounds, depth_axis, 0.0
+
+
+def square_face_bounds(
+    face_bounds: tuple[Vec3, Vec3], seed: np.ndarray, side_m: float
+) -> tuple[Vec3, Vec3]:
+    """Set an exact square face centered on the selected wall point."""
+    if not np.isfinite(side_m) or side_m <= 0:
+        raise ValueError("El lado del box debe ser mayor que cero.")
+    low = np.asarray(face_bounds[0], dtype=np.float64).copy()
+    high = np.asarray(face_bounds[1], dtype=np.float64).copy()
+    seed = np.asarray(seed, dtype=np.float64).reshape(3)
+    if low.shape != (3,) or high.shape != (3,) or np.any(high < low):
+        raise ValueError("Los limites de la cara no son validos.")
+    depth_axis = int(np.argmin(high - low))
+    low[depth_axis] = high[depth_axis] = seed[depth_axis]
+    for axis in range(3):
+        if axis == depth_axis:
+            continue
+        low[axis] = seed[axis] - side_m / 2.0
+        high[axis] = seed[axis] + side_m / 2.0
+    return tuple(low.tolist()), tuple(high.tolist())
 
 
 def preprocess(
@@ -336,14 +395,22 @@ def _pick_points_in_shared_viewer(
     window_name: str,
     prompt: str,
     max_points: int = 0,
+    context_clouds: list[o3d.geometry.PointCloud] | None = None,
+    require_shift: bool = False,
 ) -> np.ndarray:
     """Run the same decorated Open3D SceneWidget used by all inspection views."""
     with tempfile.TemporaryDirectory(prefix="aurora_point_picker_") as temp_dir:
         temp = Path(temp_dir)
         cloud_path = temp / "selection_cloud.ply"
         output_path = temp / "selected_points.npy"
+        context_paths = []
         if not o3d.io.write_point_cloud(str(cloud_path), cloud):
             raise OSError("No se pudo preparar la nube para seleccionar puntos.")
+        for index, context_cloud in enumerate(context_clouds or []):
+            context_path = temp / f"context_cloud_{index}.ply"
+            if not o3d.io.write_point_cloud(str(context_path), context_cloud):
+                raise OSError("No se pudo preparar una nube de contexto para la selección.")
+            context_paths.append(context_path)
         viewer = Path(__file__).resolve().with_name("viewer_host.py")
         command = [
             sys.executable,
@@ -359,6 +426,10 @@ def _pick_points_in_shared_viewer(
             "--pick-prompt",
             prompt,
         ]
+        for context_path in context_paths:
+            command.extend(("--context-cloud", str(context_path)))
+        if require_shift:
+            command.append("--pick-requires-shift")
         subprocess.run(command, cwd=viewer.parent.parent, check=False)
         if not output_path.exists():
             return np.empty((0, 3), dtype=float)
@@ -437,15 +508,22 @@ def reference_pose_path_for(ply_path: Path) -> Path:
     return ply_path.with_name(ply_path.stem + "_pose.npz")
 
 
-def save_reference_pose(ply_path: Path, position: np.ndarray, rpy_deg: np.ndarray) -> None:
+def save_reference_pose(
+    ply_path: Path,
+    position: np.ndarray,
+    rpy_deg: np.ndarray,
+    alignment_version: int | None = None,
+) -> None:
     """Guarda la pose del sensor (posicion en metros, orientacion roll/pitch/yaw
     en grados) junto a un .ply, para poder guiar al usuario a devolver el
     sensor a esa misma posicion fisica antes de la siguiente captura."""
-    np.savez_compressed(
-        reference_pose_path_for(ply_path),
-        position=np.asarray(position, dtype=np.float64),
-        rpy_deg=np.asarray(rpy_deg, dtype=np.float64),
-    )
+    values = {
+        "position": np.asarray(position, dtype=np.float64),
+        "rpy_deg": np.asarray(rpy_deg, dtype=np.float64),
+    }
+    if alignment_version is not None:
+        values["alignment_version"] = np.asarray(int(alignment_version), dtype=np.int32)
+    np.savez_compressed(reference_pose_path_for(ply_path), **values)
 
 
 def load_reference_pose(ply_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
@@ -456,6 +534,17 @@ def load_reference_pose(ply_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
         return None
     data = np.load(path)
     return data["position"], data["rpy_deg"]
+
+
+def reference_pose_alignment_version(ply_path: Path) -> int:
+    """Version of the camera-frame pose transform recorded for an aligned PLY."""
+    path = reference_pose_path_for(ply_path)
+    if not path.exists():
+        return 0
+    with np.load(path) as data:
+        if "alignment_version" not in data.files:
+            return 0
+        return int(np.asarray(data["alignment_version"]).item())
 
 
 def compute_pose_relative_transform(
@@ -473,8 +562,14 @@ def compute_pose_relative_transform(
     R_base = o3d.geometry.get_rotation_matrix_from_xyz(np.radians(np.asarray(base_rpy, dtype=np.float64)))
     R_upd = o3d.geometry.get_rotation_matrix_from_xyz(np.radians(np.asarray(upd_rpy, dtype=np.float64)))
 
-    R_rel = R_base.T @ R_upd
-    t_rel = R_base.T @ (np.asarray(upd_pos, dtype=np.float64) - np.asarray(base_pos, dtype=np.float64))
+    # Convert camera-local points to the Aurora pose frame, transform through
+    # map coordinates, then convert into the base camera frame. Using the
+    # pose rotation directly on camera XYZ swaps axes (forward is camera +Z).
+    pose_to_camera = _POSE_TO_SENSOR_VIEW
+    R_rel = pose_to_camera @ R_base.T @ R_upd @ pose_to_camera.T
+    t_rel = pose_to_camera @ R_base.T @ (
+        np.asarray(upd_pos, dtype=np.float64) - np.asarray(base_pos, dtype=np.float64)
+    )
     return R_rel, t_rel
 
 
@@ -491,16 +586,35 @@ def align_cloud_by_pose(
 def local_axes_from_rpy_deg(rpy_deg: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Ejes propios del sensor (adelante/derecha/arriba) expresados en el
     sistema de coordenadas mundo/mapa, a partir de su orientacion
-    roll/pitch/yaw (grados) en un instante dado. Asume que en el marco
-    propio del sensor 'adelante' (la cara con las camaras) es +Y, 'derecha'
-    es +X y 'arriba' es +Z — ajustado a mano contra el sensor real (la
-    primera version tenia 'adelante' y 'arriba' cruzados: lo que se
-    mostraba como 'arriba'/'abajo' era en realidad 'adelante'/'atras')."""
+    roll/pitch/yaw (grados) en un instante dado. El marco del Aurora es
+    X=adelante, Y=izquierda, Z=arriba; por eso derecha es -Y."""
     rotation = o3d.geometry.get_rotation_matrix_from_xyz(np.radians(np.asarray(rpy_deg, dtype=np.float64)))
-    forward = rotation @ np.array([0.0, 1.0, 0.0])
-    right = rotation @ np.array([1.0, 0.0, 0.0])
+    forward = rotation @ np.array([1.0, 0.0, 0.0])
+    right = rotation @ np.array([0.0, -1.0, 0.0])
     up = rotation @ np.array([0.0, 0.0, 1.0])
     return forward, right, up
+
+
+def world_to_sensor_view_rotation(rpy_deg: np.ndarray) -> np.ndarray:
+    """Transforma vectores del mapa a los ejes ópticos de la pose de referencia:
+    X=derecha, Y=abajo, Z=adelante, como los frames XYZ de las nubes crudas."""
+    pose_rotation = o3d.geometry.get_rotation_matrix_from_xyz(
+        np.radians(np.asarray(rpy_deg, dtype=np.float64))
+    )
+    # En la pose Aurora: X=adelante, Y=izquierda, Z=arriba.
+    # En el frame óptico: X=derecha, Y=abajo, Z=adelante.
+    # La pose es base -> mundo. Convertimos primero mundo -> base con R.T y
+    # luego Aurora base (X adelante, Y izquierda, Z arriba) -> nube óptica
+    # (X derecha, Y abajo, Z adelante).
+    return _POSE_TO_SENSOR_VIEW @ pose_rotation.T
+
+
+def world_delta_to_sensor_view(delta_world: np.ndarray, reference_rpy_deg: np.ndarray) -> np.ndarray:
+    """Expresa un desplazamiento del mapa en X=derecha, Y=abajo, Z=adelante
+    respecto de la orientación guardada para la captura ANTES."""
+    return world_to_sensor_view_rotation(reference_rpy_deg) @ np.asarray(
+        delta_world, dtype=np.float64
+    )
 
 
 def direction_word_pairs_for_axes(rpy_deg: np.ndarray) -> dict[str, tuple[str, str]]:
@@ -799,6 +913,45 @@ def build_heatmap_cloud_six_bands(
     return six_band_cloud
 
 
+def grayscale_point_cloud(cloud: o3d.geometry.PointCloud) -> o3d.geometry.PointCloud:
+    """Copy a cloud while preserving its native brightness as monochrome gray."""
+    result = o3d.geometry.PointCloud(cloud)
+    if not result.has_colors():
+        result.paint_uniform_color((0.45, 0.45, 0.45))
+        return result
+    rgb = np.asarray(result.colors, dtype=np.float64)
+    luminance = np.clip(rgb @ np.array([0.2126, 0.7152, 0.0722]), 0.0, 1.0)
+    result.colors = o3d.utility.Vector3dVector(np.repeat(luminance[:, None], 3, axis=1))
+    return result
+
+
+def prepare_thickness_overlay(
+    base: o3d.geometry.PointCloud,
+    updated: o3d.geometry.PointCloud,
+    color_spec: dict | None = None,
+) -> tuple[o3d.geometry.PointCloud, o3d.geometry.PointCloud]:
+    """Return native grayscale ANTES and a DESPUES cloud colored by C2C thickness."""
+    spec = color_spec or {"mode": "continuous"}
+    distances = compute_c2c_distance(updated, base)
+    mode = spec.get("mode", "continuous")
+    if mode == "six":
+        colored = build_heatmap_cloud_six_bands(
+            updated, distances, float(spec["target_m"])
+        )
+    elif mode == "three":
+        colored = build_heatmap_cloud_banded(
+            updated,
+            distances,
+            float(spec["low_m"]),
+            float(spec["high_m"]),
+        )
+    else:
+        colored = build_heatmap_cloud(
+            updated, distances, spec.get("max_distance_m")
+        )
+    return grayscale_point_cloud(base), colored
+
+
 @dataclass
 class RaycastPipelineParams:
     base_path: Path
@@ -817,9 +970,9 @@ class RaycastPipelineParams:
     # "delaunay" (mesh_from_point_cloud_delaunay, pensado para un recorte
     # casi-plano, ver pestaña 'Preparar nubes').
     mesh_method: str = "poisson"
-    # Downsample dense scans before reconstruction; Delaunay in particular
-    # becomes prohibitively expensive when fed every raw sensor point.
-    mesh_voxel_size: float = 0.01
+    # Preserve every captured point by default. Users can set a voxel when
+    # they need faster reconstruction; an upper point-count guard remains.
+    mesh_voxel_size: float = 0.0
     # "origin": raycast_thickness, un rayo por cada vertice desde la pose
     # guardada del sensor (ver base_origin/updated_origin arriba) — asume
     # que el sensor no se movio entre capturas.
@@ -972,6 +1125,7 @@ def raycast_thickness_along_normal(
     base_mesh: o3d.geometry.TriangleMesh,
     updated_mesh: o3d.geometry.TriangleMesh,
     max_distance: float | None = None,
+    sample_points: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Alternativa a 'raycast_thickness' que no depende de la pose del sensor:
@@ -992,7 +1146,12 @@ def raycast_thickness_along_normal(
     Devuelve distancias, puntos de impacto y vertices base cuyos rayos no
     impactaron la malla actualizada (o excedieron max_distance).
     """
-    base_vertices = np.asarray(base_mesh.vertices)
+    # Ray sampling follows the original cloud when supplied. Mesh vertices are
+    # reconstruction artifacts (especially for Poisson) and can add or remove
+    # samples independently of the captured point data.
+    base_vertices = np.asarray(base_mesh.vertices) if sample_points is None else np.asarray(sample_points)
+    if base_vertices.ndim != 2 or base_vertices.shape[1] != 3 or not len(base_vertices):
+        raise ValueError("La nube base no contiene puntos validos para lanzar rayos.")
     centroid, _, _, normal = fit_plane(base_vertices)
     updated_centroid = np.asarray(updated_mesh.vertices).mean(axis=0)
     if np.dot(normal, updated_centroid - centroid) < 0:
@@ -1020,6 +1179,7 @@ def raycast_thickness(
     updated_mesh: o3d.geometry.TriangleMesh,
     base_origin: np.ndarray,
     updated_origin: np.ndarray,
+    sample_points: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Estima el espesor por raycasting en vez de vecino-mas-cercano (C2C):
@@ -1049,7 +1209,11 @@ def raycast_thickness(
     base_origin = np.asarray(base_origin, dtype=np.float64)
     updated_origin = np.asarray(updated_origin, dtype=np.float64)
 
-    vertices = np.asarray(updated_mesh.vertices)
+    # Use captured DESPUES samples, not generated mesh vertices, as the ray
+    # directions. This keeps the result tied to the original point cloud.
+    vertices = np.asarray(updated_mesh.vertices) if sample_points is None else np.asarray(sample_points)
+    if vertices.ndim != 2 or vertices.shape[1] != 3 or not len(vertices):
+        raise ValueError("La nube actualizada no contiene puntos validos para lanzar rayos.")
     offsets = vertices - updated_origin
     norms = np.linalg.norm(offsets, axis=1)
     valid_dir = norms > 1e-9
@@ -1084,11 +1248,11 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
     mide el espesor por raycasting, con uno de dos metodos
     (params.ray_method):
 
-    - "origin": un rayo por vertice desde la pose guardada del sensor (ver
+    - "origin": un rayo por punto de la nube DESPUES desde la pose guardada del sensor (ver
       raycast_thickness). Necesita el sidecar de pose ('_pose.npz') en
       AMBAS capturas, o un origen manual; asume que el sensor no se movio
       entre capturas.
-    - "normal": un rayo por vertice de la malla base a lo largo de la
+    - "normal": un rayo por punto de la nube ANTES a lo largo de la
       normal del plano que mejor la ajusta (ver
       raycast_thickness_along_normal). No necesita pose del sensor, pero
       exige que las dos nubes ya compartan sistema de coordenadas
@@ -1181,14 +1345,14 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
     log(f"  Malla actualizada: {len(updated_mesh.vertices)} vertices, {len(updated_mesh.triangles)} triangulos")
 
     if params.ray_method == "normal":
-        log("Tirando rayos a lo largo de la normal de la malla base hacia la malla actualizada...")
+        log("Tirando un rayo por punto original ANTES contra la malla DESPUES...")
         distances, hit_points, unmatched_points = raycast_thickness_along_normal(
-            base_mesh, updated_mesh, params.max_distance
+            base_mesh, updated_mesh, params.max_distance, np.asarray(base_source.points)
         )
     else:
-        log("Tirando rayos desde el origen del sensor hacia ambas mallas...")
+        log("Tirando un rayo por punto original DESPUES desde el origen del sensor...")
         distances, hit_points, unmatched_points = raycast_thickness(
-            base_mesh, updated_mesh, base_origin, updated_origin
+            base_mesh, updated_mesh, base_origin, updated_origin, np.asarray(updated_source.points)
         )
     if distances.size == 0:
         raise ValueError(
@@ -1196,6 +1360,13 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
             "la misma zona del tunel."
         )
     stats = summarize(distances)
+    sample_total = len(base_source.points) if params.ray_method == "normal" else len(updated_source.points)
+    unmatched_count = len(unmatched_points)
+    coverage = 100.0 * len(distances) / max(1, sample_total)
+    log(
+        f"Cobertura de rayos: {len(distances):,}/{sample_total:,} puntos originales "
+        f"({coverage:.1f}%); sin coincidencia: {unmatched_count:,}."
+    )
     log("")
     log("Resultados (raycasting):")
     log(str(stats))
@@ -1276,15 +1447,15 @@ def pick_crop_bounds(
     cloud: o3d.geometry.PointCloud,
     margin: float = 0.08,
     exact_points: bool = False,
-    window_name: str = "Aurora - Shift+Click en 2 esquinas, luego cerrar (Q)",
+    window_name: str = "Aurora - Clic izquierdo para seleccionar, luego cerrar (Q)",
 ) -> tuple[Vec3, Vec3] | None:
     """
     Abre un visor 3D interactivo para elegir la region de interes (p. ej. la
     caja de prueba) sin escribir coordenadas a mano.
 
-    Uso en el visor: Shift + click izquierdo sobre exactamente dos esquinas
-    opuestas de una cara y despues cerrar la ventana (tecla Q o el boton de
-    cerrar). El margen opcional se agrega alrededor de los puntos elegidos.
+    Uso en el visor: clic izquierdo sobre los puntos y despues cerrar la
+    ventana (tecla Q o el boton de cerrar). El margen opcional se agrega
+    alrededor de los puntos elegidos.
     """
     picked_points = _pick_points_in_shared_viewer(
         cloud,
@@ -1302,21 +1473,125 @@ def pick_crop_bounds(
 def pick_crop_bounds_from_pair(
     before: o3d.geometry.PointCloud,
     after: o3d.geometry.PointCloud,
+    color_spec: dict | None = None,
 ) -> tuple[Vec3, Vec3] | None:
-    """Pick two corners on a colored before/after overlay and return XYZ bounds."""
-    before_view = o3d.geometry.PointCloud(before)
-    after_view = o3d.geometry.PointCloud(after)
-    before_view.paint_uniform_color((0.68, 0.72, 0.78))
-    after_view.paint_uniform_color((0.10, 0.72, 0.95))
-    combined = before_view + after_view
-    return pick_crop_bounds(
-        combined,
-        margin=0.0,
-        exact_points=True,
-        window_name=(
-            "Aurora - Gris=ANTES, celeste=DESPUES; marca 2 esquinas con Shift+Click y cierra (Q)"
-        ),
+    """Pick one wall point and return the estimated plane bounds around it."""
+    seed = pick_crop_seed_from_pair(before, after, color_spec)
+    if seed is None:
+        return None
+    _seed, bounds = estimate_wall_crop_bounds(before, after, seed)
+    return bounds
+
+
+def pick_crop_seed_from_pair(
+    before: o3d.geometry.PointCloud,
+    after: o3d.geometry.PointCloud,
+    color_spec: dict | None = None,
+) -> np.ndarray | None:
+    """Pick one DESPUES wall point; the same cloud drives automatic detection."""
+    _before_view, after_view = prepare_thickness_overlay(before, after, color_spec)
+    picked = _pick_points_in_shared_viewer(
+        after_view,
+        "Aurora - Shift + clic en un punto DESPUES; Q para confirmar",
+        "Shift + clic en la pared DESPUES; otro Shift + clic reemplaza el punto. Q para confirmar.",
+        max_points=1,
+        context_clouds=[_before_view],
+        require_shift=True,
     )
+    return picked[0].copy() if len(picked) else None
+
+
+def estimate_wall_crop_bounds(
+    before: o3d.geometry.PointCloud,
+    after: o3d.geometry.PointCloud,
+    seed: np.ndarray | None = None,
+) -> tuple[np.ndarray, tuple[Vec3, Vec3]]:
+    """Estimate an axis-aligned wall box from a clicked point or the center ray.
+
+    Aurora point clouds use +Z as the optical forward axis. Automatic mode
+    chooses the nearest point close to that axis, then extracts the local wall
+    extent in X/Y and fixes the face at the selected point's Z depth.
+    """
+    after_points = np.asarray(after.points, dtype=np.float64)
+    valid_after = np.isfinite(after_points).all(axis=1)
+    after_points = after_points[valid_after]
+    if len(after_points) < 3:
+        raise ValueError("La nube DESPUES no tiene suficientes puntos válidos.")
+
+    if seed is None:
+        forward = after_points[:, 2] > 0.0
+        candidates = after_points[forward]
+        if not len(candidates):
+            raise ValueError("No hay puntos delante del sensor para detectar la pared.")
+        radial = np.linalg.norm(candidates[:, :2], axis=1)
+        angles = np.arctan2(radial, np.maximum(candidates[:, 2], 1e-9))
+        central = angles <= np.deg2rad(8.0)
+        if np.any(central):
+            candidates = candidates[central]
+        seed = candidates[int(np.argmin(candidates[:, 2]))].copy()
+    else:
+        seed = np.asarray(seed, dtype=np.float64).reshape(3)
+    # Manual and automatic modes must derive the box from the same cloud and
+    # neighborhood size; otherwise selecting the same wall point can produce
+    # a different face just because it came from the other button.
+    points = after_points
+
+    radius = max(0.75, min(3.0, abs(float(seed[2])) * 1.25))
+    local = points[np.linalg.norm(points - seed, axis=1) <= radius]
+    if len(local) < 30:
+        nearest = np.argsort(np.linalg.norm(points - seed, axis=1))[: min(len(points), 1000)]
+        local = points[nearest]
+    if len(local) < 3:
+        raise ValueError("No hay suficientes puntos cerca del punto elegido para ajustar la pared.")
+
+    local_cloud = o3d.geometry.PointCloud()
+    local_cloud.points = o3d.utility.Vector3dVector(local)
+    threshold = 0.02
+    plane, inliers = local_cloud.segment_plane(
+        distance_threshold=threshold, ransac_n=3, num_iterations=600
+    )
+    if len(inliers) < 30:
+        plane, inliers = local_cloud.segment_plane(
+            distance_threshold=0.04, ransac_n=3, num_iterations=800
+        )
+    if len(inliers) >= 10:
+        normal = np.asarray(plane[:3], dtype=np.float64)
+        normal /= max(float(np.linalg.norm(normal)), 1e-12)
+        # Avoid taking a nearby floor/side plane when the selected point lies
+        # on another surface. A close fit is required for the picked seed.
+        if abs(float(np.dot(normal, seed) + plane[3])) <= 0.08:
+            wall_points = local[np.asarray(inliers, dtype=np.int64)]
+            depth_axis = int(np.argmax(np.abs(normal)))
+        else:
+            wall_points = np.empty((0, 3), dtype=np.float64)
+    else:
+        wall_points = np.empty((0, 3), dtype=np.float64)
+
+    if len(wall_points) < 10:
+        # Robust fallback for rough or incomplete surfaces: use the local
+        # neighborhood around the seed and use its dominant view axis as depth.
+        wall_points = local[np.linalg.norm(local - seed, axis=1) <= min(radius, 0.65)]
+        depth_axis = int(np.argmax(np.abs(seed)))
+    if len(wall_points) < 3:
+        raise ValueError("No pude estimar una superficie de pared alrededor del punto.")
+
+    low = np.min(wall_points, axis=0)
+    high = np.max(wall_points, axis=0)
+    low[depth_axis] = seed[depth_axis]
+    high[depth_axis] = seed[depth_axis]
+    for axis in range(3):
+        if axis == depth_axis:
+            continue
+        if high[axis] - low[axis] < 0.20:
+            low[axis] = seed[axis] - 0.10
+            high[axis] = seed[axis] + 0.10
+    lateral_axes = [axis for axis in range(3) if axis != depth_axis]
+    side_length = max(float(high[axis] - low[axis]) for axis in lateral_axes)
+    for axis in lateral_axes:
+        face_center = 0.5 * (low[axis] + high[axis])
+        low[axis] = face_center - side_length / 2.0
+        high[axis] = face_center + side_length / 2.0
+    return seed, (tuple(low.tolist()), tuple(high.tolist()))
 
 
 def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:

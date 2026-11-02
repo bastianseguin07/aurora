@@ -15,7 +15,12 @@ import numpy as np
 import open3d as o3d
 from open3d.visualization import gui, rendering
 
-from pointcloud_core import load_point_cloud
+from pointcloud_core import (
+    load_point_cloud,
+    prepare_thickness_overlay,
+    grayscale_point_cloud,
+    world_to_sensor_view_rotation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,10 +104,13 @@ def _look_at_sensor_pov(scene_widget, points: np.ndarray, fov_deg: float = 60.0)
     )
 
 
-def _read_geometries(kind: str, paths: list[Path]):
+def _read_geometries(
+    kind: str, paths: list[Path], heatmap_spec: dict | None = None,
+    empty_stages: set[str] | None = None,
+):
     material = rendering.MaterialRecord()
     material.shader = "defaultUnlit"
-    material.point_size = 2.5
+    material.point_size = 3.2 if kind in ("pair", "pair_box", "thickness") else 2.5
 
     if kind == "cloud":
         cloud = load_point_cloud(paths[0])
@@ -112,16 +120,27 @@ def _read_geometries(kind: str, paths: list[Path]):
     if kind == "live":
         cloud = o3d.geometry.PointCloud()
         return [("live", cloud, material)]
+    if kind == "pair_box":
+        empty_stages = empty_stages or set()
+        base = o3d.geometry.PointCloud() if "antes" in empty_stages else o3d.io.read_point_cloud(str(paths[0]))
+        updated = o3d.geometry.PointCloud() if "despues" in empty_stages else o3d.io.read_point_cloud(str(paths[1]))
+        if len(base.points) and len(updated.points):
+            base, updated = prepare_thickness_overlay(base, updated, heatmap_spec)
+        else:
+            if len(base.points):
+                base = grayscale_point_cloud(base)
+            if len(updated.points) and not updated.has_colors():
+                updated.paint_uniform_color((0.10, 0.72, 0.95))
+        return [("antes", base, material), ("despues", updated, material)]
     if kind == "pair":
         base = load_point_cloud(paths[0])
         updated = load_point_cloud(paths[1])
-        base.paint_uniform_color((0.68, 0.72, 0.78))
-        updated.paint_uniform_color((0.10, 0.72, 0.95))
+        base, updated = prepare_thickness_overlay(base, updated, heatmap_spec)
         return [("antes", base, material), ("despues", updated, material)]
     if kind == "thickness":
         base = load_point_cloud(paths[0])
         heatmap = load_point_cloud(paths[1])
-        base.paint_uniform_color((0.68, 0.72, 0.78))
+        base = grayscale_point_cloud(base)
         if not heatmap.has_colors():
             heatmap.paint_uniform_color((0.10, 0.72, 0.95))
         return [("antes", base, material), ("despues", heatmap, material)]
@@ -139,23 +158,152 @@ def _read_geometries(kind: str, paths: list[Path]):
     return [("antes", base_mesh, mesh_material), ("despues", updated_mesh, mesh_material)]
 
 
+def _pose_grid(extent: float = 0.5, step: float = 0.1):
+    points, lines = [], []
+    for i in range(-round(extent / step), round(extent / step) + 1):
+        value = i * step
+        j = len(points)
+        points.extend(((value, 0, -extent), (value, 0, extent)))
+        lines.append((j, j + 1))
+        j = len(points)
+        points.extend(((-extent, 0, value), (extent, 0, value)))
+        lines.append((j, j + 1))
+    grid = o3d.geometry.LineSet(
+        points=o3d.utility.Vector3dVector(np.asarray(points, dtype=float)),
+        lines=o3d.utility.Vector2iVector(np.asarray(lines, dtype=np.int32)),
+    )
+    grid.colors = o3d.utility.Vector3dVector(np.tile([[0.40, 0.42, 0.45]], (len(lines), 1)))
+    return grid
+
+
+def _pose_metrics_panel(em: int):
+    status = gui.Label("Leyendo pose del sensor")
+    status.text_color = gui.Color(0.12, 0.14, 0.17, 1.0)
+    labels, titles = {}, {}
+    for key, title, color in (
+        ("x", "X", (0.88, 0.18, 0.14, 1.0)),
+        ("y", "Y", (0.18, 0.62, 0.24, 1.0)),
+        ("z", "Z", (0.12, 0.34, 0.92, 1.0)),
+        ("roll", "Roll", (0.12, 0.14, 0.17, 1.0)),
+        ("pitch", "Pitch", (0.12, 0.14, 0.17, 1.0)),
+        ("yaw", "Yaw", (0.12, 0.14, 0.17, 1.0)),
+    ):
+        name = gui.Label(title)
+        name.text_color = gui.Color(*color)
+        value = gui.Label("—")
+        value.text_color = gui.Color(0.12, 0.14, 0.17, 1.0)
+        titles[key] = name
+        labels[key] = value
+    total = gui.Label("Distancia total: —")
+    total.text_color = gui.Color(0.12, 0.14, 0.17, 1.0)
+    widgets = [status, *titles.values(), *labels.values(), total]
+    for widget in widgets:
+        widget.background_color = gui.Color(0.0, 0.0, 0.0, 0.0)
+    return status, titles, labels, total, widgets
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("kind", choices=("cloud", "pair", "thickness", "meshes", "live", "pick"))
+    parser.add_argument(
+        "kind", choices=("cloud", "pair", "pair_box", "thickness", "meshes", "live", "pick", "pose")
+    )
     parser.add_argument("paths", nargs="+")
     parser.add_argument("--title", default="Aurora - Vista 3D")
     parser.add_argument("--cleanup-dir")
     parser.add_argument("--legend-json")
+    parser.add_argument("--box-bounds-json")
     parser.add_argument("--selection-output")
     parser.add_argument("--pick-count", type=int, default=0)
     parser.add_argument("--pick-prompt", default="Clic izquierdo para marcar puntos; Q para terminar")
+    parser.add_argument("--pick-requires-shift", action="store_true")
+    parser.add_argument("--context-cloud", action="append", default=[])
+    parser.add_argument("--camera-reference", action="append", default=[])
+    parser.add_argument("--empty-stage", choices=("antes", "despues"), action="append", default=[])
     parser.add_argument("--exit-status-file")
+    parser.add_argument("--pose-reference-json")
+    parser.add_argument("--pose-tolerance-m", type=float, default=0.02)
+    parser.add_argument("--heatmap-spec-json")
+    parser.add_argument("--thickness-stats-json")
     args = parser.parse_args()
     exit_reason: str | None = None
 
     try:
         paths = [Path(path) for path in args.paths]
-        geometries = _read_geometries("cloud" if args.kind == "pick" else args.kind, paths)
+        heatmap_spec = json.loads(args.heatmap_spec_json) if args.heatmap_spec_json else None
+        geometries = (
+            [] if args.kind == "pose"
+            else _read_geometries(
+                "cloud" if args.kind == "pick" else args.kind,
+                paths,
+                heatmap_spec,
+                set(args.empty_stage),
+            )
+        )
+        if args.kind == "pick":
+            for index, context_path in enumerate(args.context_cloud):
+                context_cloud = load_point_cloud(Path(context_path))
+                geometries.append((f"context_{index}", context_cloud, geometries[0][2]))
+        pose_reference = None
+        if args.kind == "pose":
+            if not args.pose_reference_json:
+                raise ValueError("Falta la pose de referencia para la guia IMU.")
+            ref_position, ref_rpy = json.loads(args.pose_reference_json)
+            pose_reference = (np.asarray(ref_position, dtype=float), np.asarray(ref_rpy, dtype=float))
+            axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.22)
+            axes_material = rendering.MaterialRecord()
+            axes_material.shader = "defaultUnlit"
+            geometries = [
+                ("reticula", _pose_grid(), rendering.MaterialRecord()),
+                (
+                    "marco_referencia",
+                    o3d.geometry.TriangleMesh.create_sphere(radius=0.019),
+                    rendering.MaterialRecord(),
+                ),
+                ("ejes_sensor", axes, axes_material),
+            ]
+            geometries[1][1].paint_uniform_color((0.20, 0.80, 0.35))
+            geometries[1][1].compute_vertex_normals()
+
+        if args.box_bounds_json:
+            box_values = np.asarray(json.loads(args.box_bounds_json), dtype=np.float64)
+            if box_values.shape == (8, 3):
+                corners = box_values
+            elif box_values.shape == (2, 3):
+                low, high = box_values
+                corners = np.asarray(
+                    [
+                        (low[0], low[1], low[2]),
+                        (high[0], low[1], low[2]),
+                        (high[0], high[1], low[2]),
+                        (low[0], high[1], low[2]),
+                        (low[0], low[1], high[2]),
+                        (high[0], low[1], high[2]),
+                        (high[0], high[1], high[2]),
+                        (low[0], high[1], high[2]),
+                    ],
+                    dtype=np.float64,
+                )
+            else:
+                raise ValueError("La caja debe tener dos limites XYZ o exactamente 8 vertices.")
+            edges = np.asarray(
+                [
+                    (0, 1), (1, 2), (2, 3), (3, 0),
+                    (4, 5), (5, 6), (6, 7), (7, 4),
+                    (0, 4), (1, 5), (2, 6), (3, 7),
+                ],
+                dtype=np.int32,
+            )
+            box = o3d.geometry.LineSet()
+            box.points = o3d.utility.Vector3dVector(corners)
+            box.lines = o3d.utility.Vector2iVector(edges)
+            box.colors = o3d.utility.Vector3dVector(
+                np.tile(np.asarray([[0.82, 0.02, 0.48]], dtype=np.float64), (len(edges), 1))
+            )
+            box_material = rendering.MaterialRecord()
+            box_material.shader = "unlitLine"
+            box_material.line_width = 4.0
+            box_material.base_color = np.asarray([0.82, 0.02, 0.48, 1.0], dtype=np.float32)
+            geometries.append(("caja_recorte", box, box_material))
 
         app = gui.Application.instance
         app.initialize()
@@ -166,16 +314,36 @@ def main() -> None:
 
         for name, geometry, material in geometries:
             if args.kind != "live":
+                if isinstance(geometry, o3d.geometry.PointCloud) and not len(geometry.points):
+                    continue
                 scene_widget.scene.add_geometry(name, geometry, material)
-        axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
-        axes_material = rendering.MaterialRecord()
-        axes_material.shader = "defaultUnlit"
-        scene_widget.scene.add_geometry("ejes", axes, axes_material)
+        if args.kind != "pose":
+            axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
+            axes_material = rendering.MaterialRecord()
+            axes_material.shader = "defaultUnlit"
+            scene_widget.scene.add_geometry("ejes", axes, axes_material)
 
         legend = json.loads(args.legend_json) if args.legend_json else None
         legend_widget = _legend_panel(legend, window.theme.font_size) if legend else None
+        thickness_stats = json.loads(args.thickness_stats_json) if args.thickness_stats_json else None
+        stats_widgets = []
+        if thickness_stats:
+            stats_title = gui.Label("ESTADÍSTICAS DE ESPESOR")
+            stats_title.text_color = gui.Color(0.12, 0.14, 0.17, 1.0)
+            stats_rows = (
+                f"Media: {thickness_stats['mean_cm']:.2f} cm",
+                f"Mediana: {thickness_stats['median_cm']:.2f} cm",
+                f"Desviación estándar: {thickness_stats['std_cm']:.2f} cm",
+            )
+            stats_widgets = [stats_title]
+            for row_text in stats_rows:
+                row = gui.Label(row_text)
+                row.text_color = gui.Color(0.12, 0.14, 0.17, 1.0)
+                stats_widgets.append(row)
+            for widget in stats_widgets:
+                widget.background_color = gui.Color(0.0, 0.0, 0.0, 0.0)
         pair_controls = None
-        if args.kind in ("pair", "thickness", "meshes"):
+        if args.kind in ("pair", "pair_box", "thickness", "meshes"):
             pair_controls = gui.Horiz(
                 0.5 * window.theme.font_size,
                 gui.Margins(0.5 * window.theme.font_size, 0.35 * window.theme.font_size,
@@ -192,7 +360,11 @@ def main() -> None:
             after_toggle.set_on_checked(
                 lambda visible: scene_widget.scene.show_geometry("despues", visible)
             )
-            for toggle, label in ((before_toggle, "ANTES"), (after_toggle, "DESPUES")):
+            for stage, toggle, label in (
+                ("antes", before_toggle, "ANTES"), ("despues", after_toggle, "DESPUES")
+            ):
+                if stage in args.empty_stage:
+                    continue
                 group = gui.Horiz(0.12 * window.theme.font_size)
                 group.add_child(toggle)
                 label_widget = gui.Label(label)
@@ -205,12 +377,22 @@ def main() -> None:
                 group.add_child(label_line)
                 pair_controls.add_child(group)
         live_status = None
+        pose_status = pose_titles = pose_labels = pose_total = pose_widgets = None
+        pose_last_mtime = -1
+        pose_last_poll = 0.0
+        if args.kind == "pose":
+            pose_status, pose_titles, pose_labels, pose_total, pose_widgets = _pose_metrics_panel(window.theme.font_size)
+            current = o3d.geometry.TriangleMesh.create_sphere(radius=0.025, resolution=18)
+            current.compute_vertex_normals()
+            current.paint_uniform_color((0.90, 0.25, 0.25))
+            scene_widget.scene.add_geometry("pose_actual", current, rendering.MaterialRecord())
         if args.kind == "live":
             live_status = gui.Label("Esperando el primer frame del sensor...")
             live_status.background_color = gui.Color(0.0, 0.0, 0.0, 0.0)
             live_status.text_color = gui.Color(0.12, 0.14, 0.17, 1.0)
         pick_status = None
         picked_points: list[np.ndarray] = []
+        picked_labels = []
         preview_widget = None
         cloud_points = np.asarray(geometries[0][1].points) if args.kind == "pick" else None
         if args.kind == "pick":
@@ -235,6 +417,17 @@ def main() -> None:
                     preferred.width,
                     preferred.height,
                 )
+                if stats_widgets:
+                    stats_x = bounds.x + window.theme.font_size
+                    stats_y = bounds.y + window.theme.font_size + preferred.height + 6
+                    stats_width = min(520, max(0, bounds.width - 2 * window.theme.font_size))
+                    for index, widget in enumerate(stats_widgets):
+                        widget.frame = gui.Rect(
+                            stats_x,
+                            stats_y + index * 23,
+                            stats_width,
+                            22,
+                        )
             if legend_widget is not None:
                 preferred = legend_widget.calc_preferred_size(
                     layout_context, gui.Widget.Constraints()
@@ -263,9 +456,21 @@ def main() -> None:
                     min(bounds.width - 2 * window.theme.font_size, pref.width + window.theme.font_size),
                     pref.height + 0.5 * window.theme.font_size,
                 )
+            if pose_widgets is not None:
+                panel_width = min(340, max(0, bounds.width - 2 * window.theme.font_size))
+                panel_x = bounds.x + bounds.width - panel_width - window.theme.font_size
+                top = bounds.y + window.theme.font_size
+                pose_status.frame = gui.Rect(panel_x, top, panel_width, 28)
+                for row, key in enumerate(("x", "y", "z", "roll", "pitch", "yaw")):
+                    row_y = top + 34 + row * 29
+                    pose_titles[key].frame = gui.Rect(panel_x, row_y, 68, 26)
+                    pose_labels[key].frame = gui.Rect(panel_x + 74, row_y, max(0, panel_width - 74), 26)
+                pose_total.frame = gui.Rect(panel_x, top + 34 + 6 * 29, panel_width, 28)
 
-        window.set_on_layout(on_layout)
         window.add_child(scene_widget)
+        if pose_widgets is not None:
+            for widget in pose_widgets:
+                window.add_child(widget)
 
         # Give SceneWidget a real viewport before configuring its camera.
         # Calling setup_camera() while its frame is still 0x0 leaves the first
@@ -280,12 +485,24 @@ def main() -> None:
         # distance that setup_camera calculated from the full scene bounds.
         # Putting the eye at (0, 0, 0) made the cloud look unnaturally close;
         # viewer zoom is framing and does not change the cloud's metric data.
-        point_sets = [
-            np.asarray(geometry.points)
-            for _name, geometry, _material in geometries
-            if isinstance(geometry, o3d.geometry.PointCloud) and len(geometry.points)
-        ]
-        if point_sets:
+        camera_geometries = geometries[:1] if args.kind == "pick" else geometries
+        if args.camera_reference:
+            point_sets = [
+                np.asarray(cloud.points)
+                for cloud in (o3d.io.read_point_cloud(path) for path in args.camera_reference)
+                if len(cloud.points)
+            ]
+        else:
+            point_sets = [
+                np.asarray(geometry.points)
+                for _name, geometry, _material in camera_geometries
+                if isinstance(geometry, o3d.geometry.PointCloud) and len(geometry.points)
+            ]
+        if args.kind == "pose":
+            scene_widget.look_at(
+                np.zeros(3), np.array([0.0, -0.65, -1.7]), np.array([0.0, -1.0, 0.0])
+            )
+        elif point_sets:
             _look_at_sensor_pov(scene_widget, np.concatenate(point_sets, axis=0), camera_fov_deg)
         else:
             fitted_eye = np.asarray(scene_widget.scene.camera.get_model_matrix())[:3, 3]
@@ -307,22 +524,28 @@ def main() -> None:
         # Render the scene before mapping the native window. Show this prepared
         # frame as a temporary image while the interactive SceneWidget draws
         # its first on-screen frames behind it.
-        warmup_image = app.render_to_image(
-            scene_widget.scene,
-            max(1, scene_widget.frame.width),
-            max(1, scene_widget.frame.height),
-        )
-        preview_widget = gui.ImageWidget(warmup_image)
-        preview_widget.frame = window.content_rect
-        window.add_child(preview_widget)
+        if args.kind != "pose":
+            warmup_image = app.render_to_image(
+                scene_widget.scene,
+                max(1, scene_widget.frame.width),
+                max(1, scene_widget.frame.height),
+            )
+            preview_widget = gui.ImageWidget(warmup_image)
+            preview_widget.frame = window.content_rect
+            window.add_child(preview_widget)
+        else:
+            warmup_image = None
         if pair_controls is not None:
             window.add_child(pair_controls)
+        for widget in stats_widgets:
+            window.add_child(widget)
         if legend_widget is not None:
             window.add_child(legend_widget)
         if pick_status is not None:
             window.add_child(pick_status)
         if live_status is not None:
             window.add_child(live_status)
+        window.set_on_layout(on_layout)
         del warmup_image
 
         modifier_keys = {
@@ -394,6 +617,7 @@ def main() -> None:
         # gesture. Wheel events while a button is held are consumed.
         drag_origin: tuple[float, float] | None = None
         drag_left_button = False
+        drag_pick_shift = False
         last_drag_y: float | None = None
         last_drag_x: float | None = None
 
@@ -406,12 +630,16 @@ def main() -> None:
             )
 
         def on_mouse(event):
-            nonlocal drag_origin, drag_left_button, last_drag_x, last_drag_y
+            nonlocal drag_origin, drag_left_button, drag_pick_shift, last_drag_x, last_drag_y
             left_down = event.is_button_down(gui.MouseButton.LEFT)
-            shift_down = event.is_modifier_down(gui.KeyModifier.SHIFT)
+            shift_down = event.is_modifier_down(gui.KeyModifier.SHIFT) or any(
+                key in pressed_modifiers
+                for key in (gui.KeyName.LEFT_SHIFT, gui.KeyName.RIGHT_SHIFT)
+            )
             if event.type == gui.MouseEvent.Type.BUTTON_DOWN:
                 drag_origin = (event.x, event.y)
                 drag_left_button = left_down
+                drag_pick_shift = shift_down
                 last_drag_x = event.x
                 last_drag_y = event.y
                 # Prevent a press/release click from reaching Open3D's default
@@ -466,16 +694,16 @@ def main() -> None:
             if event.type == gui.MouseEvent.Type.BUTTON_UP and drag_origin is not None:
                 start = drag_origin
                 was_left_click = drag_left_button
+                was_shift_click = drag_pick_shift
                 drag_origin = None
                 drag_left_button = False
+                drag_pick_shift = False
                 last_drag_x = None
                 last_drag_y = None
                 moved = math.hypot(event.x - start[0], event.y - start[1])
-                # The landmark picker is a dedicated selection window, so a
-                # left click always selects. Shift+click remains supported;
-                # this also works on desktops that do not report Shift in the
-                # Open3D mouse event reliably.
-                if args.kind == "pick" and was_left_click and moved < 5 and (args.pick_count <= 0 or len(picked_points) < args.pick_count):
+                can_pick = args.pick_count == 1 or args.pick_count <= 0 or len(picked_points) < args.pick_count
+                correct_modifier = not args.pick_requires_shift or was_shift_click
+                if args.kind == "pick" and was_left_click and moved < 5 and can_pick and correct_modifier:
                     x, y = int(event.x - scene_widget.frame.x), int(event.y - scene_widget.frame.y)
 
                     if x < 0 or y < 0 or x >= scene_widget.frame.width or y >= scene_widget.frame.height:
@@ -515,18 +743,32 @@ def main() -> None:
                     best_index = int(np.argmin(screen_distance_px))
                     if screen_distance_px[best_index] <= 12.0:
                         point = cloud_points[best_index]
-                        picked_points.append(point.copy())
-                        marker_radius = max(float(world_per_pixel[best_index]) * 2.5, 0.003)
+                        replacing_single = args.pick_count == 1
+                        if replacing_single:
+                            if picked_points:
+                                scene_widget.scene.remove_geometry("picked_1")
+                            if picked_labels:
+                                scene_widget.remove_3d_label(picked_labels.pop())
+                            picked_points[:] = [point.copy()]
+                        else:
+                            picked_points.append(point.copy())
+                        marker_radius = max(float(world_per_pixel[best_index]) * 7.0, 0.006)
                         marker = o3d.geometry.TriangleMesh.create_sphere(radius=marker_radius)
                         marker.translate(point)
-                        marker.paint_uniform_color((1.0, 0.25, 0.18))
+                        marker.paint_uniform_color((1.0, 0.34, 0.08))
                         marker_material = rendering.MaterialRecord()
                         marker_material.shader = "defaultUnlit"
-                        scene_widget.scene.add_geometry(f"picked_{len(picked_points)}", marker, marker_material)
-                        scene_widget.add_3d_label(point, str(len(picked_points)))
+                        marker_name = "picked_1" if replacing_single else f"picked_{len(picked_points)}"
+                        scene_widget.scene.add_geometry(marker_name, marker, marker_material)
+                        picked_labels.append(
+                            scene_widget.add_3d_label(point, str(len(picked_points)))
+                        )
                         if pick_status is not None:
                             limit = f"/{args.pick_count}" if args.pick_count > 0 else ""
-                            pick_status.text = f"{args.pick_prompt}   ·   Puntos: {len(picked_points)}{limit}"
+                            if replacing_single:
+                                pick_status.text = f"{args.pick_prompt}   ·   Punto 1 marcado; otro clic lo reemplaza"
+                            else:
+                                pick_status.text = f"{args.pick_prompt}   ·   Puntos: {len(picked_points)}{limit}"
                         if args.selection_output:
                             np.save(args.selection_output, np.asarray(picked_points, dtype=float).reshape((-1, 3)))
                     elif pick_status is not None:
@@ -537,6 +779,12 @@ def main() -> None:
                     # Camera/ray picking is synchronous; keeping it inside the
                     # event callback avoids races with closing the window.
                     return gui.Widget.CONSUMED
+                if (
+                    args.kind == "pick" and args.pick_requires_shift and was_left_click
+                    and moved < 5 and not was_shift_click and pick_status is not None
+                ):
+                    pick_status.text = "Mantén Shift y haz clic sobre la pared para marcar el punto."
+                    return gui.Widget.CONSUMED
             return gui.Widget.IGNORED
 
         preview_frames = 0
@@ -544,6 +792,55 @@ def main() -> None:
         last_live_mtime_ns = -1
         last_live_poll = 0.0
         live_count_history: list[int] = []
+
+        def refresh_pose() -> bool:
+            nonlocal pose_last_mtime, pose_last_poll
+            now = time.monotonic()
+            if now - pose_last_poll < 0.08:
+                return False
+            pose_last_poll = now
+            try:
+                mtime = paths[0].stat().st_mtime_ns
+                if mtime == pose_last_mtime:
+                    return False
+                state = json.loads(paths[0].read_text(encoding="utf-8"))
+                position = np.asarray(state["position"], dtype=float)
+                rpy = np.asarray(state["rpy_deg"], dtype=float)
+                ref_position, ref_rpy = pose_reference
+                offset = world_to_sensor_view_rotation(ref_rpy) @ (position - ref_position)
+                rotation_error = ((ref_rpy - rpy + 180.0) % 360.0) - 180.0
+                distance = float(np.linalg.norm(offset))
+                color = (0.20, 0.80, 0.35) if distance <= args.pose_tolerance_m else ((0.95, 0.65, 0.10) if distance <= 4 * args.pose_tolerance_m else (0.90, 0.25, 0.25))
+                scene_widget.scene.remove_geometry("pose_actual")
+                marker = o3d.geometry.TriangleMesh.create_sphere(radius=0.025, resolution=18)
+                marker.compute_vertex_normals(); marker.paint_uniform_color(color); marker.translate(offset)
+                scene_widget.scene.add_geometry("pose_actual", marker, rendering.MaterialRecord())
+                active = next((i for i, axis in enumerate(("x", "y", "z")) if abs(offset[i]) > args.pose_tolerance_m), None)
+                if active is None:
+                    pose_status.text = "Sensor en posición"
+                    pose_status.text_color = gui.Color(0.12, 0.55, 0.25, 1.0)
+                else:
+                    words = (("derecha", "izquierda"), ("abajo", "arriba"), ("adelante", "atrás"))
+                    correction = -offset[active]
+                    word = words[active][0 if correction >= 0 else 1]
+                    pose_status.text = f"Mover hacia {word.upper()}"
+                    pose_status.text_color = gui.Color(0.72, 0.25, 0.12, 1.0)
+                direction_words = (("derecha", "izquierda"), ("abajo", "arriba"), ("adelante", "atrás"))
+                for i, key in enumerate(("x", "y", "z")):
+                    correction = -offset[i]
+                    word = direction_words[i][0 if correction >= 0 else 1]
+                    pose_labels[key].text = f"{word} {abs(correction) * 100:.1f} cm"
+                for key, value in zip(("roll", "pitch", "yaw"), rotation_error):
+                    pose_labels[key].text = f"{value:+.1f}°"
+                pose_total.text = f"Distancia total: {distance * 100:.1f} cm"
+                pose_last_mtime = mtime
+                scene_widget.force_redraw()
+                return True
+            except FileNotFoundError:
+                return False
+            except Exception:
+                logger.exception("No se pudo actualizar la guia de pose IMU")
+                return False
 
         def refresh_live_frame() -> bool:
             nonlocal live_added, last_live_mtime_ns, last_live_poll
@@ -590,6 +887,8 @@ def main() -> None:
 
         def on_tick() -> bool:
             nonlocal preview_frames
+            if args.kind == "pose":
+                refresh_pose()
             if args.kind == "live":
                 changed = refresh_live_frame()
                 if preview_widget is None or not preview_widget.visible:

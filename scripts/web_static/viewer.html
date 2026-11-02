@@ -5,28 +5,28 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
 <title>Aurora - Vista 3D en vivo</title>
 <style>
-  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #0f1115; overflow: hidden; touch-action: none; }
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #e8e4de; overflow: hidden; touch-action: none; }
   canvas { display: block; width: 100%; height: 100%; }
   #status {
     position: fixed; top: 8px; left: 8px; padding: 6px 10px; border-radius: 6px;
-    background: rgba(0,0,0,0.55); color: #e6e6e6; font: 13px/1.3 sans-serif; z-index: 10;
+    background: rgba(255,255,255,0.82); color: #20242b; font: 13px/1.3 sans-serif; z-index: 10;
   }
   #status.ok { color: #34c759; }
   #status.err { color: #ff3b30; }
   #hint {
     position: fixed; bottom: 8px; left: 8px; right: 8px; text-align: center;
-    color: #9aa0a6; font: 12px/1.3 sans-serif; z-index: 10; pointer-events: none;
+    color: #424850; font: 12px/1.3 sans-serif; z-index: 10; pointer-events: none;
   }
   #settingsToggle {
     position: fixed; top: 8px; right: 8px; z-index: 20;
     width: 40px; height: 40px; border-radius: 20px; border: none;
-    background: rgba(0,0,0,0.55); color: #e6e6e6; font-size: 18px; line-height: 1;
+    background: rgba(255,255,255,0.88); color: #20242b; font-size: 18px; line-height: 1;
     cursor: pointer;
   }
   #settingsPanel {
     position: fixed; top: 56px; right: 8px; z-index: 20; width: 220px;
-    background: rgba(15,17,21,0.92); border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 10px; padding: 12px; color: #e6e6e6; font: 13px/1.4 sans-serif;
+    background: rgba(250,249,247,0.97); border: 1px solid rgba(30,35,42,0.16);
+    border-radius: 10px; padding: 12px; color: #20242b; font: 13px/1.4 sans-serif;
     display: none;
   }
   #settingsPanel.open { display: block; }
@@ -35,7 +35,7 @@
   #settingsPanel input[type="color"] { width: 44px; height: 26px; border: none; background: none; padding: 0; }
   #settingsPanel button {
     width: 100%; margin-top: 6px; padding: 7px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.18);
-    background: rgba(255,255,255,0.06); color: #e6e6e6; font: 13px sans-serif; cursor: pointer;
+    background: rgba(30,35,42,0.05); color: #20242b; font: 13px sans-serif; cursor: pointer;
   }
 </style>
 </head>
@@ -124,6 +124,24 @@
   }
   const baseCloud = makeCloudBuffers();
   const liveCloud = makeCloudBuffers();
+  // Coordinate triad matching the desktop 3D viewers: X red/right,
+  // Y green/down, Z blue/forward in the depth-camera frame.
+  const axisPositions = new Float32Array([
+    0,0,0, .5,0,0,   .5,0,0, .42,.045,0,   .5,0,0, .42,-.045,0,
+    0,0,0, 0,.5,0,   0,.5,0, .045,.42,0,   0,.5,0, -.045,.42,0,
+    0,0,0, 0,0,.5,   0,0,.5, .045,0,.42,   0,0,.5, -.045,0,.42,
+  ]);
+  const axisColors = new Float32Array([
+    1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0, 1,0,0,
+    0,1,0, 0,1,0, 0,1,0, 0,1,0, 0,1,0, 0,1,0,
+    0,0,1, 0,0,1, 0,0,1, 0,0,1, 0,0,1, 0,0,1,
+  ]);
+  const axisPositionBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, axisPositionBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, axisPositions, gl.STATIC_DRAW);
+  const axisColorBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, axisColorBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, axisColors, gl.STATIC_DRAW);
   let haveBounds = false;
   let center = [0, 0, 0];
   let sceneRadius = 1.0;
@@ -146,17 +164,21 @@
       if (y < minY) minY = y; if (y > maxY) maxY = y;
       if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
     }
-    center = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
+    center = [0, 0, (minZ + maxZ) / 2];
     const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
     sceneRadius = Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz) / 2, 0.05);
-    distance = sceneRadius * 2.4;
+    const offAxis = Math.hypot((minX + maxX) / 2, (minY + maxY) / 2);
+    distance = Math.max((sceneRadius + offAxis) / Math.sin(Math.PI / 6) * 1.1, 0.5);
+    fitDistance = distance;
     haveBounds = true;
   }
 
   // ------------------------------------------------------------ Camera/orbit
-  let yaw = Math.PI * 0.25;
-  let pitch = 0.35;
+  // Sensor view: camera behind it looking along optical +Z; +Y is down.
+  let yaw = Math.PI;
+  let pitch = 0;
   let distance = 2.0;
+  let fitDistance = 2.0;
 
   function mat4Perspective(fovy, aspect, near, far) {
     const f = 1.0 / Math.tan(fovy / 2);
@@ -203,7 +225,7 @@
       center[1] + distance * Math.sin(pitch),
       center[2] + distance * Math.cos(pitch) * Math.cos(yaw),
     ];
-    const view = mat4LookAt(eye, center, [0, 1, 0]);
+    const view = mat4LookAt(eye, center, [0, -1, 0]);
     const aspect = canvas.width / canvas.height || 1;
     const proj = mat4Perspective(Math.PI / 3.2, aspect, Math.max(sceneRadius * 0.01, 0.01), sceneRadius * 20 + 10);
     return mat4Multiply(proj, view);
@@ -266,13 +288,13 @@
 
   // ---------------------------------------------------------------- Opciones
   const DEFAULT_SETTINGS = {
-    bgColor: "#0f1115",
+    bgColor: "#e8e4de",
     sizeBase: 2.0,
     sizeLive: 3.0,
     showBase: true,
     showLive: true,
   };
-  const SETTINGS_KEY = "aurora_viewer_settings";
+  const SETTINGS_KEY = "aurora_viewer_settings_v2";
 
   function loadSettings() {
     try {
@@ -317,9 +339,9 @@
   optShowBase.addEventListener("change", () => { settings.showBase = optShowBase.checked; saveSettings(); });
   optShowLive.addEventListener("change", () => { settings.showLive = optShowLive.checked; saveSettings(); });
   optResetView.addEventListener("click", () => {
-    yaw = Math.PI * 0.25;
-    pitch = 0.35;
-    if (haveBounds) distance = sceneRadius * 2.4;
+    yaw = Math.PI;
+    pitch = 0;
+    if (haveBounds) distance = fitDistance;
   });
   optResetDefaults.addEventListener("click", () => {
     Object.assign(settings, DEFAULT_SETTINGS);
@@ -350,6 +372,16 @@
     gl.drawArrays(gl.POINTS, 0, cloud.count);
   }
 
+  function drawAxes() {
+    gl.bindBuffer(gl.ARRAY_BUFFER, axisPositionBuffer);
+    gl.enableVertexAttribArray(aPosition);
+    gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, axisColorBuffer);
+    gl.enableVertexAttribArray(aColor);
+    gl.vertexAttribPointer(aColor, 3, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.LINES, 0, axisPositions.length / 3);
+  }
+
   function render() {
     const bg = hexToRgb01(settings.bgColor);
     gl.clearColor(bg[0], bg[1], bg[2], 1.0);
@@ -359,6 +391,7 @@
     gl.uniformMatrix4fv(uViewProj, false, vp);
     if (settings.showBase) drawCloud(baseCloud, settings.sizeBase);
     if (settings.showLive) drawCloud(liveCloud, settings.sizeLive);
+    drawAxes();
     requestAnimationFrame(render);
   }
   requestAnimationFrame(render);

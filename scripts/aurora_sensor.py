@@ -89,17 +89,18 @@ def disconnect(connection: AuroraConnection) -> None:
 
 @dataclass
 class SensorPose:
-    position: np.ndarray  # (x, y, z) en metros, mismo frame que las nubes crudas
+    position: np.ndarray  # (x, y, z) en metros, coordenadas del mapa SLAM
     rpy_deg: np.ndarray  # (roll, pitch, yaw) en grados
     timestamp_ns: int
 
 
 def get_current_pose(connection: AuroraConnection) -> SensorPose:
     """Pose actual del sensor (posicion + orientacion) segun el tracking
-    visual-inercial (SLAM+IMU) del Aurora, en el mismo sistema de coordenadas
-    que las nubes crudas que devuelve read_frame_points. Se usa para guiar al
-    usuario a devolver el sensor a la posicion donde capturo la nube base
-    (pestana 'Alineacion IMU'), sin necesidad de recorrer toda la nube."""
+    visual-inercial (SLAM+IMU) del Aurora, expresada en coordenadas del mapa.
+    Su marco local (X adelante, Y izquierda, Z arriba) difiere del marco de la
+    nube de profundidad (X derecha, Y abajo, Z adelante); las transformaciones
+    entre capturas deben convertir ambos marcos. Se usa para guiar al usuario
+    a devolver el sensor a la posicion donde capturo la nube base."""
     try:
         with connection.sdk_lock:
             position, rpy, timestamp_ns = connection.sdk.get_current_pose(use_se3=False)
@@ -114,7 +115,7 @@ def get_current_pose(connection: AuroraConnection) -> SensorPose:
 
 def read_frame_points(
     connection: AuroraConnection,
-    max_points: int = 50000,
+    max_points: int | None = None,
     timeout_ms: int = 200,
     max_distance_m: float | None = None,
     cone_angle_deg: float | None = None,
@@ -169,7 +170,7 @@ def read_frame_points(
 
     if len(points) == 0:
         return None
-    if len(points) > max_points:
+    if max_points is not None and max_points > 0 and len(points) > max_points:
         idx = np.random.choice(len(points), max_points, replace=False)
         points = points[idx]
 
@@ -282,7 +283,7 @@ class TemporalFrameMedianFilter:
         self,
         points_grid: np.ndarray,
         colors_grid: np.ndarray,
-        max_points: int = 40000,
+        max_points: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         points = np.asarray(points_grid, dtype=np.float32)
         colors = np.asarray(colors_grid, dtype=np.float32)
@@ -314,7 +315,7 @@ class TemporalFrameMedianFilter:
         filtered_colors[~valid] = 0.0
 
         indices = np.flatnonzero(valid)
-        if len(indices) > max_points:
+        if max_points is not None and max_points > 0 and len(indices) > max_points:
             indices = indices[np.linspace(0, len(indices) - 1, max_points, dtype=np.int64)]
         flat_points = filtered_points.reshape((-1, 3))
         flat_colors = filtered_colors.reshape((-1, 3))
@@ -323,7 +324,7 @@ class TemporalFrameMedianFilter:
 
 def read_frame_points_and_colors(
     connection: AuroraConnection,
-    max_points: int = 50000,
+    max_points: int | None = None,
     timeout_ms: int = 200,
     max_distance_m: float | None = None,
     cone_angle_deg: float | None = None,
@@ -404,7 +405,7 @@ def read_frame_points_and_colors(
         organized_colors[valid] = colors
         return organized_points.reshape(height, width, 3), organized_colors.reshape(height, width, 3)
 
-    if len(valid_points) > max_points:
+    if max_points is not None and max_points > 0 and len(valid_points) > max_points:
         idx = np.random.choice(len(valid_points), max_points, replace=False)
         valid_points = valid_points[idx]
         colors = colors[idx]
@@ -483,10 +484,11 @@ def _voxel_keys(points: np.ndarray, voxel_size: float) -> np.ndarray:
 
 def capture_snapshot(
     connection: AuroraConnection,
-    duration_s: float = 15.0,
-    max_points_per_frame: int = 100000,
+    max_points_per_frame: int | None = None,
     voxel_size: float = 0.005,
     frame_timeout_ms: int = 300,
+    stabilization_frames: int = 15,
+    timeout_s: float = 10.0,
     persistence_ratio: float = 0.0,
     stop_event: threading.Event | None = None,
     max_distance_m: float | None = None,
@@ -494,19 +496,15 @@ def capture_snapshot(
     forward_axis: str = "z",
 ) -> o3d.geometry.PointCloud:
     """
-    Acumula frames del sensor durante 'duration_s' segundos en una sola nube
-    de puntos ("foto fija"), tal como los entrega el sensor (sin alineacion,
-    sin transformar por pose/SLAM). Cada frame organizado se estabiliza con
-    una mediana temporal de cinco frames para reducir ruido de profundidad
-    antes de acumularlo. Para evitar que particulas de polvo en el aire
-    (que solo aparecen en algunos frames, en posiciones distintas
-    cada vez) contaminen la captura, cada celda de voxel debe estar presente
-    en al menos 'persistence_ratio' de los frames capturados para
-    conservarse; el resto se descarta por no ser lo suficientemente
-    persistente.
+    Espera hasta tener 'stabilization_frames' frames validos, calcula la misma
+    mediana temporal de cinco frames que la vista en vivo y devuelve solo el
+    ultimo resultado. No combina frames ni aplica voxel downsample por defecto.
+    Los puntos siguen en el marco local de camara, sin transformarlos por
+    pose/SLAM. Si se pide persistencia, se usa la secuencia para filtrar el
+    ultimo frame.
 
-    Si se pasa 'stop_event' y se activa antes de que termine la duracion,
-    la captura corta ahi y procesa los frames acumulados hasta ese momento.
+    Si se pasa 'stop_event' y se activa, guarda el ultimo frame estabilizado
+    disponible. 'timeout_s' evita esperar indefinidamente si no llegan frames.
 
     'cone_angle_deg' (opcional) limita cada frame a un cono de ese angulo
     total centrado en 'forward_axis', para excluir lo que esta fuera del
@@ -515,23 +513,28 @@ def capture_snapshot(
     que ese valor. Sin ninguno de los dos, se captura todo el campo de
     vision del sensor.
     """
-    if not np.isfinite(duration_s) or duration_s <= 0:
-        raise ValueError("La duracion de captura debe ser mayor que cero.")
+    if not np.isfinite(timeout_s) or timeout_s <= 0:
+        raise ValueError("El tiempo limite debe ser mayor que cero.")
+    if stabilization_frames <= 0:
+        raise ValueError("La cantidad de frames de estabilizacion debe ser mayor que cero.")
     if not np.isfinite(persistence_ratio) or not 0.0 <= persistence_ratio <= 1.0:
         raise ValueError("La persistencia debe estar entre 0 y 1.")
-    if max_points_per_frame <= 0:
-        raise ValueError("max_points_per_frame debe ser mayor que cero.")
+    if max_points_per_frame is not None and max_points_per_frame <= 0:
+        raise ValueError("max_points_per_frame debe ser mayor que cero o None para conservar todos los puntos.")
     if not np.isfinite(voxel_size) or voxel_size < 0:
         raise ValueError("voxel_size debe ser cero o mayor.")
     if persistence_ratio > 0 and voxel_size <= 0:
         raise ValueError("La persistencia requiere un voxel_size mayor que cero.")
 
     collected_points: list[np.ndarray] = []
-    collected_colors: list[np.ndarray] = []
+    latest_points: np.ndarray | None = None
+    latest_colors: np.ndarray | None = None
+    ready = False
+    valid_frames_received = 0
     temporal_filter = TemporalFrameMedianFilter(window=5)
-    start = time.time()
+    start = time.monotonic()
 
-    while time.time() - start < duration_s:
+    while time.monotonic() - start < timeout_s:
         if stop_event is not None and stop_event.is_set():
             break
         points, colors = read_frame_points_and_colors(
@@ -554,57 +557,49 @@ def capture_snapshot(
         if not len(points):
             continue
 
-        collected_points.append(points)
-        collected_colors.append(colors)
+        valid_frames_received += 1
+        if persistence_ratio > 0:
+            collected_points.append(points)
+        latest_points = points
+        latest_colors = colors
+        ready = valid_frames_received >= stabilization_frames
+        if ready:
+            break
 
-    if not collected_points:
+    if latest_points is None or latest_colors is None:
         raise RuntimeError(
-            f"No se pudo capturar ningun frame valido del sensor en {duration_s:.0f} s. "
+            f"No se pudieron recibir {stabilization_frames} frames validos "
+            f"en {timeout_s:.0f} s. "
             "Verifica la conexion y que el sensor apunte a una superficie dentro de su "
             "rango de medicion."
         )
-
-    num_frames = len(collected_points)
-    if persistence_ratio <= 0:
-        # A zero persistence threshold means keep every sampled point. The
-        # per-frame voxel-key counting below would do redundant work (build
-        # millions of keys, count them, and test them again) before performing
-        # the same final voxel downsample.
-        merged_points = np.concatenate(collected_points, axis=0)
-        merged_colors = np.clip(np.concatenate(collected_colors, axis=0), 0.0, 1.0)
-        cloud = o3d.geometry.PointCloud()
-        cloud.points = o3d.utility.Vector3dVector(merged_points)
-        cloud.colors = o3d.utility.Vector3dVector(merged_colors)
-        if voxel_size and voxel_size > 0:
-            cloud = cloud.voxel_down_sample(voxel_size)
-        return cloud
-
-    frame_keys = [np.unique(_voxel_keys(points, voxel_size)) for points in collected_points]
-    unique_keys, counts = np.unique(np.concatenate(frame_keys), return_counts=True)
-    min_frames = max(1, int(round(persistence_ratio * num_frames)))
-    persistent_keys = unique_keys[counts >= min_frames]
-
-    if len(persistent_keys) == 0:
+    if not ready and (stop_event is None or not stop_event.is_set()):
         raise RuntimeError(
-            "Ningun punto persistio en suficientes frames durante la captura (posible "
-            "polvo o ruido excesivo). Reduce la persistencia requerida o repite la captura."
+            f"Solo se recibieron {valid_frames_received} de {stabilization_frames} "
+            "frames necesarios "
+            "antes del tiempo limite. Verifica la conexion con el sensor."
         )
 
-    kept_points = []
-    kept_colors = []
-    for points, colors in zip(collected_points, collected_colors):
-        mask = np.isin(_voxel_keys(points, voxel_size), persistent_keys)
-        if mask.any():
-            kept_points.append(points[mask])
-            kept_colors.append(colors[mask])
+    assert latest_points is not None and latest_colors is not None
+    if persistence_ratio > 0:
+        num_frames = len(collected_points)
+        frame_keys = [np.unique(_voxel_keys(frame, voxel_size)) for frame in collected_points]
+        unique_keys, counts = np.unique(np.concatenate(frame_keys), return_counts=True)
+        min_frames = max(1, int(round(persistence_ratio * num_frames)))
+        persistent_keys = unique_keys[counts >= min_frames]
+        latest_keys = _voxel_keys(latest_points, voxel_size)
+        keep = np.isin(latest_keys, persistent_keys)
+        latest_points = latest_points[keep]
+        latest_colors = latest_colors[keep]
+        if not len(latest_points):
+            raise RuntimeError(
+                "Ningun punto del ultimo frame persistio lo suficiente durante la captura. "
+                "Reduce la persistencia requerida o repite la captura."
+            )
 
-    merged_points = np.concatenate(kept_points, axis=0)
-    merged_colors = np.clip(np.concatenate(kept_colors, axis=0), 0.0, 1.0)
     cloud = o3d.geometry.PointCloud()
-    cloud.points = o3d.utility.Vector3dVector(merged_points)
-    cloud.colors = o3d.utility.Vector3dVector(merged_colors)
-    if voxel_size and voxel_size > 0:
-        cloud = cloud.voxel_down_sample(voxel_size)
+    cloud.points = o3d.utility.Vector3dVector(latest_points)
+    cloud.colors = o3d.utility.Vector3dVector(np.clip(latest_colors, 0.0, 1.0))
     return cloud
 
 
@@ -612,7 +607,7 @@ def stream_frames(
     connection: AuroraConnection,
     callback: Callable[[np.ndarray], None],
     stop_event: threading.Event,
-    max_points: int = 40000,
+    max_points: int | None = None,
     rate_hz: float = 10.0,
 ) -> None:
     """
