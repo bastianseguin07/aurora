@@ -2,9 +2,18 @@
 # Crea el entorno virtual e instala las dependencias de Aurora en Ubuntu.
 # Uso, parado en la carpeta Aurora:
 #   ./setup.sh
+#   ./setup.sh --with-sensor-sdk
 
 set -e
 cd "$(dirname "$0")"
+
+INSTALL_SENSOR_SDK=0
+for arg in "$@"; do
+    case "$arg" in
+        --with-sensor-sdk) INSTALL_SENSOR_SDK=1 ;;
+        *) echo "Opcion desconocida: $arg"; echo "Uso: ./setup.sh [--with-sensor-sdk]"; exit 2 ;;
+    esac
+done
 
 if [ "$(uname -s)" != "Linux" ] || ! command -v apt-get >/dev/null 2>&1; then
     echo "Este proyecto esta preparado para Ubuntu Linux."
@@ -12,6 +21,9 @@ if [ "$(uname -s)" != "Linux" ] || ! command -v apt-get >/dev/null 2>&1; then
 fi
 
 REQUIRED_PKGS="python3-venv libgl1-mesa-glx libgomp1 python3-gi gir1.2-gtk-3.0"
+if [ "$INSTALL_SENSOR_SDK" = "1" ]; then
+    REQUIRED_PKGS="$REQUIRED_PKGS git"
+fi
 missing=0
 for pkg in $REQUIRED_PKGS; do
     dpkg -s "$pkg" >/dev/null 2>&1 || missing=1
@@ -38,6 +50,10 @@ fi
 echo "Instalando dependencias de Python (puede tardar unos minutos por Open3D)..."
 ./venv/bin/python3 -m pip install --upgrade pip
 ./venv/bin/python3 -m pip install -r requirements.txt
+
+if [ "$INSTALL_SENSOR_SDK" = "1" ]; then
+    ./install_sensor_sdk.sh
+fi
 
 echo ""
 echo "Listo. Para abrir la interfaz grafica (GTK3):"

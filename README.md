@@ -72,19 +72,22 @@ Alternativa: capturar las nubes directamente desde el sensor con la GUI
 
 ## 3.1 Instalar el SDK del sensor Slamtec Aurora (opcional, solo si vas a capturar en vivo)
 
-El dispositivo con SSID `SLAMWARE-Aurora-XXXX` es un **Slamtec Aurora**. Su SDK
-de Python no esta en PyPI: hay que clonarlo y compilar un wheel una vez, con
-el entorno virtual del proyecto activado.
+El dispositivo con SSID `SLAMWARE-Aurora-XXXX` es un **Slamtec Aurora**. El SDK
+se obtiene del repositorio oficial y se prepara para la arquitectura de Ubuntu.
+El clon se guarda localmente en `aurora_sdk_src/` (ignorado por Git), no se
+incluye ni se redistribuye dentro del repositorio de Aurora.
 
 **Ubuntu:**
 ```bash
-git clone --recursive https://github.com/Slamtec/py_aurora_remote.git aurora_sdk_src
-cd aurora_sdk_src
-pip install -r requirements-dev.txt
-python tools/build_package.py --platforms linux_x86_64
-pip install wheels/slamtec_aurora_python_sdk_linux_x86_64-*.whl
-cd ..
+# Instalar GUI, dependencias y SDK del sensor en un solo paso:
+./setup.sh --with-sensor-sdk
+
+# Si Aurora ya esta instalado, basta con preparar el SDK:
+./install_sensor_sdk.sh
 ```
+
+El instalador usa el tag oficial `2.1.1-rtm`, incluye los submodulos nativos y
+construye el wheel para Linux x86_64 o ARM64. Requiere conexion a Internet.
 
 Conecta la PC a la red WiFi del sensor (`SLAMWARE-Aurora-XXXX`) o a la misma
 red que el sensor. La IP por defecto del dispositivo suele ser `192.168.11.1`
