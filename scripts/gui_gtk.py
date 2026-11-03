@@ -114,6 +114,7 @@ COLOR_CARD = "#1A1D24"
 COLOR_BORDER = "#2E3440"
 COLOR_ACCENT = "#56B4C5"
 COLOR_ACCENT_DARK = "#3B91A1"
+COLOR_MEDIAN = "#FFCC00"
 COLOR_TEXT = "#F8F9FA"
 COLOR_TEXT_MUTED = "#8E95A5"
 
@@ -989,9 +990,9 @@ class AuroraGUI:
         self.cards_row.set_no_show_all(True)
         card, self.stat_points = self._stat_card("Puntos analizados")
         self.cards_row.pack_start(card, False, False, 0)
-        card, self.stat_mean = self._stat_card("Espesor medio")
-        self.cards_row.pack_start(card, False, False, 0)
         card, self.stat_median = self._stat_card("Espesor mediano")
+        self.cards_row.pack_start(card, False, False, 0)
+        card, self.stat_mean = self._stat_card("Espesor promedio")
         self.cards_row.pack_start(card, False, False, 0)
         card, self.stat_std = self._stat_card("Desviación estándar")
         self.cards_row.pack_start(card, False, False, 0)
@@ -4411,7 +4412,7 @@ class AuroraGUI:
         self._active_result_kind = "raycast"
         self._set_stat(self.stat_points, f"{stats.n_points:,}")
         self._set_stat(self.stat_mean, f"{stats.mean * 100:.2f} cm")
-        self._set_stat(self.stat_median, f"{stats.median * 100:.2f} cm")
+        self._set_stat(self.stat_median, f"{stats.median * 100:.2f} cm", COLOR_MEDIAN)
         self._set_stat(self.stat_std, f"{stats.std * 100:.2f} cm")
         self.cards_row.set_no_show_all(False)
         self.cards_row.show_all()
@@ -4548,9 +4549,9 @@ class AuroraGUI:
         box.pack_start(value_label, False, False, 0)
         return box, value_label
 
-    def _set_stat(self, label: Gtk.Label, text: str) -> None:
+    def _set_stat(self, label: Gtk.Label, text: str, color: str = COLOR_ACCENT) -> None:
         label.set_markup(
-            f"<span size='xx-large' weight='bold' foreground='{COLOR_ACCENT}'>"
+            f"<span size='xx-large' weight='bold' foreground='{color}'>"
             f"{GLib.markup_escape_text(text)}</span>"
         )
 
@@ -5426,7 +5427,7 @@ class AuroraGUI:
         self._active_result_kind = "cloud_to_cloud"
         self._set_stat(self.stat_points, f"{stats.n_points:,}")
         self._set_stat(self.stat_mean, f"{stats.mean * 100:.2f} cm")
-        self._set_stat(self.stat_median, f"{stats.median * 100:.2f} cm")
+        self._set_stat(self.stat_median, f"{stats.median * 100:.2f} cm", COLOR_MEDIAN)
         self._set_stat(self.stat_std, f"{stats.std * 100:.2f} cm")
         self.cards_row.set_no_show_all(False)
         self.cards_row.show_all()
