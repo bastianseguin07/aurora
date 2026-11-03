@@ -158,8 +158,10 @@ def _read_geometries(
     updated_mesh = o3d.io.read_triangle_mesh(str(paths[1]))
     if base_mesh.is_empty() or updated_mesh.is_empty():
         raise RuntimeError("No se pudieron cargar las dos mallas para inspeccionarlas.")
-    base_mesh.paint_uniform_color((0.55, 0.6, 0.65))
-    updated_mesh.paint_uniform_color((1.0, 0.549, 0.0))
+    if not base_mesh.has_vertex_colors():
+        base_mesh.paint_uniform_color((0.55, 0.6, 0.65))
+    if not updated_mesh.has_vertex_colors():
+        updated_mesh.paint_uniform_color((1.0, 0.549, 0.0))
     base_mesh.compute_vertex_normals()
     updated_mesh.compute_vertex_normals()
     return [("antes", base_mesh, mesh_material), ("despues", updated_mesh, mesh_material)]

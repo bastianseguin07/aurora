@@ -23,6 +23,17 @@ import numpy as np
 import open3d as o3d
 
 
+@dataclass
+class AlignedCaptureResult:
+    cloud: o3d.geometry.PointCloud
+    reference_pose: "SensorPose"
+    accepted_frames: int
+    rejected_frames: int
+    path_length_m: float
+    final_translation_m: float
+    final_rotation_deg: float
+
+
 class AuroraNotAvailable(RuntimeError):
     pass
 
@@ -330,7 +341,8 @@ def read_frame_points_and_colors(
     cone_angle_deg: float | None = None,
     forward_axis: str = "z",
     preserve_organization: bool = False,
-) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    include_timestamp: bool = False,
+):
     """
     Igual que 'read_frame_points', pero ademas devuelve el color real de cada
     punto tomado de la imagen de camara alineada al frame de profundidad
@@ -343,18 +355,20 @@ def read_frame_points_and_colors(
     """
     _, _, DEPTHCAM_FRAME_TYPE_POINT3D, _ = _import_sdk()
     sdk = connection.sdk
+    frame_timestamp_ns = 0
     with connection.sdk_lock:
         if not sdk.enhanced_imaging.wait_depth_camera_next_frame(timeout_ms):
-            return None, None
+            return (None, None, 0) if include_timestamp else (None, None)
 
         frame = sdk.enhanced_imaging.peek_depth_camera_frame(DEPTHCAM_FRAME_TYPE_POINT3D)
         if frame is None or not frame.data:
-            return None, None
+            return (None, None, 0) if include_timestamp else (None, None)
 
         points = frame.to_point3d_array()
         if points is None or len(points) == 0:
-            return None, None
+            return (None, None, 0) if include_timestamp else (None, None)
         points = np.asarray(points).copy()
+        frame_timestamp_ns = int(getattr(frame, "timestamp_ns", 0) or 0)
         width = frame.width
         height = frame.height
         is_organized = len(points) == width * height
@@ -392,8 +406,8 @@ def read_frame_points_and_colors(
         if preserve_organization and is_organized:
             empty_points = np.full((height, width, 3), np.nan, dtype=np.float32)
             empty_colors = np.zeros((height, width, 3), dtype=np.float32)
-            return empty_points, empty_colors
-        return None, None
+            return (empty_points, empty_colors, frame_timestamp_ns) if include_timestamp else (empty_points, empty_colors)
+        return (None, None, frame_timestamp_ns) if include_timestamp else (None, None)
 
     valid_points = points[valid]
     colors = _colorize_from_camera(valid_points, valid_indices, width, height, is_organized, camera_rgb)
@@ -403,14 +417,130 @@ def read_frame_points_and_colors(
         organized_colors = np.zeros((len(points), 3), dtype=np.float32)
         organized_points[valid] = valid_points
         organized_colors[valid] = colors
-        return organized_points.reshape(height, width, 3), organized_colors.reshape(height, width, 3)
+        result = (organized_points.reshape(height, width, 3), organized_colors.reshape(height, width, 3))
+        return (*result, frame_timestamp_ns) if include_timestamp else result
 
     if max_points is not None and max_points > 0 and len(valid_points) > max_points:
         idx = np.random.choice(len(valid_points), max_points, replace=False)
         valid_points = valid_points[idx]
         colors = colors[idx]
 
-    return valid_points, colors
+    return (valid_points, colors, frame_timestamp_ns) if include_timestamp else (valid_points, colors)
+
+
+def capture_aligned_snapshot(
+    connection: AuroraConnection,
+    duration_s: float = 3.0,
+    timeout_s: float | None = None,
+    min_frames: int = 15,
+    voxel_size: float = 0.003,
+    stop_event: threading.Event | None = None,
+    max_distance_m: float | None = None,
+    cone_angle_deg: float | None = None,
+    forward_axis: str = "z",
+) -> AlignedCaptureResult:
+    """Capture a short moving scan, register each depth frame by Aurora pose,
+    and fuse it in the first accepted frame's camera coordinate system."""
+    if not np.isfinite(duration_s) or duration_s <= 0:
+        raise ValueError("El tiempo de captura debe ser mayor que cero.")
+    if min_frames <= 0:
+        raise ValueError("Se requiere al menos un frame válido.")
+    if not np.isfinite(voxel_size) or voxel_size <= 0:
+        raise ValueError("El tamaño de voxel de fusión debe ser mayor que cero.")
+    timeout_s = float(timeout_s if timeout_s is not None else max(10.0, duration_s + 5.0))
+    start = time.monotonic()
+    reference_pose = None
+    previous_pose = None
+    fused = o3d.geometry.PointCloud()
+    accepted = rejected = 0
+    path_length = 0.0
+    final_translation = final_rotation = 0.0
+    pose_to_camera = np.array([[0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]])
+
+    while time.monotonic() - start < timeout_s:
+        if stop_event is not None and stop_event.is_set():
+            break
+        points_grid, colors_grid, frame_ts = read_frame_points_and_colors(
+            connection,
+            timeout_ms=300,
+            max_distance_m=max_distance_m,
+            cone_angle_deg=cone_angle_deg,
+            forward_axis=forward_axis,
+            preserve_organization=True,
+            include_timestamp=True,
+        )
+        if points_grid is None or not frame_ts:
+            rejected += 1
+            continue
+        pose = get_current_pose(connection)
+        # Both timestamps come from the device. Reject poorly paired frame/pose
+        # samples instead of fusing geometry with a potentially stale pose.
+        if abs(int(pose.timestamp_ns) - frame_ts) > 150_000_000:
+            rejected += 1
+            continue
+        if points_grid.ndim == 3:
+            valid = np.isfinite(points_grid).all(axis=2)
+            points = points_grid[valid].astype(np.float64, copy=False)
+            colors = colors_grid[valid].astype(np.float64, copy=False)
+        else:
+            valid = np.isfinite(points_grid).all(axis=1)
+            points = points_grid[valid].astype(np.float64, copy=False)
+            colors = colors_grid[valid].astype(np.float64, copy=False)
+        if len(points) < 3:
+            rejected += 1
+            continue
+
+        if reference_pose is None:
+            reference_pose = pose
+        if previous_pose is not None:
+            step_m = float(np.linalg.norm(pose.position - previous_pose.position))
+            step_rpy = ((pose.rpy_deg - previous_pose.rpy_deg + 180.0) % 360.0) - 180.0
+            step_deg = float(np.max(np.abs(step_rpy)))
+            # Large discontinuities usually mean relocalization/tracking loss.
+            if step_m > 0.5 or step_deg > 45.0:
+                rejected += 1
+                continue
+            path_length += step_m
+        base_r = o3d.geometry.get_rotation_matrix_from_xyz(np.radians(reference_pose.rpy_deg))
+        frame_r = o3d.geometry.get_rotation_matrix_from_xyz(np.radians(pose.rpy_deg))
+        relative_r = pose_to_camera @ base_r.T @ frame_r @ pose_to_camera.T
+        relative_t = pose_to_camera @ base_r.T @ (pose.position - reference_pose.position)
+        points = points @ relative_r.T + relative_t
+
+        frame_cloud = o3d.geometry.PointCloud()
+        frame_cloud.points = o3d.utility.Vector3dVector(points)
+        frame_cloud.colors = o3d.utility.Vector3dVector(colors)
+        if accepted == 0:
+            fused = frame_cloud
+        else:
+            fused += frame_cloud
+        fused = fused.voxel_down_sample(voxel_size)
+        accepted += 1
+        previous_pose = pose
+        final_translation = float(np.linalg.norm(pose.position - reference_pose.position))
+        relative_rpy = ((pose.rpy_deg - reference_pose.rpy_deg + 180.0) % 360.0) - 180.0
+        final_rotation = float(np.linalg.norm(relative_rpy))
+        if accepted >= min_frames and time.monotonic() - start >= duration_s:
+            break
+
+    if accepted < min_frames or time.monotonic() - start < duration_s and not (stop_event and stop_event.is_set()):
+        raise RuntimeError(
+            f"La captura alineada reunió {accepted} frames válidos en "
+            f"{time.monotonic() - start:.1f} de {duration_s:.1f} s; se requieren "
+            f"{min_frames} frames y completar el tiempo configurado. Mantén el tracking "
+            "activo, mueve el sensor lentamente y repite."
+        )
+    if reference_pose is None or not len(fused.points):
+        raise RuntimeError("No se pudo registrar ningún frame de profundidad con la pose Aurora.")
+    return AlignedCaptureResult(
+        cloud=fused,
+        reference_pose=reference_pose,
+        accepted_frames=accepted,
+        rejected_frames=rejected,
+        path_length_m=path_length,
+        final_translation_m=final_translation,
+        final_rotation_deg=final_rotation,
+    )
 
 
 def capture_reference_frame(
@@ -488,6 +618,7 @@ def capture_snapshot(
     voxel_size: float = 0.005,
     frame_timeout_ms: int = 300,
     stabilization_frames: int = 15,
+    capture_duration_s: float = 3.0,
     timeout_s: float = 10.0,
     persistence_ratio: float = 0.0,
     stop_event: threading.Event | None = None,
@@ -517,6 +648,8 @@ def capture_snapshot(
         raise ValueError("El tiempo limite debe ser mayor que cero.")
     if stabilization_frames <= 0:
         raise ValueError("La cantidad de frames de estabilizacion debe ser mayor que cero.")
+    if not np.isfinite(capture_duration_s) or capture_duration_s <= 0:
+        raise ValueError("El tiempo de captura debe ser mayor que cero.")
     if not np.isfinite(persistence_ratio) or not 0.0 <= persistence_ratio <= 1.0:
         raise ValueError("La persistencia debe estar entre 0 y 1.")
     if max_points_per_frame is not None and max_points_per_frame <= 0:
@@ -562,7 +695,10 @@ def capture_snapshot(
             collected_points.append(points)
         latest_points = points
         latest_colors = colors
-        ready = valid_frames_received >= stabilization_frames
+        ready = (
+            valid_frames_received >= stabilization_frames
+            and time.monotonic() - start >= capture_duration_s
+        )
         if ready:
             break
 

@@ -145,8 +145,11 @@ puntos real renderizada en el navegador). Dos servidores en threads propios:
 
 SDK oficial no esta en PyPI (se compila a mano desde `py_aurora_remote`, ver
 README seccion 3.1). `connect`/`disconnect` (IP, default `192.168.11.1`),
-`read_frame_points_and_colors` (un frame, color de camara RGB o por altura si
-no hay imagen), `capture_snapshot` (acumula ~15 frames para reducir ruido),
+`read_frame_points_and_colors` (un frame, color de camara RGB o gris neutro si
+no hay imagen), `capture_snapshot` (espera 15 frames validos y el tiempo minimo
+configurado en Medicion rapida; aplica mediana temporal de cinco y guarda una
+vista), `capture_aligned_snapshot` (opcional: registra frames individuales
+con poses SLAM y los fusiona en el marco de la primera vista),
 `stream_frames` (generador para vivo). Si el SDK no esta instalado se lanza
 `AuroraNotAvailable` con mensaje claro; el resto de la app sigue funcionando
 sin sensor (comparar `.ply` ya existentes, GUI, CLI).
@@ -200,8 +203,12 @@ Cada pestaña tiene su `_build_*_page()`:
    - IP del sensor + boton Conectar/Desconectar con indicador (● verde =
      conectado / rojo = desconectado / amarillo = conectando).
    - **"Capturar tunel original"** / **"Capturar tunel con shotcrete"**
-     (`_capture_clicked`, L1761) — snapshot acumulando ~15 frames para
-     reducir ruido; al guardar cambia sola a "Comparacion" con el archivo ya
+     (`_capture_clicked`) — espera al menos 15 frames validos y el tiempo
+     configurable en Medicion rapida (1–30 s; 3 s por defecto); aplica mediana
+     temporal de cinco y guarda una sola vista por defecto. La casilla opcional
+     "Captura movil alineada" registra cada frame con la pose SLAM y fusiona
+     los puntos en el marco de la primera vista. Al guardar
+     cambia sola a "Comparacion" con el archivo ya
      cargado. Ademas del snapshot principal, intenta (best-effort, via
      `aurora_sensor.capture_reference_frame`) capturar una **foto de
      referencia** y guardarla junto al `.ply` (`_on_capture_done`, L1830) —

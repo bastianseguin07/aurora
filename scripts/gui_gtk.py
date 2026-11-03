@@ -68,6 +68,7 @@ from pointcloud_core import (  # noqa: E402
     compute_pose_relative_transform,
     crop_pair_by_face_depth,
     estimate_wall_crop_bounds,
+    grayscale_point_cloud,
     load_point_cloud,
     load_reference_photo,
     load_reference_photo_file,
@@ -1172,6 +1173,27 @@ class AuroraGUI:
         self.quick_capture_status_label = Gtk.Label(label="", xalign=0)
         self.quick_capture_status_label.set_hexpand(True)
         capture_status_row.pack_start(self.quick_capture_status_label, True, True, 0)
+        capture_time_row = self._row(files_box)
+        capture_time_row.pack_start(Gtk.Label(label="Tiempo de captura:"), False, False, 0)
+        self.quick_capture_duration_spin = Gtk.SpinButton.new_with_range(1.0, 30.0, 1.0)
+        self.quick_capture_duration_spin.set_value(3.0)
+        self.quick_capture_duration_spin.set_numeric(True)
+        self.quick_capture_duration_spin.set_tooltip_text(
+            "Tiempo mínimo de adquisición (1–30 s). En modo normal estabiliza una vista; "
+            "con Captura móvil alineada registra y fusiona frames con la pose SLAM."
+        )
+        capture_time_row.pack_start(self.quick_capture_duration_spin, False, False, 0)
+        capture_time_row.pack_start(Gtk.Label(label="segundos (1–30)"), False, False, 0)
+        self.quick_aligned_capture_check = Gtk.CheckButton(
+            label="Captura móvil alineada (fusionar frames con pose SLAM)"
+        )
+        self.quick_aligned_capture_check.set_tooltip_text(
+            "Actívala para mover el Aurora lentamente alrededor de la zona durante la captura. "
+            "Cada frame se transforma con su pose SLAM y se fusiona en el marco del primer frame. "
+            "Requiere tracking continuo; los saltos grandes se descartan."
+        )
+        capture_align_row = self._row(files_box)
+        capture_align_row.pack_start(self.quick_aligned_capture_check, False, False, 0)
         imu_row = self._row(files_box)
         self.quick_imu_compensate_check = Gtk.CheckButton(
             label="Compensar automaticamente el movimiento del sensor con IMU/SLAM"
@@ -1232,14 +1254,14 @@ class AuroraGUI:
         self.quick_crop_preview_button.connect("clicked", lambda _b: self._preview_test_crop_bounds())
         self.quick_crop_preview_button.set_sensitive(False)
         crop_row.pack_start(self.quick_crop_preview_button, False, False, 0)
-        self.quick_crop_apply_button = Gtk.Button(label="Aplicar, sobrescribir y calcular")
+        self.quick_crop_apply_button = Gtk.Button(label="Guardar recortes y calcular")
         self.quick_crop_apply_button.get_style_context().add_class("suggested-action")
         self.quick_crop_apply_button.set_tooltip_text(
-            "Recorta y sobrescribe ANTES y DESPUES, conserva copias originales ocultas para rehacer el box y calcula el espesor."
+            "Guarda ANTES y DESPUÉS recortados en data/recortes, conserva intactos los originales y calcula el espesor."
         )
         self.quick_crop_apply_button.connect(
             "clicked", lambda _b: self._apply_test_crop(
-                overwrite_inputs=True, calculate_after=True
+                overwrite_inputs=False, calculate_after=True
             )
         )
         self.quick_crop_apply_button.set_sensitive(False)
@@ -1318,6 +1340,7 @@ class AuroraGUI:
         mesh_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         mesh_box.get_style_context().add_class("expander-content")
         self.quick_mesh_check = Gtk.CheckButton(label="Usar una malla para calcular el espesor")
+        self.quick_mesh_check.connect("toggled", self._on_quick_mesh_check_toggled)
         self.quick_mesh_voxel_row = self._row(mesh_box)
         self.quick_mesh_voxel_row.pack_start(Gtk.Label(label="Resolucion de malla (voxel, m):"), False, False, 0)
         self.quick_mesh_voxel_entry = self._numeric_entry("0", 8)
@@ -1480,6 +1503,12 @@ class AuroraGUI:
         self._show_control_row(self.quick_poisson_params_row, use_mesh and not use_delaunay)
         self._show_control_row(self.results_ray_method_row, use_mesh)
         self._on_results_ray_method_changed()
+
+    def _on_quick_mesh_check_toggled(self, button) -> None:
+        """Keep the quick-method checkbox and Results method radios in sync."""
+        method_id = "raycast" if button.get_active() else "cloud_to_cloud"
+        if self.calculation_method != method_id:
+            self._set_calculation_method(method_id)
 
     @staticmethod
     def _show_control_row(widget: Gtk.Widget, show: bool) -> None:
@@ -1653,7 +1682,7 @@ class AuroraGUI:
                 )
 
         self.quick_status_label.set_text("Calculando espesor; el estado de carga y la etapa aparecen en Resultados.")
-        if self.quick_mesh_check.get_active():
+        if self.calculation_method == "raycast":
             self.raycast_mesh_poisson_rb.set_active(self.quick_poisson_rb.get_active())
             self.raycast_mesh_delaunay_rb.set_active(self.quick_delaunay_rb.get_active())
             use_origin = (
@@ -1822,11 +1851,11 @@ class AuroraGUI:
         row.pack_start(self.capture_status_label, True, True, 0)
         row.pack_start(
             self._info_button(
-                "Con el sensor conectado, estabiliza la vista durante el tiempo "
-                "configurado abajo y guarda el ultimo frame filtrado como la nube "
-                "'original' o 'con shotcrete' segun el boton elegido. Manten el sensor "
-                "quieto mientras captura: aplica la misma mediana temporal de cinco frames "
-                "que la vista en vivo, sin apilar multiples frames."
+                "En Medición rápida configura de 1 a 30 segundos. Por defecto se captura "
+                "una vista estabilizada; opcionalmente activa Captura móvil alineada para "
+                "mover el Aurora lentamente y fusionar frames usando la pose SLAM. Mantén "
+                "el tracking continuo y evita saltos bruscos. Detener captura guarda los "
+                "frames aceptados hasta ese momento."
             ),
             False,
             False,
@@ -1854,7 +1883,7 @@ class AuroraGUI:
 
         capture_options_panel, capture_options_box = self._capture_panel(
             "Ajustes de captura",
-            "Espera 15 frames válidos y aplica la mediana temporal de cinco, como en vivo.",
+            "Espera el tiempo configurado en Medición rápida y aplica una mediana temporal de cinco frames.",
         )
         page.pack_start(capture_options_panel, False, True, 0)
 
@@ -2320,7 +2349,7 @@ class AuroraGUI:
         if stage == "before":
             self.test_crop_before_path = path
             if not self.test_crop_output_dir_is_custom:
-                self.test_crop_output_dir = Path(path).parent if path else None
+                self.test_crop_output_dir = PROJECT_ROOT / "data" / "recortes"
                 if hasattr(self, "test_crop_output_dir_label"):
                     self._set_test_crop_output_dir_label()
         else:
@@ -2787,7 +2816,7 @@ class AuroraGUI:
         self.test_crop_before_path: str | None = self.base_path or None
         self.test_crop_after_path: str | None = self.updated_path or None
         self.test_crop_output_paths: tuple[str, str] | None = None
-        self.test_crop_output_dir: Path | None = None
+        self.test_crop_output_dir: Path | None = PROJECT_ROOT / "data" / "recortes"
         self.test_crop_output_dir_is_custom = False
         self.test_crop_bounds: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None
         self.test_crop_seed: np.ndarray | None = None
@@ -2797,8 +2826,8 @@ class AuroraGUI:
             label=(
                 "Selecciona las nubes ANTES y DESPUES en Medicion rapida. Puedes hacer clic en un punto de la pared "
                 "o detectar automaticamente la pared frontal. El lado de la cara cuadrada y la profundidad se "
-                "ajustan por separado; la vista previa solo muestra puntos dentro del box. Al aplicar, sobrescribira los PLY "
-                "seleccionados de ANTES y DESPUES. Con la compensación activa y poses guardadas, DESPUÉS se alinea "
+                "ajustan por separado; la vista previa solo muestra puntos dentro del box. Al guardar, los dos PLY "
+                "recortados quedan en data/recortes y los originales se conservan. Con la compensación activa y poses guardadas, DESPUÉS se alinea "
                 "al marco de ANTES antes de mostrar o aplicar el mismo box; sin poses, deben compartir coordenadas."
             ),
             xalign=0,
@@ -2882,14 +2911,17 @@ class AuroraGUI:
         page.pack_start(bounds_frame, False, True, 0)
 
         output_frame, output_box = self._section("2. Aplicar el recorte a las capturas")
-        self.test_crop_apply_button = Gtk.Button(label="Aplicar y sobrescribir ANTES + DESPUES")
+        self.test_crop_output_dir_label = Gtk.Label(xalign=0)
+        self._set_test_crop_output_dir_label()
+        output_box.pack_start(self.test_crop_output_dir_label, False, False, 0)
+        self.test_crop_apply_button = Gtk.Button(label="Guardar recortes ANTES + DESPUÉS")
         self.test_crop_apply_button.get_style_context().add_class("suggested-action")
         self.test_crop_apply_button.set_sensitive(False)
         self.test_crop_apply_button.set_tooltip_text(
-            "Reemplaza los dos archivos PLY seleccionados con las nubes recortadas."
+            "Guarda ambas nubes recortadas en data/recortes, sin modificar los PLY originales."
         )
         self.test_crop_apply_button.connect(
-            "clicked", lambda _b: self._apply_test_crop(overwrite_inputs=True)
+            "clicked", lambda _b: self._apply_test_crop(overwrite_inputs=False)
         )
         output_box.pack_start(self.test_crop_apply_button, False, False, 0)
         self.test_crop_status_label = Gtk.Label(
@@ -3010,10 +3042,10 @@ class AuroraGUI:
         if not hasattr(self, "test_crop_output_dir_label"):
             return
         if self.test_crop_output_dir is None:
-            self.test_crop_output_dir_label.set_text("Usar carpeta del archivo ANTES")
+            self.test_crop_output_dir_label.set_text("Destino: data/recortes")
             self.test_crop_output_dir_label.set_tooltip_text("")
         else:
-            self.test_crop_output_dir_label.set_text(str(self.test_crop_output_dir))
+            self.test_crop_output_dir_label.set_text(f"Destino: {self.test_crop_output_dir}")
             self.test_crop_output_dir_label.set_tooltip_text(str(self.test_crop_output_dir))
 
     def _choose_test_crop_output_dir(self) -> None:
@@ -3483,9 +3515,6 @@ class AuroraGUI:
             )
             return
         output_dir = self.test_crop_output_dir or selected_before.parent
-        if not overwrite_inputs and not output_dir.is_dir():
-            self._show_warning("Carpeta invalida", "Elige una carpeta de destino que exista.")
-            return
 
         if overwrite_inputs:
             before_destination = selected_before
@@ -3511,6 +3540,12 @@ class AuroraGUI:
         except ValueError as exc:
             self._show_error("Profundidad no válida", str(exc))
             return
+        if not overwrite_inputs:
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self._show_error("No se pudo crear la carpeta de recortes", str(exc))
+                return
         for button in (
             self.test_crop_pick_button,
             self.test_crop_preview_button,
@@ -3670,6 +3705,9 @@ class AuroraGUI:
         self.test_crop_status_label.set_text(message)
         if hasattr(self, "quick_crop_status_label"):
             self.quick_crop_status_label.set_text(message)
+        if calculate_after and not overwrite_inputs:
+            self._set_base_path(before_path)
+            self._set_updated_path(after_path)
         if calculate_after:
             self._quick_calculate()
 
@@ -4373,7 +4411,7 @@ class AuroraGUI:
             "origin" if self.raycast_ray_origin_rb.get_active() else "normal"
         )
         self.stack.set_visible_child_name("resultados")
-        self._view_raycast_meshes()
+        self._view_raycast_result()
 
     def _on_raycast_failure(self, message: str, generation: int) -> None:
         if generation != self._result_generation:
@@ -4897,6 +4935,9 @@ class AuroraGUI:
             self._show_error("Parametros invalidos", "La persistencia debe estar entre 0 y 1.")
             return
 
+        capture_duration_s = float(self.quick_capture_duration_spin.get_value())
+        aligned_multiview = self.quick_aligned_capture_check.get_active()
+
         cone_angle_deg = None
         max_distance_m = None
         try:
@@ -4923,16 +4964,54 @@ class AuroraGUI:
         self.stop_capture_button.set_sensitive(True)
         self.capture_stop_event = threading.Event()
         label = "tunel original" if target == "base" else "tunel con shotcrete"
-        self._start_capture_progress(f"Capturando {label} · esperando 15 frames", None)
-        self._log(f"Capturando nube ({label}), esperando 15 frames validos; persistencia >= {persistence_ratio:.2f}...")
+        self._start_capture_progress(
+            f"Capturando {label}", capture_duration_s
+        )
+        self._log(
+            f"Capturando nube ({label}) durante al menos {capture_duration_s:.0f} s; "
+            + (
+                "modo móvil alineado con pose SLAM; mueve el sensor lentamente..."
+                if aligned_multiview
+                else "se esperan 15 frames validos y se aplica mediana temporal de 5..."
+            )
+            + ("" if aligned_multiview else f" persistencia >= {persistence_ratio:.2f}...")
+        )
 
         stop_event = self.capture_stop_event
 
         def worker():
             try:
+                if aligned_multiview:
+                    aligned_result = aurora_sensor.capture_aligned_snapshot(
+                        self.sensor_connection,
+                        duration_s=capture_duration_s,
+                        timeout_s=max(10.0, capture_duration_s + 5.0),
+                        stop_event=stop_event,
+                        max_distance_m=max_distance_m,
+                        cone_angle_deg=cone_angle_deg,
+                        forward_axis=forward_axis,
+                    )
+                    self._log(
+                        f"Fusion SLAM: {aligned_result.accepted_frames} frames aceptados, "
+                        f"{aligned_result.rejected_frames} rechazados, recorrido "
+                        f"{aligned_result.path_length_m:.2f} m; desplazamiento final "
+                        f"{aligned_result.final_translation_m:.2f} m / "
+                        f"{aligned_result.final_rotation_deg:.1f}°."
+                    )
+                    self._ui(
+                        self._on_capture_done,
+                        target,
+                        aligned_result.cloud,
+                        None,
+                        None,
+                        aligned_result.reference_pose,
+                    )
+                    return
                 cloud = aurora_sensor.capture_snapshot(
                     self.sensor_connection,
                     persistence_ratio=persistence_ratio,
+                    capture_duration_s=capture_duration_s,
+                    timeout_s=max(10.0, capture_duration_s + 5.0),
                     stop_event=stop_event,
                     max_distance_m=max_distance_m,
                     cone_angle_deg=cone_angle_deg,
@@ -5771,6 +5850,58 @@ class AuroraGUI:
     def _open_active_result_visualization(self) -> None:
         self._show_result_in_viewer()
 
+    def _build_raycast_colored_meshes(self, result):
+        """Color the reconstructed surfaces from their nearest measured samples."""
+        import open3d as o3d
+        from scipy.spatial import cKDTree
+
+        base_mesh = o3d.geometry.TriangleMesh(result.base_mesh)
+        updated_mesh = o3d.geometry.TriangleMesh(result.updated_mesh)
+        base_cloud = grayscale_point_cloud(load_point_cloud(Path(self.base_path)))
+        base_points = np.asarray(base_cloud.points)
+        base_vertices = np.asarray(base_mesh.vertices)
+        if len(base_points) and len(base_vertices):
+            base_colors = np.asarray(base_cloud.colors)
+            nearest = cKDTree(base_points).query(base_vertices, k=1)[1]
+            base_mesh.vertex_colors = o3d.utility.Vector3dVector(base_colors[nearest])
+        else:
+            base_mesh.paint_uniform_color((0.45, 0.45, 0.45))
+
+        vertices = np.asarray(updated_mesh.vertices)
+        hit_points = np.asarray(result.hit_points, dtype=np.float64)
+        distances = np.asarray(result.distances, dtype=np.float64)
+        if not len(vertices) or not len(hit_points) or len(hit_points) != len(distances):
+            raise ValueError("No hay suficientes impactos para colorear la malla DESPUÉS.")
+
+        hit_tree = cKDTree(hit_points)
+        nearest_distance, nearest_index = hit_tree.query(vertices, k=1)
+        if len(hit_points) > 1:
+            sample_spacing = cKDTree(hit_points).query(hit_points, k=2)[0][:, 1]
+            color_radius = min(0.05, max(0.015, float(np.percentile(sample_spacing, 90)) * 3.0))
+        else:
+            color_radius = 0.015
+
+        vertex_cloud = o3d.geometry.PointCloud()
+        vertex_cloud.points = o3d.utility.Vector3dVector(vertices)
+        vertex_distances = distances[nearest_index]
+        spec = self._selected_preview_heatmap_spec()
+        if spec["mode"] == "six":
+            colored = build_heatmap_cloud_six_bands(vertex_cloud, vertex_distances, spec["target_m"])
+        elif spec["mode"] == "three":
+            colored = build_heatmap_cloud_banded(
+                vertex_cloud, vertex_distances, spec["low_m"], spec["high_m"]
+            )
+        else:
+            colored = build_heatmap_cloud(
+                vertex_cloud, vertex_distances, spec.get("max_distance_m")
+            )
+        vertex_colors = np.asarray(colored.colors).copy()
+        vertex_colors[nearest_distance > color_radius] = (0.45, 0.45, 0.45)
+        updated_mesh.vertex_colors = o3d.utility.Vector3dVector(vertex_colors)
+        base_mesh.compute_vertex_normals()
+        updated_mesh.compute_vertex_normals()
+        return base_mesh, updated_mesh
+
     def _launch_viewer_process(
         self,
         kind: str,
@@ -5829,15 +5960,32 @@ class AuroraGUI:
             return
         temp_dir: Path | None = None
         try:
-            colored_cloud, legend = self._build_result_heatmap(result)
+            legend = self._selected_color_legend()
             temp_dir = Path(tempfile.mkdtemp(prefix="aurora_thickness_view_"))
-            heatmap_path = temp_dir / "espesor_coloreado.ply"
             import open3d as o3d
 
-            if not o3d.io.write_point_cloud(str(heatmap_path), colored_cloud):
-                raise OSError("No se pudo preparar la nube coloreada para la vista 3D.")
-            viewer_kind = "cloud"
-            viewer_paths = [str(heatmap_path)]
+            if self._active_result_kind == "raycast":
+                base_mesh, updated_mesh = self._build_raycast_colored_meshes(result)
+                base_path = temp_dir / "malla_antes.ply"
+                updated_path = temp_dir / "malla_despues_espesor.ply"
+                if not o3d.io.write_triangle_mesh(str(base_path), base_mesh):
+                    raise OSError("No se pudo preparar la malla ANTES.")
+                if not o3d.io.write_triangle_mesh(str(updated_path), updated_mesh):
+                    raise OSError("No se pudo preparar la malla DESPUÉS coloreada por espesor.")
+                legend = {
+                    **legend,
+                    "title": f"Espesor · {legend.get('title', 'Mapa de color')}",
+                    "extra_rows": [((0.45, 0.45, 0.45), "ANTES", "Superficie original")],
+                }
+                viewer_kind = "meshes"
+                viewer_paths = [str(base_path), str(updated_path)]
+            else:
+                colored_cloud, legend = self._build_result_heatmap(result)
+                heatmap_path = temp_dir / "espesor_coloreado.ply"
+                if not o3d.io.write_point_cloud(str(heatmap_path), colored_cloud):
+                    raise OSError("No se pudo preparar la nube coloreada para la vista 3D.")
+                viewer_kind = "cloud"
+                viewer_paths = [str(heatmap_path)]
             if self._active_result_kind == "cloud_to_cloud":
                 before_path = temp_dir / "nube_antes.ply"
                 if not o3d.io.write_point_cloud(str(before_path), result.base_cloud):

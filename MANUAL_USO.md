@@ -44,7 +44,7 @@ Se usa si el sensor se movio entre las capturas o si no comparten coordenadas. E
 
 Los nombres de archivos seleccionados se muestran en amarillo en esta sección, en **Medición rápida** y en **Archivos ANTES / DESPUÉS** para distinguirlos de las etiquetas.
 
-**Preparar nubes** permite cargar ANTES y DESPUÉS, abrir cada nube por separado o ver el par superpuesto (gris = ANTES, celeste = DESPUÉS). Para recortar ambas, confirma que compartan coordenadas, pulsa **Ver ambas y elegir dos esquinas**, y marca con Shift+clic izquierdo dos esquinas opuestas de la misma cara. Aurora toma esa región de la vista combinada y aplica el mismo box a las dos nubes. Configura la profundidad y revisa el par recortado antes de guardarlo. Las dos copias se guardan en la carpeta elegida con nombres separados ANTES/DESPUÉS; los originales se conservan. **Usar el par recortado en Medición rápida** carga ambas copias juntas.
+**Preparar nubes** permite cargar ANTES y DESPUÉS, abrir cada nube por separado o ver el par superpuesto (gris = ANTES, celeste = DESPUÉS). Para recortar ambas, confirma que compartan coordenadas, define la región con los controles y revisa el par antes de guardarlo. Las dos copias recortadas se guardan por defecto en `data/recortes/`, con nombres separados ANTES/DESPUÉS; los originales se conservan. **Usar el par recortado en Medición rápida** carga ambas copias juntas.
 
 La cara seleccionada debe estar aproximadamente alineada con los ejes XYZ; el método de dos puntos no calcula la orientación de una cara inclinada. La profundidad debe incluir el objeto deseado sin alcanzar objetos vecinos. Este flujo no alinea las capturas; si el sensor cambió de lugar, alinea el par antes de recortarlo.
 
