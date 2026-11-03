@@ -205,7 +205,7 @@ Cada pestaña tiene su `_build_*_page()`:
      conectado / rojo = desconectado / amarillo = conectando).
    - **"Capturar tunel original"** / **"Capturar tunel con shotcrete"**
      (`_capture_clicked`) — espera al menos 15 frames validos y el tiempo
-     configurable en Medicion rapida (1–30 s; 3 s por defecto); aplica mediana
+     configurable en Medicion rapida (1–60 s; 3 s por defecto); aplica mediana
      temporal de cinco y guarda una sola vista por defecto. La casilla opcional
      "Captura movil alineada" registra cada frame con la pose SLAM y fusiona
      los puntos en el marco de la primera vista. Al guardar

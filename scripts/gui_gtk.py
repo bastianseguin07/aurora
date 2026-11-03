@@ -1192,7 +1192,7 @@ class AuroraGUI:
         capture_time_row = self._row(files_box)
         capture_time_row.pack_start(Gtk.Label(label="Tiempo de captura:"), False, False, 0)
         self.quick_capture_duration_scale = Gtk.Scale.new_with_range(
-            Gtk.Orientation.HORIZONTAL, 1.0, 30.0, 1.0
+            Gtk.Orientation.HORIZONTAL, 1.0, 60.0, 1.0
         )
         self.quick_capture_duration_scale.set_value(3.0)
         self.quick_capture_duration_scale.set_digits(0)
@@ -1203,12 +1203,12 @@ class AuroraGUI:
         self.quick_capture_duration_scale.get_style_context().add_class(
             "capture-duration-scale"
         )
-        for seconds in (1, 5, 10, 15, 20, 25, 30):
+        for seconds in (1, 10, 20, 30, 40, 50, 60):
             self.quick_capture_duration_scale.add_mark(
                 seconds, Gtk.PositionType.BOTTOM, str(seconds)
             )
         self.quick_capture_duration_scale.set_tooltip_text(
-            "Tiempo de adquisición (1–30 s) para la captura fija."
+            "Tiempo de adquisición (1–60 s) para la captura fija."
         )
         capture_time_row.pack_start(self.quick_capture_duration_scale, True, True, 0)
         capture_time_row.pack_start(Gtk.Label(label="segundos"), False, False, 0)
@@ -1881,7 +1881,7 @@ class AuroraGUI:
         row.pack_start(self.capture_status_label, True, True, 0)
         row.pack_start(
             self._info_button(
-                "En Medición rápida configura de 1 a 30 segundos. Por defecto se acumulan "
+                "En Medición rápida configura de 1 a 60 segundos. Por defecto se acumulan "
                 "profundidades estables si el sensor y la escena están quietos. La captura móvil "
                 "alineada está en la sección Experimental."
             ),
