@@ -142,12 +142,19 @@ def crop_pair_by_face_depth(
     return before_cut, after_cut, bounds, box_bounds, depth_axis, 0.0
 
 
-def square_face_bounds(
-    face_bounds: tuple[Vec3, Vec3], seed: np.ndarray, side_m: float
+def rectangular_face_bounds(
+    face_bounds: tuple[Vec3, Vec3], seed: np.ndarray, width_m: float, height_m: float
 ) -> tuple[Vec3, Vec3]:
-    """Set an exact square face centered on the selected wall point."""
-    if not np.isfinite(side_m) or side_m <= 0:
-        raise ValueError("El lado del box debe ser mayor que cero.")
+    """Set an exact rectangular face centered on the selected wall point.
+
+    The two in-plane axes (whichever two are not the detected depth axis)
+    are assigned ``width_m``/``height_m`` in ascending axis order (e.g. for a
+    depth axis of Z, X gets width_m and Y gets height_m).
+    """
+    if not np.isfinite(width_m) or width_m <= 0:
+        raise ValueError("El ancho del box debe ser mayor que cero.")
+    if not np.isfinite(height_m) or height_m <= 0:
+        raise ValueError("El alto del box debe ser mayor que cero.")
     low = np.asarray(face_bounds[0], dtype=np.float64).copy()
     high = np.asarray(face_bounds[1], dtype=np.float64).copy()
     seed = np.asarray(seed, dtype=np.float64).reshape(3)
@@ -155,11 +162,10 @@ def square_face_bounds(
         raise ValueError("Los limites de la cara no son validos.")
     depth_axis = int(np.argmin(high - low))
     low[depth_axis] = high[depth_axis] = seed[depth_axis]
-    for axis in range(3):
-        if axis == depth_axis:
-            continue
-        low[axis] = seed[axis] - side_m / 2.0
-        high[axis] = seed[axis] + side_m / 2.0
+    in_plane_axes = [axis for axis in range(3) if axis != depth_axis]
+    for axis, size_m in zip(in_plane_axes, (width_m, height_m)):
+        low[axis] = seed[axis] - size_m / 2.0
+        high[axis] = seed[axis] + size_m / 2.0
     return tuple(low.tolist()), tuple(high.tolist())
 
 

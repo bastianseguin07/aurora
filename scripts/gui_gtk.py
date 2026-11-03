@@ -75,7 +75,7 @@ from pointcloud_core import (  # noqa: E402
     reference_photo_path_for,
     reference_pose_alignment_version,
     pick_crop_seed_from_pair,
-    square_face_bounds,
+    rectangular_face_bounds,
     pick_landmark_points,
     pick_landmark_points_from_photo,
     render_reference_photo_from_cloud,
@@ -1245,12 +1245,18 @@ class AuroraGUI:
         self.quick_crop_apply_button.set_sensitive(False)
         crop_row.pack_start(self.quick_crop_apply_button, False, False, 0)
         crop_dimensions_row = self._row(crop_box)
-        crop_dimensions_row.pack_start(Gtk.Label(label="Lado de cara (cm):"), False, False, 0)
+        crop_dimensions_row.pack_start(Gtk.Label(label="Ancho (cm):"), False, False, 0)
         self.quick_crop_face_size_entry = self._numeric_entry("20", 7)
         self.quick_crop_face_size_entry.connect(
-            "changed", lambda entry: self._sync_quick_crop_dimension(entry, "face")
+            "changed", lambda entry: self._sync_quick_crop_dimension(entry, "width")
         )
         crop_dimensions_row.pack_start(self.quick_crop_face_size_entry, False, False, 0)
+        crop_dimensions_row.pack_start(Gtk.Label(label="Alto (cm):"), False, False, 0)
+        self.quick_crop_height_entry = self._numeric_entry("20", 7)
+        self.quick_crop_height_entry.connect(
+            "changed", lambda entry: self._sync_quick_crop_dimension(entry, "height")
+        )
+        crop_dimensions_row.pack_start(self.quick_crop_height_entry, False, False, 0)
         crop_dimensions_row.pack_start(Gtk.Label(label="Profundidad (cm):"), False, False, 0)
         self.quick_crop_depth_entry = self._numeric_entry("100", 7)
         self.quick_crop_depth_entry.connect(
@@ -1277,12 +1283,16 @@ class AuroraGUI:
         self.test_crop_preview_button = self.quick_crop_preview_button
         self.test_crop_apply_button = self.quick_crop_apply_button
         self.test_crop_face_size_entry = self.quick_crop_face_size_entry
+        self.test_crop_height_entry = self.quick_crop_height_entry
         self.test_crop_depth_spin = self.quick_crop_depth_entry
         self.test_crop_bounds_label = self.quick_crop_bounds_label
         self.test_crop_status_label = self.quick_crop_status_label
         self.test_crop_use_pair_button = Gtk.Button()
         self.test_crop_view_pair_button = Gtk.Button()
         self.quick_crop_face_size_entry.connect(
+            "changed", lambda _entry: self._on_test_crop_face_size_changed()
+        )
+        self.quick_crop_height_entry.connect(
             "changed", lambda _entry: self._on_test_crop_face_size_changed()
         )
         self.quick_crop_depth_entry.connect(
@@ -2906,19 +2916,20 @@ class AuroraGUI:
         try:
             value_cm = float(value_text)
         except ValueError as exc:
-            raise ValueError("Introduce una profundidad numérica entre 1 y 100 cm.") from exc
-        if not np.isfinite(value_cm) or not 1.0 <= value_cm <= 100.0:
-            raise ValueError("La profundidad debe estar entre 1 y 100 cm.")
+            raise ValueError("Introduce una profundidad numérica mayor que cero.") from exc
+        if not np.isfinite(value_cm) or value_cm <= 0:
+            raise ValueError("La profundidad debe ser mayor que cero.")
         return value_cm / 100.0
 
     def _sync_quick_crop_dimension(self, entry, dimension: str) -> None:
         if getattr(self, "_syncing_crop_dimensions", False):
             return
-        target = getattr(
-            self,
-            "test_crop_face_size_entry" if dimension == "face" else "test_crop_depth_spin",
-            None,
-        )
+        attr_by_dimension = {
+            "width": "test_crop_face_size_entry",
+            "height": "test_crop_height_entry",
+            "depth": "test_crop_depth_spin",
+        }
+        target = getattr(self, attr_by_dimension[dimension], None)
         if target is None or target.get_text() == entry.get_text():
             return
         self._syncing_crop_dimensions = True
@@ -2946,18 +2957,29 @@ class AuroraGUI:
         try:
             value_cm = float(value_text)
         except ValueError as exc:
-            raise ValueError("Introduce un lado de cara cuadrada entre 1 y 100 cm.") from exc
-        if not np.isfinite(value_cm) or not 1.0 <= value_cm <= 100.0:
-            raise ValueError("El lado de la cara debe estar entre 1 y 100 cm.")
+            raise ValueError("Introduce un ancho de box numérico mayor que cero.") from exc
+        if not np.isfinite(value_cm) or value_cm <= 0:
+            raise ValueError("El ancho del box debe ser mayor que cero.")
+        return value_cm / 100.0
+
+    def _get_test_crop_height_m(self) -> float:
+        value_text = self.test_crop_height_entry.get_text().strip().replace(",", ".")
+        try:
+            value_cm = float(value_text)
+        except ValueError as exc:
+            raise ValueError("Introduce un alto de box numérico mayor que cero.") from exc
+        if not np.isfinite(value_cm) or value_cm <= 0:
+            raise ValueError("El alto del box debe ser mayor que cero.")
         return value_cm / 100.0
 
     def _on_test_crop_face_size_changed(self) -> None:
         if self.test_crop_seed is None or self.test_crop_bounds is None:
             return
         try:
-            face_size_m = self._get_test_crop_face_size_m()
-            self.test_crop_bounds = square_face_bounds(
-                self.test_crop_bounds, self.test_crop_seed, face_size_m
+            width_m = self._get_test_crop_face_size_m()
+            height_m = self._get_test_crop_height_m()
+            self.test_crop_bounds = rectangular_face_bounds(
+                self.test_crop_bounds, self.test_crop_seed, width_m, height_m
             )
         except ValueError:
             return
@@ -2967,10 +2989,10 @@ class AuroraGUI:
         depth_axis = int(np.argmin(high - low))
         axis_name = ("X", "Y", "Z")[depth_axis]
         self.test_crop_bounds_label.set_text(
-            f"Cara cuadrada {face_size_m * 100:g} cm · profundidad eje {axis_name}"
+            f"Cara {width_m * 100:g} × {height_m * 100:g} cm · profundidad eje {axis_name}"
         )
         self.test_crop_status_label.set_text(
-            "Lado cuadrado actualizado; pulsa «Actualizar vista previa» para aplicar el nuevo tamaño."
+            "Dimensiones actualizadas; pulsa «Actualizar vista previa» para aplicar el nuevo tamaño."
         )
         self._refresh_test_crop_controls()
 
@@ -3251,8 +3273,11 @@ class AuroraGUI:
             return
         self.test_crop_seed = np.asarray(seed, dtype=np.float64).copy()
         try:
-            self.test_crop_bounds = square_face_bounds(
-                bounds, self.test_crop_seed, self._get_test_crop_face_size_m()
+            self.test_crop_bounds = rectangular_face_bounds(
+                bounds,
+                self.test_crop_seed,
+                self._get_test_crop_face_size_m(),
+                self._get_test_crop_height_m(),
             )
         except ValueError as exc:
             self._show_error("Tamaño del box no válido", str(exc))
@@ -3262,9 +3287,13 @@ class AuroraGUI:
         self.test_crop_use_pair_button.set_sensitive(False)
         low, high = (np.asarray(axis, dtype=np.float64) for axis in self.test_crop_bounds)
         depth_axis = int(np.argmin(high - low))
-        face_side_cm = float(max(high[axis] - low[axis] for axis in range(3) if axis != depth_axis)) * 100
+        in_plane_axes = [axis for axis in range(3) if axis != depth_axis]
+        width_cm = float(high[in_plane_axes[0]] - low[in_plane_axes[0]]) * 100
+        height_cm = float(high[in_plane_axes[1]] - low[in_plane_axes[1]]) * 100
         axis_name = ("X", "Y", "Z")[depth_axis]
-        self.test_crop_bounds_label.set_text(f"Cara cuadrada {face_side_cm:.0f} cm · profundidad eje {axis_name}")
+        self.test_crop_bounds_label.set_text(
+            f"Cara {width_cm:.0f} × {height_cm:.0f} cm · profundidad eje {axis_name}"
+        )
         self.test_crop_status_label.set_text(
             "Punto guardado. Puedes ajustar la profundidad; no necesitas seleccionarlo otra vez."
         )
@@ -3335,7 +3364,7 @@ class AuroraGUI:
         )
         self.test_crop_status_label.set_text(
             f"Cara {self._get_test_crop_face_size_m() * 100:g} × "
-            f"{self._get_test_crop_face_size_m() * 100:g} cm; profundidad {depth_cm:g} cm en eje {axis_name}. "
+            f"{self._get_test_crop_height_m() * 100:g} cm; profundidad {depth_cm:g} cm en eje {axis_name}. "
             f"Dentro del box — ANTES: {len(before_cut.points):,}; DESPUES: {len(after_cut.points):,}.{empty_hint}"
         )
         if hasattr(self, "quick_crop_status_label"):
@@ -3512,7 +3541,7 @@ class AuroraGUI:
                 )
                 if not len(before.points) or not len(after.points):
                     raise RuntimeError(
-                        "El box no contiene puntos en ambas capturas. Aumenta la profundidad o el lado cuadrado."
+                        "El box no contiene puntos en ambas capturas. Aumenta la profundidad, el ancho o el alto."
                     )
                 import open3d as o3d
 

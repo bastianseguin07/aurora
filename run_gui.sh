@@ -16,6 +16,13 @@ if [ ! -x "./venv/bin/python3" ]; then
     exit 1
 fi
 
+# Fuerza el renderizado con la GPU NVIDIA (PRIME render offload) en vez de la
+# Intel integrada: en esta laptop (Intel + NVIDIA en modo "on-demand"), las
+# ventanas 3D de Open3D no respondian al scroll/zoom del mouse cuando
+# renderizaban con la Intel.
+export __NV_PRIME_RENDER_OFFLOAD=1
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+
 ./venv/bin/python3 scripts/gui_gtk.py
 status=$?
 

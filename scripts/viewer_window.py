@@ -679,7 +679,29 @@ def main() -> None:
                 # Prevent a press/release click from reaching Open3D's default
                 # camera handler. Camera motion is applied only from DRAG below.
                 return gui.Widget.CONSUMED
-            if event.type == gui.MouseEvent.Type.WHEEL and event.buttons != gui.MouseButton.NONE:
+            if event.type == gui.MouseEvent.Type.WHEEL:
+                # int(...) matters: comparing the MouseButton enum directly
+                # with "!=" is always True in this Open3D build, which made
+                # every wheel event look like "button held" and get dropped
+                # below without ever reaching the zoom code.
+                if int(event.buttons) != int(gui.MouseButton.NONE):
+                    return gui.Widget.CONSUMED
+                # set_on_mouse() replaces Open3D's built-in camera handling
+                # entirely (returning IGNORED does not fall back to it), so
+                # the wheel-to-zoom gesture has to be implemented here too,
+                # the same way drag-to-rotate/pan already is above.
+                camera = scene_widget.scene.camera
+                model = np.asarray(camera.get_model_matrix())
+                eye = model[:3, 3]
+                center = np.asarray(scene_widget.center_of_rotation)
+                up = model[:3, 1]
+                direction = eye - center
+                distance = float(np.linalg.norm(direction))
+                if distance > 1e-9:
+                    zoom_factor = math.exp(-float(event.wheel_dy) * 0.1)
+                    new_distance = max(distance * zoom_factor, 0.01)
+                    new_eye = center + direction / distance * new_distance
+                    camera.look_at(center, new_eye, up)
                 return gui.Widget.CONSUMED
             if event.type == gui.MouseEvent.Type.DRAG and left_down and last_drag_y is not None and last_drag_x is not None:
                 delta_x = event.x - last_drag_x
