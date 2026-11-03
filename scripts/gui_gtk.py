@@ -462,9 +462,10 @@ scale.capture-duration-scale slider {{
     background-color: {COLOR_ACCENT};
     background-image: none;
     border: 1px solid {COLOR_ACCENT_DARK};
-    border-radius: 999px;
-    min-width: 16px;
-    min-height: 16px;
+    border-radius: 50%;
+    padding: 0;
+    min-width: 20px;
+    min-height: 20px;
 }}
 
 entry {{
