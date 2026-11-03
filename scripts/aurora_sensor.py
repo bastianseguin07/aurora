@@ -21,6 +21,7 @@ from typing import Callable
 
 import numpy as np
 import open3d as o3d
+from scipy.spatial.transform import Rotation, Slerp
 
 
 @dataclass
@@ -122,6 +123,48 @@ def get_current_pose(connection: AuroraConnection) -> SensorPose:
         rpy_deg=np.degrees(np.array(rpy, dtype=np.float64)),
         timestamp_ns=int(timestamp_ns),
     )
+
+
+def _interpolate_pose(before: SensorPose, after: SensorPose, timestamp_ns: int) -> SensorPose | None:
+    """Interpolate SLAM pose at a depth frame timestamp; reject unbracketed data."""
+    span = int(after.timestamp_ns) - int(before.timestamp_ns)
+    if span <= 0 or span > 250_000_000:
+        return None
+    if timestamp_ns < before.timestamp_ns or timestamp_ns > after.timestamp_ns:
+        return None
+    fraction = (timestamp_ns - before.timestamp_ns) / span
+    rotations = Rotation.from_euler("xyz", np.radians([before.rpy_deg, after.rpy_deg]))
+    orientation = Slerp([0.0, 1.0], rotations)([fraction])[0]
+    rpy = np.degrees(orientation.as_euler("xyz"))
+    position = before.position + fraction * (after.position - before.position)
+    return SensorPose(position=position, rpy_deg=rpy, timestamp_ns=int(timestamp_ns))
+
+
+def _refine_frame_registration(
+    frame_cloud: o3d.geometry.PointCloud,
+    target_cloud: o3d.geometry.PointCloud,
+) -> tuple[o3d.geometry.PointCloud, bool]:
+    """Use conservative ICP to correct small residual errors after SLAM pose."""
+    registration = o3d.pipelines.registration
+    source = frame_cloud.voxel_down_sample(0.008)
+    target = target_cloud.voxel_down_sample(0.008)
+    if len(source.points) < 30 or len(target.points) < 100:
+        return frame_cloud, False
+    result = registration.registration_icp(
+        source,
+        target,
+        0.015,
+        np.eye(4),
+        registration.TransformationEstimationPointToPoint(),
+        registration.ICPConvergenceCriteria(max_iteration=20),
+    )
+    correction = np.asarray(result.transformation)
+    angle = Rotation.from_matrix(correction[:3, :3]).magnitude()
+    shift = float(np.linalg.norm(correction[:3, 3]))
+    if result.fitness < 0.20 or result.inlier_rmse > 0.010 or shift > 0.020 or angle > np.radians(3.0):
+        return frame_cloud, False
+    frame_cloud.transform(correction.copy())
+    return frame_cloud, True
 
 
 def read_frame_points(
@@ -460,6 +503,11 @@ def capture_aligned_snapshot(
     while time.monotonic() - start < timeout_s:
         if stop_event is not None and stop_event.is_set():
             break
+        try:
+            pose_before = get_current_pose(connection)
+        except RuntimeError:
+            rejected += 1
+            continue
         points_grid, colors_grid, frame_ts = read_frame_points_and_colors(
             connection,
             timeout_ms=300,
@@ -472,10 +520,15 @@ def capture_aligned_snapshot(
         if points_grid is None or not frame_ts:
             rejected += 1
             continue
-        pose = get_current_pose(connection)
-        # Both timestamps come from the device. Reject poorly paired frame/pose
-        # samples instead of fusing geometry with a potentially stale pose.
-        if abs(int(pose.timestamp_ns) - frame_ts) > 150_000_000:
+        try:
+            pose_after = get_current_pose(connection)
+        except RuntimeError:
+            rejected += 1
+            continue
+        # Pair the depth frame with a pose interpolated at its own device time.
+        # A stale latest-pose sample can smear walls during a moving scan.
+        pose = _interpolate_pose(pose_before, pose_after, int(frame_ts))
+        if pose is None:
             rejected += 1
             continue
         if points_grid.ndim == 3:
@@ -497,7 +550,7 @@ def capture_aligned_snapshot(
             step_rpy = ((pose.rpy_deg - previous_pose.rpy_deg + 180.0) % 360.0) - 180.0
             step_deg = float(np.max(np.abs(step_rpy)))
             # Large discontinuities usually mean relocalization/tracking loss.
-            if step_m > 0.5 or step_deg > 45.0:
+            if step_m > 0.12 or step_deg > 12.0:
                 rejected += 1
                 continue
             path_length += step_m
@@ -513,6 +566,10 @@ def capture_aligned_snapshot(
         if accepted == 0:
             fused = frame_cloud
         else:
+            frame_cloud, registered = _refine_frame_registration(frame_cloud, fused)
+            if not registered:
+                rejected += 1
+                continue
             fused += frame_cloud
         fused = fused.voxel_down_sample(voxel_size)
         accepted += 1
