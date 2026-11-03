@@ -447,6 +447,26 @@ button.suggested-action:active {{
     background-color: {COLOR_ACCENT_DARK};
 }}
 
+scale.capture-duration-scale trough {{
+    min-height: 6px;
+    border-radius: 4px;
+}}
+
+scale.capture-duration-scale highlight {{
+    background-color: {COLOR_ACCENT};
+    background-image: none;
+    border-radius: 4px;
+}}
+
+scale.capture-duration-scale slider {{
+    background-color: {COLOR_ACCENT};
+    background-image: none;
+    border: 1px solid {COLOR_ACCENT_DARK};
+    border-radius: 999px;
+    min-width: 16px;
+    min-height: 16px;
+}}
+
 entry {{
     background-color: #11141B;
     background-image: none;
@@ -1178,6 +1198,9 @@ class AuroraGUI:
         self.quick_capture_duration_scale.set_value_pos(Gtk.PositionType.RIGHT)
         self.quick_capture_duration_scale.set_hexpand(True)
         self.quick_capture_duration_scale.set_size_request(260, -1)
+        self.quick_capture_duration_scale.get_style_context().add_class(
+            "capture-duration-scale"
+        )
         for seconds in (1, 5, 10, 15, 20, 25, 30):
             self.quick_capture_duration_scale.add_mark(
                 seconds, Gtk.PositionType.BOTTOM, str(seconds)
