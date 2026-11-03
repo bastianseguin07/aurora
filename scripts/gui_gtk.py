@@ -1169,15 +1169,25 @@ class AuroraGUI:
         capture_status_row.pack_start(self.quick_capture_status_label, True, True, 0)
         capture_time_row = self._row(files_box)
         capture_time_row.pack_start(Gtk.Label(label="Tiempo de captura:"), False, False, 0)
-        self.quick_capture_duration_spin = Gtk.SpinButton.new_with_range(1.0, 30.0, 1.0)
-        self.quick_capture_duration_spin.set_value(3.0)
-        self.quick_capture_duration_spin.set_numeric(True)
-        self.quick_capture_duration_spin.set_tooltip_text(
+        self.quick_capture_duration_scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL, 1.0, 30.0, 1.0
+        )
+        self.quick_capture_duration_scale.set_value(3.0)
+        self.quick_capture_duration_scale.set_digits(0)
+        self.quick_capture_duration_scale.set_draw_value(True)
+        self.quick_capture_duration_scale.set_value_pos(Gtk.PositionType.RIGHT)
+        self.quick_capture_duration_scale.set_hexpand(True)
+        self.quick_capture_duration_scale.set_size_request(260, -1)
+        for seconds in (1, 5, 10, 15, 20, 25, 30):
+            self.quick_capture_duration_scale.add_mark(
+                seconds, Gtk.PositionType.BOTTOM, str(seconds)
+            )
+        self.quick_capture_duration_scale.set_tooltip_text(
             "Tiempo mínimo de adquisición (1–30 s). En modo normal estabiliza una vista; "
             "con Captura móvil alineada registra y fusiona frames con la pose SLAM."
         )
-        capture_time_row.pack_start(self.quick_capture_duration_spin, False, False, 0)
-        capture_time_row.pack_start(Gtk.Label(label="segundos (1–30)"), False, False, 0)
+        capture_time_row.pack_start(self.quick_capture_duration_scale, True, True, 0)
+        capture_time_row.pack_start(Gtk.Label(label="segundos"), False, False, 0)
         self.quick_aligned_capture_check = Gtk.CheckButton(
             label="Captura móvil alineada (fusionar frames con pose SLAM)"
         )
@@ -4878,7 +4888,7 @@ class AuroraGUI:
             self._show_error("Parametros invalidos", "La persistencia debe estar entre 0 y 1.")
             return
 
-        capture_duration_s = float(self.quick_capture_duration_spin.get_value())
+        capture_duration_s = float(self.quick_capture_duration_scale.get_value())
         aligned_multiview = self.quick_aligned_capture_check.get_active()
 
         cone_angle_deg = None
