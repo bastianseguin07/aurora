@@ -23,6 +23,10 @@ import numpy as np
 import open3d as o3d
 from scipy.spatial.transform import Rotation, Slerp
 
+_STATIC_ACCUMULATION_MAX_FRAMES = 60
+_STATIC_ACCUMULATION_SAMPLE_RATE_HZ = 2
+_STATIC_ACCUMULATION_MEMORY_BUDGET_BYTES = 128 * 1024 * 1024
+
 
 @dataclass
 class AlignedCaptureResult:
@@ -33,6 +37,8 @@ class AlignedCaptureResult:
     path_length_m: float
     final_translation_m: float
     final_rotation_deg: float
+    pose_augmentation_used: bool = False
+    extrinsic_calibration_used: bool = False
 
 
 class AuroraNotAvailable(RuntimeError):
@@ -60,12 +66,57 @@ class AuroraConnection:
     sdk: object
     depth_enabled: bool = False
     sdk_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    pose_listener: object | None = field(default=None, repr=False)
+
+
+def _make_pose_listener():
+    """Create an SDK listener that buffers high-rate timestamped poses when supported."""
+    try:
+        from slamtec_aurora_sdk import SDKListener
+    except ImportError:
+        return None
+
+    class PoseListener(SDKListener):
+        def __init__(self):
+            super().__init__()
+            self.samples: deque[SensorPose] = deque(maxlen=4000)
+            self.samples_lock = threading.Lock()
+
+        def on_pose_augmentation_result(self, timestamp_ns, _mode, pose):
+            if pose is None:
+                return
+            try:
+                position = np.asarray(pose.translation.to_tuple(), dtype=np.float64)
+                quaternion = np.asarray(pose.quaternion.to_tuple(), dtype=np.float64)
+                if not np.isfinite(position).all() or not np.isfinite(quaternion).all():
+                    return
+                rpy_deg = np.degrees(Rotation.from_quat(quaternion).as_euler("xyz"))
+                sample = SensorPose(position, rpy_deg, int(timestamp_ns))
+                with self.samples_lock:
+                    self.samples.append(sample)
+            except Exception:
+                # SDK callbacks must stay lightweight and never break the session.
+                return
+
+    try:
+        return PoseListener()
+    except Exception:
+        return None
 
 
 def connect(connection_string: str = "192.168.11.1") -> AuroraConnection:
     AuroraSDK, ENHANCED_IMAGE_TYPE_DEPTH, _, AuroraSDKError = _import_sdk()
 
-    sdk = AuroraSDK()
+    pose_listener = _make_pose_listener()
+    if pose_listener is not None:
+        try:
+            sdk = AuroraSDK(listener=pose_listener)
+        except TypeError:
+            # Older SDK packages may not expose the 2.1 listener constructor.
+            pose_listener = None
+            sdk = AuroraSDK()
+    else:
+        sdk = AuroraSDK()
     try:
         sdk.connect(connection_string=connection_string)
     except AuroraSDKError as exc:
@@ -85,7 +136,11 @@ def connect(connection_string: str = "192.168.11.1") -> AuroraConnection:
         raise RuntimeError("No se pudo activar la suscripcion a la camara de profundidad del sensor.")
 
     time.sleep(2.0)  # el stream tarda en arrancar, igual que en el demo oficial
-    return AuroraConnection(sdk=sdk, depth_enabled=True)
+    return AuroraConnection(
+        sdk=sdk,
+        depth_enabled=True,
+        pose_listener=pose_listener,
+    )
 
 
 def disconnect(connection: AuroraConnection) -> None:
@@ -140,11 +195,59 @@ def _interpolate_pose(before: SensorPose, after: SensorPose, timestamp_ns: int) 
     return SensorPose(position=position, rpy_deg=rpy, timestamp_ns=int(timestamp_ns))
 
 
+def _listener_pose_at_timestamp(
+    connection: AuroraConnection, timestamp_ns: int
+) -> SensorPose | None:
+    listener = connection.pose_listener
+    if listener is None or not hasattr(listener, "samples_lock"):
+        return None
+    with listener.samples_lock:
+        samples = tuple(listener.samples)
+    before = [sample for sample in samples if sample.timestamp_ns <= timestamp_ns]
+    after = [sample for sample in samples if sample.timestamp_ns >= timestamp_ns]
+    if not before or not after:
+        return None
+    pose_before = max(before, key=lambda sample: sample.timestamp_ns)
+    pose_after = min(after, key=lambda sample: sample.timestamp_ns)
+    if pose_before.timestamp_ns == pose_after.timestamp_ns:
+        return SensorPose(
+            pose_before.position.copy(), pose_before.rpy_deg.copy(), int(timestamp_ns)
+        )
+    return _interpolate_pose(pose_before, pose_after, timestamp_ns)
+
+
+def _base_to_camera_calibration(
+    connection: AuroraConnection,
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    """Return SDK base-to-camera extrinsics, falling back to the known axis map."""
+    fallback_rotation = np.array(
+        [[0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]],
+        dtype=np.float64,
+    )
+    fallback_translation = np.zeros(3, dtype=np.float64)
+    try:
+        transform = connection.sdk.data_provider.get_transform_calibration().t_base_cam
+        rotation = Rotation.from_quat(
+            np.asarray(transform.quaternion.to_tuple(), dtype=np.float64)
+        ).as_matrix()
+        translation = np.asarray(transform.translation.to_tuple(), dtype=np.float64)
+        if (
+            rotation.shape == (3, 3)
+            and translation.shape == (3,)
+            and np.isfinite(rotation).all()
+            and np.isfinite(translation).all()
+        ):
+            return rotation, translation, True
+    except Exception:
+        pass
+    return fallback_rotation, fallback_translation, False
+
+
 def _refine_frame_registration(
     frame_cloud: o3d.geometry.PointCloud,
     target_cloud: o3d.geometry.PointCloud,
 ) -> tuple[o3d.geometry.PointCloud, bool]:
-    """Use conservative ICP to correct small residual errors after SLAM pose."""
+    """Refine SLAM placement with ICP, rejecting frames without reliable overlap."""
     registration = o3d.pipelines.registration
     source = frame_cloud.voxel_down_sample(0.008)
     target = target_cloud.voxel_down_sample(0.008)
@@ -159,12 +262,71 @@ def _refine_frame_registration(
         registration.ICPConvergenceCriteria(max_iteration=20),
     )
     correction = np.asarray(result.transformation)
-    angle = Rotation.from_matrix(correction[:3, :3]).magnitude()
+    # Open3D exposes its result matrix as a read-only NumPy view; SciPy's
+    # Rotation constructor needs a writable buffer on some supported builds.
+    angle = Rotation.from_matrix(correction[:3, :3].copy()).magnitude()
     shift = float(np.linalg.norm(correction[:3, 3]))
-    if result.fitness < 0.20 or result.inlier_rmse > 0.010 or shift > 0.020 or angle > np.radians(3.0):
+    # Low overlap means the frame cannot be checked against the accumulated
+    # surface. Do not fuse it: that is how floating duplicate surfaces appear.
+    if result.inlier_rmse > 0.010 or shift > 0.020 or angle > np.radians(3.0):
+        return frame_cloud, False
+    if result.fitness < 0.20:
         return frame_cloud, False
     frame_cloud.transform(correction.copy())
     return frame_cloud, True
+
+
+def _fuse_static_frames(
+    frame_grids: list[np.ndarray],
+    color_grids: list[np.ndarray],
+    fallback_grid: np.ndarray,
+    fallback_colors: np.ndarray,
+    max_points: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Use stable real samples while preserving coverage from the best native frame."""
+    if len(frame_grids) < 3:
+        raise ValueError("Se necesitan al menos 3 frames para acumular una captura fija.")
+    stack = np.stack(frame_grids).astype(np.float32, copy=False)
+    if stack.ndim != 4 or stack.shape[-1] != 3:
+        raise ValueError("La acumulación fija requiere frames organizados HxWx3.")
+
+    valid = np.isfinite(stack).all(axis=3)
+    valid_count = valid.sum(axis=0)
+    depths = np.linalg.norm(np.where(valid[..., None], stack, 0.0), axis=3)
+    ordered_depths = np.where(valid, depths, np.inf)
+    ordered_depths.sort(axis=0)
+    median_indices = np.maximum(valid_count - 1, 0) // 2
+    gather = np.broadcast_to(median_indices[None, ...], (1, *median_indices.shape))
+    median_depth = np.take_along_axis(ordered_depths, gather, axis=0)[0]
+
+    tolerance_m = np.maximum(0.008, median_depth * 0.002)
+    stable = valid & (np.abs(depths - median_depth[None, ...]) <= tolerance_m[None, ...])
+    required = max(3, int(np.ceil(0.60 * len(frame_grids))))
+    stable_keep = (valid_count >= required) & (stable.sum(axis=0) >= required)
+
+    error = np.where(stable, np.abs(depths - median_depth[None, ...]), np.inf)
+    selected_index = np.argmin(error, axis=0)
+    point_indices = np.broadcast_to(selected_index[None, ..., None], (1, *selected_index.shape, 3))
+    selected_points = np.take_along_axis(stack, point_indices, axis=0)[0]
+    color_stack = np.stack(color_grids)
+    color_indices = np.broadcast_to(
+        selected_index[None, ..., None], (1, *selected_index.shape, 3)
+    )
+    selected_colors = np.take_along_axis(color_stack, color_indices, axis=0)[0]
+    fallback_valid = np.isfinite(fallback_grid).all(axis=2)
+    use_fallback = ~stable_keep & fallback_valid
+    selected_points[use_fallback] = fallback_grid[use_fallback]
+    selected_colors[use_fallback] = fallback_colors[use_fallback]
+    keep = stable_keep | fallback_valid
+    selected_points = selected_points[keep]
+    selected_colors = selected_colors[keep].astype(np.float32) / 255.0
+    if len(selected_points) < 3:
+        raise RuntimeError("La acumulación fija no reunió suficientes puntos estables.")
+    if max_points is not None and max_points > 0 and len(selected_points) > max_points:
+        indices = np.random.choice(len(selected_points), max_points, replace=False)
+        selected_points = selected_points[indices]
+        selected_colors = selected_colors[indices]
+    return selected_points, selected_colors
 
 
 def read_frame_points(
@@ -475,7 +637,60 @@ def capture_aligned_snapshot(
     connection: AuroraConnection,
     duration_s: float = 3.0,
     timeout_s: float | None = None,
-    min_frames: int = 15,
+    min_frames: int = 8,
+    voxel_size: float = 0.003,
+    stop_event: threading.Event | None = None,
+    max_distance_m: float | None = None,
+    cone_angle_deg: float | None = None,
+    forward_axis: str = "z",
+) -> AlignedCaptureResult:
+    """Capture aligned frames using the SDK's high-rate IMU/vision pose when available."""
+    augmentation_started = False
+    try:
+        from slamtec_aurora_sdk import (
+            POSE_AUGMENTATION_MODE_IMU_VISION_MIXED,
+            POSE_OUTPUT_FREQ_200HZ,
+            PoseAugmentationConfig,
+        )
+
+        config = PoseAugmentationConfig()
+        config.output_frequency = POSE_OUTPUT_FREQ_200HZ
+        config.enable_smoothing = 0
+        connection.sdk.data_provider.start_pose_augmentation(
+            POSE_AUGMENTATION_MODE_IMU_VISION_MIXED,
+            config,
+        )
+        augmentation_started = True
+    except Exception:
+        # Keep support for SDK/firmware versions without pose augmentation.
+        pass
+    try:
+        result = _capture_aligned_snapshot_impl(
+            connection,
+            duration_s=duration_s,
+            timeout_s=timeout_s,
+            min_frames=min_frames,
+            voxel_size=voxel_size,
+            stop_event=stop_event,
+            max_distance_m=max_distance_m,
+            cone_angle_deg=cone_angle_deg,
+            forward_axis=forward_axis,
+        )
+        result.pose_augmentation_used = augmentation_started
+        return result
+    finally:
+        if augmentation_started:
+            try:
+                connection.sdk.data_provider.stop_pose_augmentation()
+            except Exception:
+                pass
+
+
+def _capture_aligned_snapshot_impl(
+    connection: AuroraConnection,
+    duration_s: float = 3.0,
+    timeout_s: float | None = None,
+    min_frames: int = 8,
     voxel_size: float = 0.003,
     stop_event: threading.Event | None = None,
     max_distance_m: float | None = None,
@@ -498,7 +713,11 @@ def capture_aligned_snapshot(
     accepted = rejected = 0
     path_length = 0.0
     final_translation = final_rotation = 0.0
-    pose_to_camera = np.array([[0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]])
+    (
+        pose_to_camera,
+        base_to_camera_translation,
+        extrinsic_calibration_used,
+    ) = _base_to_camera_calibration(connection)
 
     while time.monotonic() - start < timeout_s:
         if stop_event is not None and stop_event.is_set():
@@ -527,7 +746,9 @@ def capture_aligned_snapshot(
             continue
         # Pair the depth frame with a pose interpolated at its own device time.
         # A stale latest-pose sample can smear walls during a moving scan.
-        pose = _interpolate_pose(pose_before, pose_after, int(frame_ts))
+        pose = _listener_pose_at_timestamp(connection, int(frame_ts))
+        if pose is None:
+            pose = _interpolate_pose(pose_before, pose_after, int(frame_ts))
         if pose is None:
             rejected += 1
             continue
@@ -557,7 +778,11 @@ def capture_aligned_snapshot(
         base_r = o3d.geometry.get_rotation_matrix_from_xyz(np.radians(reference_pose.rpy_deg))
         frame_r = o3d.geometry.get_rotation_matrix_from_xyz(np.radians(pose.rpy_deg))
         relative_r = pose_to_camera @ base_r.T @ frame_r @ pose_to_camera.T
-        relative_t = pose_to_camera @ base_r.T @ (pose.position - reference_pose.position)
+        relative_t = (
+            base_to_camera_translation
+            + pose_to_camera @ base_r.T @ (pose.position - reference_pose.position)
+            - relative_r @ base_to_camera_translation
+        )
         points = points @ relative_r.T + relative_t
 
         frame_cloud = o3d.geometry.PointCloud()
@@ -566,8 +791,8 @@ def capture_aligned_snapshot(
         if accepted == 0:
             fused = frame_cloud
         else:
-            frame_cloud, registered = _refine_frame_registration(frame_cloud, fused)
-            if not registered:
+            frame_cloud, registration_ok = _refine_frame_registration(frame_cloud, fused)
+            if not registration_ok:
                 rejected += 1
                 continue
             fused += frame_cloud
@@ -597,6 +822,7 @@ def capture_aligned_snapshot(
         path_length_m=path_length,
         final_translation_m=final_translation,
         final_rotation_deg=final_rotation,
+        extrinsic_calibration_used=extrinsic_calibration_used,
     )
 
 
@@ -682,17 +908,17 @@ def capture_snapshot(
     max_distance_m: float | None = None,
     cone_angle_deg: float | None = None,
     forward_axis: str = "z",
+    accumulate_static: bool = False,
 ) -> o3d.geometry.PointCloud:
     """
-    Espera hasta tener 'stabilization_frames' frames validos, calcula la misma
-    mediana temporal de cinco frames que la vista en vivo y devuelve solo el
-    ultimo resultado. No combina frames ni aplica voxel downsample por defecto.
-    Los puntos siguen en el marco local de camara, sin transformarlos por
-    pose/SLAM. Si se pide persistencia, se usa la secuencia para filtrar el
-    ultimo frame.
+    Adquiere frames durante el tiempo configurado y conserva el frame nativo
+    con mayor cobertura, salvo que se solicite acumulacion fija: en ese modo
+    conserva la cobertura del mejor frame nativo y usa mediciones estables reales para
+    mejorar o completar pixeles, sin promediar coordenadas.
+    No transforma por pose/SLAM ni aplica voxel downsample por defecto.
 
-    Si se pasa 'stop_event' y se activa, guarda el ultimo frame estabilizado
-    disponible. 'timeout_s' evita esperar indefinidamente si no llegan frames.
+    Si se pasa 'stop_event' y se activa, guarda el mejor frame recibido hasta
+    ese momento. 'timeout_s' evita esperar indefinidamente si no llegan frames.
 
     'cone_angle_deg' (opcional) limita cada frame a un cono de ese angulo
     total centrado en 'forward_axis', para excluir lo que esta fuera del
@@ -717,11 +943,17 @@ def capture_snapshot(
         raise ValueError("La persistencia requiere un voxel_size mayor que cero.")
 
     collected_points: list[np.ndarray] = []
+    static_frame_grids: list[np.ndarray] = []
+    static_color_grids: list[np.ndarray] = []
+    static_frames_seen = 0
+    static_frame_limit = 0
     latest_points: np.ndarray | None = None
     latest_colors: np.ndarray | None = None
+    latest_grid: np.ndarray | None = None
+    latest_color_grid: np.ndarray | None = None
+    best_point_count = -1
     ready = False
     valid_frames_received = 0
-    temporal_filter = TemporalFrameMedianFilter(window=5)
     start = time.monotonic()
 
     while time.monotonic() - start < timeout_s:
@@ -738,20 +970,66 @@ def capture_snapshot(
         )
         if points is None:
             continue
+        organized_points = points.copy() if points.ndim == 3 else None
+        organized_colors = (
+            np.clip(colors * 255.0, 0, 255).astype(np.uint8)
+            if colors.ndim == 3
+            else None
+        )
         if points.ndim == 3:
-            points, colors = temporal_filter.update(
-                points,
-                colors,
-                max_points=max_points_per_frame,
-            )
+            if accumulate_static:
+                if static_frame_limit == 0:
+                    target_samples = min(
+                        _STATIC_ACCUMULATION_MAX_FRAMES,
+                        max(8, int(np.ceil(capture_duration_s * _STATIC_ACCUMULATION_SAMPLE_RATE_HZ))),
+                    )
+                    bytes_per_sample = points.nbytes + points.shape[0] * points.shape[1] * 3
+                    memory_limited_samples = (
+                        _STATIC_ACCUMULATION_MEMORY_BUDGET_BYTES // max(1, bytes_per_sample)
+                    )
+                    static_frame_limit = min(target_samples, int(memory_limited_samples))
+                    if static_frame_limit < 3:
+                        raise RuntimeError(
+                            "La resolución del frame excede la memoria disponible para la "
+                            "acumulación fija. Desactiva la acumulación para guardar un frame nativo."
+                        )
+                static_frames_seen += 1
+                color_frame = np.clip(colors * 255.0, 0, 255).astype(np.uint8)
+                if len(static_frame_grids) < static_frame_limit:
+                    static_frame_grids.append(points.copy())
+                    static_color_grids.append(color_frame)
+                else:
+                    slot = int(np.random.randint(0, static_frames_seen))
+                    if slot < len(static_frame_grids):
+                        static_frame_grids[slot] = points.copy()
+                        static_color_grids[slot] = color_frame
+            valid = np.isfinite(points).all(axis=2)
+            points = points[valid]
+            colors = colors[valid]
+        else:
+            valid = np.isfinite(points).all(axis=1)
+            points = points[valid]
+            colors = colors[valid]
         if not len(points):
             continue
 
         valid_frames_received += 1
         if persistence_ratio > 0:
             collected_points.append(points)
-        latest_points = points
-        latest_colors = colors
+        # Keep one complete sensor frame. Selecting by valid coverage avoids
+        # temporal blending while favoring frames with fewer missing returns.
+        if len(points) >= best_point_count:
+            if max_points_per_frame is not None and len(points) > max_points_per_frame:
+                indices = np.random.choice(len(points), max_points_per_frame, replace=False)
+                latest_points = points[indices].copy()
+                latest_colors = colors[indices].copy()
+            else:
+                latest_points = points.copy()
+                latest_colors = colors.copy()
+            if organized_points is not None and organized_colors is not None:
+                latest_grid = organized_points
+                latest_color_grid = organized_colors
+            best_point_count = len(points)
         ready = (
             valid_frames_received >= stabilization_frames
             and time.monotonic() - start >= capture_duration_s
@@ -773,7 +1051,26 @@ def capture_snapshot(
             "antes del tiempo limite. Verifica la conexion con el sensor."
         )
 
+    if accumulate_static and static_frames_seen == 0:
+        raise RuntimeError(
+            "El sensor no entregó frames organizados para acumular por píxel. "
+            "Desactiva la acumulación fija y captura un frame nativo."
+        )
+
     assert latest_points is not None and latest_colors is not None
+    if (
+        accumulate_static
+        and len(static_frame_grids) >= 3
+        and latest_grid is not None
+        and latest_color_grid is not None
+    ):
+        latest_points, latest_colors = _fuse_static_frames(
+            static_frame_grids,
+            static_color_grids,
+            latest_grid,
+            latest_color_grid,
+            max_points=max_points_per_frame,
+        )
     if persistence_ratio > 0:
         num_frames = len(collected_points)
         frame_keys = [np.unique(_voxel_keys(frame, voxel_size)) for frame in collected_points]
@@ -786,7 +1083,7 @@ def capture_snapshot(
         latest_colors = latest_colors[keep]
         if not len(latest_points):
             raise RuntimeError(
-                "Ningun punto del ultimo frame persistio lo suficiente durante la captura. "
+                "Ningun punto del frame elegido persistio lo suficiente durante la captura. "
                 "Reduce la persistencia requerida o repite la captura."
             )
 

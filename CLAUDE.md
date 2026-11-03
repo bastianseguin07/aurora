@@ -146,10 +146,11 @@ puntos real renderizada en el navegador). Dos servidores en threads propios:
 SDK oficial no esta en PyPI (se compila a mano desde `py_aurora_remote`, ver
 README seccion 3.1). `connect`/`disconnect` (IP, default `192.168.11.1`),
 `read_frame_points_and_colors` (un frame, color de camara RGB o gris neutro si
-no hay imagen), `capture_snapshot` (espera 15 frames validos y el tiempo minimo
-configurado en Medicion rapida; aplica mediana temporal de cinco y guarda una
-vista), `capture_aligned_snapshot` (opcional: registra frames individuales
-con poses SLAM y los fusiona en el marco de la primera vista),
+no hay imagen), `capture_snapshot` (adquiere frames durante el tiempo minimo
+configurado en Medicion rapida; opcionalmente acumula una cantidad de frames
+proporcional al tiempo; conserva la cobertura del mejor frame nativo y mejora/completa
+pixeles con consenso estable usando mediciones reales, sin promediar coordenadas), `capture_aligned_snapshot`
+(experimental: registra frames con poses SLAM y los fusiona en el marco de la primera vista),
 `stream_frames` (generador para vivo). Si el SDK no esta instalado se lanza
 `AuroraNotAvailable` con mensaje claro; el resto de la app sigue funcionando
 sin sensor (comparar `.ply` ya existentes, GUI, CLI).

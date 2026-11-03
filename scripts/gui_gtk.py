@@ -771,6 +771,11 @@ class AuroraGUI:
 
         self.stack.add_titled(self._build_quick_measurement_page(), "medicion_rapida", "Medicion rapida")
         self.stack.add_titled(self._build_capture_page(), "captura", "Captura")
+        self.stack.add_titled(
+            self._build_mobile_capture_experimental_page(),
+            "captura_movil_experimental",
+            "Captura movil experimental",
+        )
         self.stack.add_titled(self._build_imu_alignment_page(), "alineacion_imu", "Guia de pose IMU")
         self.stack.add_titled(self._build_alignment_page(), "alineacion", "Alineacion")
         self.analysis_settings_widget = self._build_analysis_controls()
@@ -781,6 +786,7 @@ class AuroraGUI:
         for page_name in (
             "medicion_rapida",
             "captura",
+            "captura_movil_experimental",
             "alineacion_imu",
             "alineacion",
             "configuracion",
@@ -913,6 +919,9 @@ class AuroraGUI:
         add_page("Captura", "captura")
         add_page("Guia de pose IMU (reposicionar sensor)", "alineacion_imu")
         add_page("Alineacion por puntos (respaldo)", "alineacion")
+
+        add_header("Experimental")
+        add_page("Captura movil alineada", "captura_movil_experimental")
 
         add_header("Configuracion")
         add_page("Parametros avanzados", "configuracion")
@@ -1091,27 +1100,18 @@ class AuroraGUI:
         page.pack_start(method_frame, False, True, 0)
         self._on_results_method_changed()
 
-        log_frame, log_box = self._section("Registro del calculo")
-        log_expander = Gtk.Expander(label="Detalles tecnicos")
-        log_expander.set_expanded(False)
-        log_scroller = Gtk.ScrolledWindow()
-        log_scroller.set_min_content_height(220)
-        log_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        # Thickness thresholds are most useful next to the calculated result.
+        # Move the existing control panel here instead of duplicating its state.
+        thickness_frame = self.thickness_color_frame
+        thickness_parent = thickness_frame.get_parent()
+        if thickness_parent is not None:
+            thickness_parent.remove(thickness_frame)
+        page.pack_start(thickness_frame, False, True, 0)
+
+        # Keep the internal calculation log queue operational without showing
+        # the technical log panel in the operator-facing Results page.
         self.log_view = Gtk.TextView()
-        self.log_view.get_style_context().add_class("technical-log")
-        self.log_view.set_editable(False)
-        self.log_view.set_monospace(True)
-        self.log_view.set_left_margin(6)
-        self.log_view.set_right_margin(6)
-        self.log_view.set_top_margin(6)
-        self.log_view.set_bottom_margin(6)
-        self.log_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.log_buffer = self.log_view.get_buffer()
-        log_scroller.get_style_context().add_class("technical-log")
-        log_scroller.add(self.log_view)
-        log_expander.add(log_scroller)
-        log_box.pack_start(log_expander, False, True, 0)
-        page.pack_start(log_frame, False, True, 0)
 
         return self._scrolled(page)
 
@@ -1208,21 +1208,22 @@ class AuroraGUI:
                 seconds, Gtk.PositionType.BOTTOM, str(seconds)
             )
         self.quick_capture_duration_scale.set_tooltip_text(
-            "Tiempo mínimo de adquisición (1–30 s). En modo normal estabiliza una vista; "
-            "con Captura móvil alineada registra y fusiona frames con la pose SLAM."
+            "Tiempo de adquisición (1–30 s) para la captura fija."
         )
         capture_time_row.pack_start(self.quick_capture_duration_scale, True, True, 0)
         capture_time_row.pack_start(Gtk.Label(label="segundos"), False, False, 0)
-        self.quick_aligned_capture_check = Gtk.CheckButton(
-            label="Captura móvil alineada (fusionar frames con pose SLAM)"
+        static_capture_row = self._row(files_box)
+        self.quick_static_accumulate_check = Gtk.CheckButton(
+            label="Acumular captura fija"
         )
-        self.quick_aligned_capture_check.set_tooltip_text(
-            "Actívala para mover el Aurora lentamente alrededor de la zona durante la captura. "
-            "Cada frame se transforma con su pose SLAM y se fusiona en el marco del primer frame. "
-            "Requiere tracking continuo; los saltos grandes se descartan."
+        self.quick_static_accumulate_check.set_active(True)
+        self.quick_static_accumulate_check.set_tooltip_text(
+            "Cuanto más dure la captura, más frames distribuidos se comparan, dentro de un "
+            "límite de memoria. Conserva toda la cobertura del mejor frame nativo y usa "
+            "mediciones reales estables para completar o mejorar píxeles. Desactívala "
+            "si necesitas un único frame nativo o si algo de la escena se mueve."
         )
-        capture_align_row = self._row(files_box)
-        capture_align_row.pack_start(self.quick_aligned_capture_check, False, False, 0)
+        static_capture_row.pack_start(self.quick_static_accumulate_check, False, False, 0)
         imu_row = self._row(files_box)
         self.quick_imu_compensate_check = Gtk.CheckButton(
             label="Compensar automaticamente el movimiento del sensor con IMU/SLAM"
@@ -1880,11 +1881,9 @@ class AuroraGUI:
         row.pack_start(self.capture_status_label, True, True, 0)
         row.pack_start(
             self._info_button(
-                "En Medición rápida configura de 1 a 30 segundos. Por defecto se captura "
-                "una vista estabilizada; opcionalmente activa Captura móvil alineada para "
-                "mover el Aurora lentamente y fusionar frames usando la pose SLAM. Mantén "
-                "el tracking continuo y evita saltos bruscos. Detener captura guarda los "
-                "frames aceptados hasta ese momento."
+                "En Medición rápida configura de 1 a 30 segundos. Por defecto se acumulan "
+                "profundidades estables si el sensor y la escena están quietos. La captura móvil "
+                "alineada está en la sección Experimental."
             ),
             False,
             False,
@@ -1912,7 +1911,7 @@ class AuroraGUI:
 
         capture_options_panel, capture_options_box = self._capture_panel(
             "Ajustes de captura",
-            "Espera el tiempo configurado en Medición rápida y aplica una mediana temporal de cinco frames.",
+            "La captura fija conserva mediciones estables entre frames; la móvil registra frames con SLAM.",
         )
         page.pack_start(capture_options_panel, False, True, 0)
 
@@ -1924,10 +1923,13 @@ class AuroraGUI:
         row.pack_start(self.capture_persistence_entry, False, False, 0)
         row.pack_start(
             self._info_button(
-                "La captura espera 15 frames válidos y guarda el último con la misma "
-                "mediana temporal de cinco frames que la vista en vivo. Si se detiene antes, "
-                "guarda el último frame estabilizado disponible.\n\n"
-                "Persistencia minima: fraccion de los 15 frames recibidos en la que un punto debe "
+                "La captura fija espera 15 frames válidos y aumenta las muestras con el tiempo de captura, "
+                "dentro de un límite de memoria. "
+                "Mantiene la cobertura completa del mejor frame nativo y, donde hay consenso, "
+                "usa una medición real estable por píxel; puede completar retornos ausentes. "
+                "No promedia coordenadas ni descarta píxeles del frame de respaldo. "
+                "Si se detiene antes de reunir 3 muestras estables, guarda el mejor frame individual.\n\n"
+                "Persistencia minima: fraccion de los frames recibidos en la que un punto debe "
                 "aparecer (en la misma zona) para conservarse. Un valor mas alto (por "
                 "ejemplo 0.6-0.8) descarta mejor el polvo en el aire u otro ruido "
                 "transitorio, ya que esas particulas no aparecen siempre en el mismo "
@@ -2045,6 +2047,75 @@ class AuroraGUI:
         qr_side_box.pack_start(self.stream_url_label, False, False, 0)
         row.pack_start(qr_side_box, False, False, 0)
 
+        return self._scrolled(page)
+
+    def _build_mobile_capture_experimental_page(self) -> Gtk.Widget:
+        page = self._new_page()
+        note_frame, note_box = self._section("Sección experimental · captura móvil alineada")
+        note = Gtk.Label(
+            label=(
+                "Este modo fusiona frames mientras mueves el Aurora. Es experimental: un "
+                "tracking o registro insuficiente puede producir superficies duplicadas. "
+                "Muévete despacio, mantén solapamiento entre frames y revisa el PLY antes de medir. "
+                "Conecta el sensor desde Captura. La captura fija recomendada está en Medición rápida."
+            ),
+            xalign=0,
+        )
+        note.set_line_wrap(True)
+        note_box.pack_start(note, False, True, 0)
+        page.pack_start(note_frame, False, True, 0)
+
+        controls_frame, controls_box = self._section("Captura alineada")
+        row = self._row(controls_box)
+        row.pack_start(Gtk.Label(label="Tiempo de captura:"), False, False, 0)
+        self.experimental_capture_duration_scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL, 1.0, 30.0, 1.0
+        )
+        self.experimental_capture_duration_scale.set_value(3.0)
+        self.experimental_capture_duration_scale.set_digits(0)
+        self.experimental_capture_duration_scale.set_draw_value(True)
+        self.experimental_capture_duration_scale.set_value_pos(Gtk.PositionType.RIGHT)
+        self.experimental_capture_duration_scale.set_hexpand(True)
+        for seconds in (1, 5, 10, 15, 20, 25, 30):
+            self.experimental_capture_duration_scale.add_mark(
+                seconds, Gtk.PositionType.BOTTOM, str(seconds)
+            )
+        row.pack_start(self.experimental_capture_duration_scale, True, True, 0)
+        row.pack_start(Gtk.Label(label="segundos"), False, False, 0)
+
+        row = self._row(controls_box)
+        self.experimental_mobile_base_button = Gtk.Button(label="Capturar ANTES (móvil)")
+        self.experimental_mobile_base_button.set_sensitive(self.sensor_connection is not None)
+        self.experimental_mobile_base_button.connect(
+            "clicked",
+            lambda _button: self._capture_clicked(
+                "base", aligned_multiview=True,
+                duration_s=self.experimental_capture_duration_scale.get_value(),
+            ),
+        )
+        row.pack_start(self.experimental_mobile_base_button, False, False, 0)
+        self.experimental_mobile_updated_button = Gtk.Button(label="Capturar DESPUÉS (móvil)")
+        self.experimental_mobile_updated_button.set_sensitive(self.sensor_connection is not None)
+        self.experimental_mobile_updated_button.connect(
+            "clicked",
+            lambda _button: self._capture_clicked(
+                "updated", aligned_multiview=True,
+                duration_s=self.experimental_capture_duration_scale.get_value(),
+            ),
+        )
+        row.pack_start(self.experimental_mobile_updated_button, False, False, 0)
+        self.experimental_mobile_stop_button = Gtk.Button(label="Detener captura móvil")
+        self.experimental_mobile_stop_button.set_sensitive(False)
+        self.experimental_mobile_stop_button.connect(
+            "clicked", lambda _button: self._stop_capture_clicked()
+        )
+        row.pack_start(self.experimental_mobile_stop_button, False, False, 0)
+        self.experimental_mobile_status_label = Gtk.Label(
+            label="Conecta el Aurora desde la sección Captura.", xalign=0
+        )
+        self.experimental_mobile_status_label.set_line_wrap(True)
+        controls_box.pack_start(self.experimental_mobile_status_label, False, True, 4)
+        page.pack_start(controls_frame, False, True, 0)
         return self._scrolled(page)
 
     # -- Pagina: Alineacion IMU ----------------------------------------------------
@@ -3831,7 +3902,8 @@ class AuroraGUI:
 
     def _build_visualization_controls(self, page: Gtk.Box) -> None:
 
-        color_frame, color_box = self._section("Color del espesor")
+        color_frame, color_box = self._section("Configurar espesor (cm) y mapa de colores")
+        self.thickness_color_frame = color_frame
 
         row = self._row(color_box)
         self.color_continuous_rb = Gtk.RadioButton.new_with_label_from_widget(None, "Escala continua")
@@ -3861,6 +3933,16 @@ class AuroraGUI:
             False,
             0,
         )
+        color_note = Gtk.Label(
+            label=(
+                "Define el espesor objetivo o los umbrales en centímetros para clasificar el mapa. "
+                "Estos ajustes cambian los colores y sus rangos; las estadísticas conservan las "
+                "distancias medidas entre las nubes."
+            ),
+            xalign=0,
+        )
+        color_note.set_line_wrap(True)
+        color_box.pack_start(color_note, False, True, 2)
 
         self.band_revealer = Gtk.Revealer()
         self.band_revealer.set_transition_type(Gtk.RevealerTransitionType.NONE)
@@ -4840,6 +4922,10 @@ class AuroraGUI:
             self.quick_capture_base_button.set_sensitive(connected and not connecting)
         if hasattr(self, "quick_capture_updated_button"):
             self.quick_capture_updated_button.set_sensitive(connected and not connecting)
+        for name in ("experimental_mobile_base_button", "experimental_mobile_updated_button"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.set_sensitive(connected and not connecting)
 
     def _toggle_sensor_connection(self, automatic: bool = False) -> None:
         if self.sensor_connection is not None:
@@ -4899,7 +4985,12 @@ class AuroraGUI:
         self.clear_live_baseline_button.set_sensitive(False)
         self.save_live_clouds_button.set_sensitive(False)
 
-    def _capture_clicked(self, target: str) -> None:
+    def _capture_clicked(
+        self,
+        target: str,
+        aligned_multiview: bool = False,
+        duration_s: float | None = None,
+    ) -> None:
         if self.sensor_connection is None:
             self._show_warning("Sensor no conectado", "Conecta el sensor antes de capturar.")
             return
@@ -4913,8 +5004,13 @@ class AuroraGUI:
             self._show_error("Parametros invalidos", "La persistencia debe estar entre 0 y 1.")
             return
 
-        capture_duration_s = float(self.quick_capture_duration_scale.get_value())
-        aligned_multiview = self.quick_aligned_capture_check.get_active()
+        capture_duration_s = float(
+            duration_s if duration_s is not None else self.quick_capture_duration_scale.get_value()
+        )
+        self._active_capture_aligned = aligned_multiview
+        accumulate_static = (
+            self.quick_static_accumulate_check.get_active() and not aligned_multiview
+        )
 
         cone_angle_deg = None
         max_distance_m = None
@@ -4940,6 +5036,8 @@ class AuroraGUI:
         self.capture_base_button.set_sensitive(False)
         self.capture_updated_button.set_sensitive(False)
         self.stop_capture_button.set_sensitive(True)
+        if hasattr(self, "experimental_mobile_stop_button"):
+            self.experimental_mobile_stop_button.set_sensitive(aligned_multiview)
         self.capture_stop_event = threading.Event()
         label = "tunel original" if target == "base" else "tunel con shotcrete"
         self._start_capture_progress(
@@ -4950,7 +5048,11 @@ class AuroraGUI:
             + (
                 "modo móvil alineado con pose SLAM; mueve el sensor lentamente..."
                 if aligned_multiview
-                else "se esperan 15 frames validos y se aplica mediana temporal de 5..."
+                else (
+                    "captura fija acumulada; mantén quietos sensor y escena..."
+                    if accumulate_static
+                    else "se conserva un único frame nativo..."
+                )
             )
             + ("" if aligned_multiview else f" persistencia >= {persistence_ratio:.2f}...")
         )
@@ -4963,7 +5065,7 @@ class AuroraGUI:
                     aligned_result = aurora_sensor.capture_aligned_snapshot(
                         self.sensor_connection,
                         duration_s=capture_duration_s,
-                        timeout_s=max(10.0, capture_duration_s + 5.0),
+                        timeout_s=max(15.0, capture_duration_s + 10.0),
                         stop_event=stop_event,
                         max_distance_m=max_distance_m,
                         cone_angle_deg=cone_angle_deg,
@@ -4974,7 +5076,9 @@ class AuroraGUI:
                         f"{aligned_result.rejected_frames} rechazados, recorrido "
                         f"{aligned_result.path_length_m:.2f} m; desplazamiento final "
                         f"{aligned_result.final_translation_m:.2f} m / "
-                        f"{aligned_result.final_rotation_deg:.1f}°."
+                        f"{aligned_result.final_rotation_deg:.1f}°; pose "
+                        f"{'200 Hz' if aligned_result.pose_augmentation_used else 'normal'}, "
+                        f"extrínseca {'SDK' if aligned_result.extrinsic_calibration_used else 'fallback'}."
                     )
                     self._ui(
                         self._on_capture_done,
@@ -4994,6 +5098,7 @@ class AuroraGUI:
                     max_distance_m=max_distance_m,
                     cone_angle_deg=cone_angle_deg,
                     forward_axis=forward_axis,
+                    accumulate_static=accumulate_static,
                 )
                 try:
                     ref_image, ref_point_grid = aurora_sensor.capture_reference_frame(
@@ -5015,20 +5120,31 @@ class AuroraGUI:
         if self.capture_stop_event is not None:
             self.capture_stop_event.set()
             self.stop_capture_button.set_sensitive(False)
-            self._capture_progress_stage = "Guardando ultimo frame estabilizado"
+            if hasattr(self, "experimental_mobile_stop_button"):
+                self.experimental_mobile_stop_button.set_sensitive(False)
+            self._capture_progress_stage = (
+                "Cerrando fusion movil" if getattr(self, "_active_capture_aligned", False)
+                else "Guardando captura fija recibida"
+            )
             self._capture_progress_duration_s = None
             self._update_capture_progress()
-            self._log("Captura detenida manualmente; se guardara el ultimo frame estabilizado.")
+            self._log("Captura detenida manualmente; se procesarán los frames válidos recibidos hasta ahora.")
 
     def _on_capture_done(self, target: str, cloud, ref_image=None, ref_point_grid=None, ref_pose=None) -> None:
         self._finish_capture_progress()
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
         self.stop_capture_button.set_sensitive(False)
+        if hasattr(self, "experimental_mobile_stop_button"):
+            self.experimental_mobile_stop_button.set_sensitive(False)
         self.capture_stop_event = None
         self.capture_status_label.set_text(
             "Captura lista. Selecciona dónde guardar la nube..."
         )
+        if hasattr(self, "experimental_mobile_status_label"):
+            self.experimental_mobile_status_label.set_text(
+                "Captura lista. Selecciona dónde guardar la nube..."
+            )
         if hasattr(self, "quick_capture_status_label"):
             self.quick_capture_status_label.set_text(
                 "Captura lista. Elige dónde guardar la nube..."
@@ -5125,8 +5241,12 @@ class AuroraGUI:
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
         self.stop_capture_button.set_sensitive(False)
+        if hasattr(self, "experimental_mobile_stop_button"):
+            self.experimental_mobile_stop_button.set_sensitive(False)
         self.capture_stop_event = None
         self.capture_status_label.set_text("")
+        if hasattr(self, "experimental_mobile_status_label"):
+            self.experimental_mobile_status_label.set_text(f"Error de captura: {exc}")
         if hasattr(self, "quick_capture_status_label"):
             self.quick_capture_status_label.set_text(f"Error al capturar: {exc}")
         self._show_error("Error de captura", str(exc))
@@ -5145,6 +5265,10 @@ class AuroraGUI:
         if hasattr(self, "quick_capture_base_button"):
             self.quick_capture_base_button.set_sensitive(False)
             self.quick_capture_updated_button.set_sensitive(False)
+        for name in ("experimental_mobile_base_button", "experimental_mobile_updated_button"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.set_sensitive(False)
         if self._capture_progress_timer is None:
             self._capture_progress_timer = GLib.timeout_add_seconds(
                 1, self._update_capture_progress
@@ -5169,6 +5293,8 @@ class AuroraGUI:
         self.capture_status_label.set_text(text)
         if hasattr(self, "quick_capture_status_label"):
             self.quick_capture_status_label.set_text(text)
+        if hasattr(self, "experimental_mobile_status_label"):
+            self.experimental_mobile_status_label.set_text(text)
         return GLib.SOURCE_CONTINUE
 
     def _finish_capture_progress(self) -> None:
@@ -5186,6 +5312,10 @@ class AuroraGUI:
             connected = self.sensor_connection is not None
             self.quick_capture_base_button.set_sensitive(connected)
             self.quick_capture_updated_button.set_sensitive(connected)
+            for name in ("experimental_mobile_base_button", "experimental_mobile_updated_button"):
+                button = getattr(self, name, None)
+                if button is not None:
+                    button.set_sensitive(connected)
 
     # ------------------------------------------------------- Captura en vivo (MVP)
 
