@@ -992,12 +992,6 @@ class AuroraGUI:
         self.open_result_viewer_button.set_sensitive(False)
         self.open_result_viewer_button.connect("clicked", lambda _b: self._open_active_result_visualization())
         stats_box.pack_start(self.open_result_viewer_button, False, False, 4)
-        self.result_mesh_actions = self._row(stats_box)
-        self.result_mesh_actions.set_no_show_all(True)
-        self.result_mesh_inspect_button = Gtk.Button(label="Inspeccionar mallas 3D")
-        self.result_mesh_inspect_button.connect("clicked", lambda _b: self._view_raycast_meshes())
-        self.result_mesh_actions.pack_start(self.result_mesh_inspect_button, False, False, 0)
-        self.result_mesh_actions.hide()
         page.pack_start(stats_frame, False, True, 0)
 
         method_frame, method_box = self._section("Metodo y parametros principales")
@@ -2289,8 +2283,6 @@ class AuroraGUI:
             self.generate_report_button.set_sensitive(False)
             self.open_result_viewer_button.set_sensitive(False)
             self.open_result_viewer_button.set_label("Abrir vista 3D")
-            self.result_mesh_actions.set_no_show_all(True)
-            self.result_mesh_actions.hide()
             self._finish_calculation_progress(False)
         if hasattr(self, "raycast_status_label"):
             self.raycast_status_label.set_text("(nada calculado todavia)")
@@ -4397,8 +4389,6 @@ class AuroraGUI:
         self.generate_report_button.set_sensitive(True)
         self.open_result_viewer_button.set_sensitive(True)
         self.open_result_viewer_button.set_label("Ver mapa de espesor 3D")
-        self.result_mesh_actions.set_no_show_all(False)
-        self.result_mesh_actions.show_all()
         self.quick_status_label.set_text(
             f"Medicion con malla lista: promedio {stats.mean * 100:.2f} cm, "
             f"mediana {stats.median * 100:.2f} cm, desviación estándar {stats.std * 100:.2f} cm."
@@ -4428,53 +4418,6 @@ class AuroraGUI:
         if not self.raycast_result:
             return
         self._show_result_in_viewer()
-
-    def _view_raycast_meshes(self) -> None:
-        if not self.raycast_result:
-            return
-        base_source = self.raycast_result.base_mesh
-        updated_source = self.raycast_result.updated_mesh
-        temp_dir = Path(tempfile.mkdtemp(prefix="aurora_mesh_inspect_"))
-
-        def worker():
-            try:
-                import open3d as o3d
-
-                base_mesh = o3d.geometry.TriangleMesh(base_source)
-                updated_mesh = o3d.geometry.TriangleMesh(updated_source)
-                base_mesh.paint_uniform_color((0.55, 0.6, 0.65))
-                updated_mesh.paint_uniform_color((1.0, 0.549, 0.0))
-                base_path = temp_dir / "malla_antes.ply"
-                updated_path = temp_dir / "malla_despues.ply"
-                if not o3d.io.write_triangle_mesh(str(base_path), base_mesh):
-                    raise RuntimeError("No se pudo guardar temporalmente la malla ANTES.")
-                if not o3d.io.write_triangle_mesh(str(updated_path), updated_mesh):
-                    raise RuntimeError("No se pudo guardar temporalmente la malla DESPUES.")
-                self._ui(
-                    self._launch_viewer_process,
-                    "meshes",
-                    [str(base_path), str(updated_path)],
-                    "Aurora - Mallas reconstruidas (gris = original, naranja = con shotcrete)",
-                    "No se pudieron abrir las mallas",
-                    str(temp_dir),
-                    {
-                        "title": "Mallas reconstruidas",
-                        "rows": [
-                            ((0.55, 0.60, 0.65), "ANTES", "Original"),
-                            ((1.0, 0.549, 0.0), "DESPUÉS", "Con shotcrete"),
-                        ],
-                    },
-                    thickness_stats={
-                        "mean_cm": self.raycast_result.stats.mean * 100.0,
-                        "median_cm": self.raycast_result.stats.median * 100.0,
-                        "std_cm": self.raycast_result.stats.std * 100.0,
-                    },
-                )
-            except Exception as exc:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                self._ui(self._show_error, "No se pudieron abrir las mallas", str(exc))
-
-        threading.Thread(target=worker, daemon=True).start()
 
     # -- Helpers de layout -----------------------------------------------------
 
@@ -5454,8 +5397,6 @@ class AuroraGUI:
         self.cards_row.set_no_show_all(False)
         self.cards_row.show_all()
         self.results_empty_label.hide()
-        self.result_mesh_actions.set_no_show_all(True)
-        self.result_mesh_actions.hide()
         self.open_result_viewer_button.set_sensitive(True)
         self.open_result_viewer_button.set_label("Abrir vista 3D")
         self.status_label.set_markup(
