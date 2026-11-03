@@ -30,6 +30,7 @@ def main() -> int:
         poisson_depth=payload["poisson_depth"],
         mesh_smoothing_iterations=payload["mesh_smoothing_iterations"],
         delaunay_max_edge_trim_factor=payload["delaunay_max_edge_trim_factor"],
+        color_spec=payload.get("color_spec"),
     )
     try:
         result = run_raycast_pipeline(params, log=lambda message: print(message, flush=True))

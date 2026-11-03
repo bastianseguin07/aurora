@@ -990,6 +990,7 @@ class RaycastPipelineParams:
     ray_method: str = "origin"
     delaunay_max_edge_trim_factor: float = 4.0
     mesh_smoothing_iterations: int = 0
+    color_spec: dict | None = None
 
 
 @dataclass
@@ -1387,7 +1388,13 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
 
     hit_cloud = o3d.geometry.PointCloud()
     hit_cloud.points = o3d.utility.Vector3dVector(hit_points)
-    heatmap_cloud = build_heatmap_cloud(hit_cloud, distances, params.max_distance)
+    spec = params.color_spec or {"mode": "continuous", "max_distance_m": params.max_distance}
+    if spec.get("mode") == "six":
+        heatmap_cloud = build_heatmap_cloud_six_bands(hit_cloud, distances, float(spec["target_m"]))
+    elif spec.get("mode") == "three":
+        heatmap_cloud = build_heatmap_cloud_banded(hit_cloud, distances, float(spec["low_m"]), float(spec["high_m"]))
+    else:
+        heatmap_cloud = build_heatmap_cloud(hit_cloud, distances, spec.get("max_distance_m"))
     heatmap_path = params.output_dir / "thickness_raycast_heatmap.ply"
     o3d.io.write_point_cloud(str(heatmap_path), heatmap_cloud)
     log(f"Heatmap guardado en: {heatmap_path}")

@@ -4242,6 +4242,7 @@ class AuroraGUI:
             poisson_depth=int(poisson_depth),
             mesh_smoothing_iterations=int(smooth_iterations),
             delaunay_max_edge_trim_factor=float(delaunay_trim),
+            color_spec=self._selected_preview_heatmap_spec(),
         )
 
         self._invalidate_results()
@@ -4276,6 +4277,7 @@ class AuroraGUI:
                 "poisson_depth": params.poisson_depth,
                 "mesh_smoothing_iterations": params.mesh_smoothing_iterations,
                 "delaunay_max_edge_trim_factor": params.delaunay_max_edge_trim_factor,
+                "color_spec": params.color_spec,
             }
             self._raycast_log("Iniciando calculo aislado; la interfaz seguira disponible...")
             process = subprocess.Popen(
