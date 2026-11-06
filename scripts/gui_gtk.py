@@ -1216,7 +1216,7 @@ class AuroraGUI:
         self.quick_static_accumulate_check = Gtk.CheckButton(
             label="Acumular captura fija"
         )
-        self.quick_static_accumulate_check.set_active(True)
+        self.quick_static_accumulate_check.set_active(False)
         self.quick_static_accumulate_check.set_tooltip_text(
             "Cuanto más dure la captura, más frames distribuidos se comparan, dentro de un "
             "límite de memoria. Conserva toda la cobertura del mejor frame nativo y usa "
@@ -1881,8 +1881,8 @@ class AuroraGUI:
         row.pack_start(self.capture_status_label, True, True, 0)
         row.pack_start(
             self._info_button(
-                "En Medición rápida configura de 1 a 60 segundos. Por defecto se acumulan "
-                "profundidades estables si el sensor y la escena están quietos. La captura móvil "
+                "En Medición rápida configura de 1 a 60 segundos. Por defecto se guarda "
+                "un solo frame nativo, sin suavizado ni mezcla de frames. La captura móvil "
                 "alineada está en la sección Experimental."
             ),
             False,
@@ -1911,7 +1911,7 @@ class AuroraGUI:
 
         capture_options_panel, capture_options_box = self._capture_panel(
             "Ajustes de captura",
-            "La captura fija conserva mediciones estables entre frames; la móvil registra frames con SLAM.",
+            "Por defecto guarda un frame nativo; la acumulación y la captura móvil son opcionales.",
         )
         page.pack_start(capture_options_panel, False, True, 0)
 
@@ -1923,7 +1923,10 @@ class AuroraGUI:
         row.pack_start(self.capture_persistence_entry, False, False, 0)
         row.pack_start(
             self._info_button(
-                "La captura fija espera 15 frames válidos y aumenta las muestras con el tiempo de captura, "
+                "Sin acumulación, espera al menos 15 frames válidos y el tiempo elegido; "
+                "guarda el frame nativo con más puntos válidos, sin mediana ni mezcla de frames. "
+                "Deja la persistencia en 0 y los filtros desactivados para conservar todos sus puntos válidos.\n\n"
+                "Si activas Acumular captura fija, aumenta las muestras con el tiempo de captura, "
                 "dentro de un límite de memoria. "
                 "Mantiene la cobertura completa del mejor frame nativo y, donde hay consenso, "
                 "usa una medición real estable por píxel; puede completar retornos ausentes. "

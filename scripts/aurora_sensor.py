@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import threading
 import time
-from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -339,7 +338,7 @@ def read_frame_points(
 ) -> np.ndarray | None:
     """
     Espera y devuelve un frame de puntos 3D (Nx3) del sensor, filtrando puntos
-    invalidos (ceros, NaN/inf, fuera del rango 0.1m-max_distance_m). Devuelve
+    invalidos (ceros, NaN/inf) y aplicando solo los recortes solicitados. Devuelve
     None si no hubo un frame disponible dentro del timeout.
 
     'cone_angle_deg' (opcional) descarta puntos fuera de un cono de ese
@@ -364,8 +363,8 @@ def read_frame_points(
     valid = ~np.all(points == 0, axis=1)
     valid &= np.all(np.isfinite(points), axis=1)
     distance = np.linalg.norm(points, axis=1)
-    max_range = max_distance_m if (max_distance_m is not None and max_distance_m > 0) else 50.0
-    valid &= (distance > 0.1) & (distance < max_range)
+    if max_distance_m is not None and max_distance_m > 0:
+        valid &= distance < max_distance_m
 
     if cone_angle_deg is not None:
         if cone_angle_deg <= 0 or cone_angle_deg > 180:
@@ -487,57 +486,6 @@ def _colorize_from_camera(
     return colors
 
 
-class TemporalFrameMedianFilter:
-    """Median-filter an organized Aurora frame over a short time window."""
-
-    def __init__(self, window: int = 5):
-        self.window = max(1, int(window))
-        self._frames: deque[tuple[np.ndarray, np.ndarray]] = deque(maxlen=self.window)
-        self._shape: tuple[int, int, int] | None = None
-
-    def update(
-        self,
-        points_grid: np.ndarray,
-        colors_grid: np.ndarray,
-        max_points: int | None = None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        points = np.asarray(points_grid, dtype=np.float32)
-        colors = np.asarray(colors_grid, dtype=np.float32)
-        if points.ndim != 3 or points.shape[-1] != 3 or colors.shape != points.shape:
-            raise ValueError("La mediana temporal requiere grids de puntos y colores HxWx3 compatibles.")
-        if self._shape != points.shape:
-            self._frames.clear()
-            self._shape = points.shape
-        self._frames.append((points.copy(), colors.copy()))
-
-        point_stack = np.stack([frame[0] for frame in self._frames])
-        color_stack = np.stack([frame[1] for frame in self._frames])
-        valid_stack = np.isfinite(point_stack).all(axis=3)
-        valid_count = valid_stack.sum(axis=0)
-        minimum_observations = (len(self._frames) + 1) // 2
-        valid = valid_count >= minimum_observations
-        # Sorting the short time axis is faster than nanmedian on the full grid.
-        point_values = np.where(valid_stack[..., None], point_stack, np.inf)
-        color_values = np.where(valid_stack[..., None], color_stack, np.inf)
-        point_values.sort(axis=0)
-        color_values.sort(axis=0)
-        median_index = np.maximum(valid_count - 1, 0) // 2
-        gather_index = np.broadcast_to(
-            median_index[None, :, :, None], (1, *median_index.shape, 3)
-        )
-        filtered_points = np.take_along_axis(point_values, gather_index, axis=0)[0]
-        filtered_colors = np.take_along_axis(color_values, gather_index, axis=0)[0]
-        filtered_points[~valid] = np.nan
-        filtered_colors[~valid] = 0.0
-
-        indices = np.flatnonzero(valid)
-        if max_points is not None and max_points > 0 and len(indices) > max_points:
-            indices = indices[np.linspace(0, len(indices) - 1, max_points, dtype=np.int64)]
-        flat_points = filtered_points.reshape((-1, 3))
-        flat_colors = filtered_colors.reshape((-1, 3))
-        return flat_points[indices].copy(), flat_colors[indices].copy()
-
-
 def read_frame_points_and_colors(
     connection: AuroraConnection,
     max_points: int | None = None,
@@ -555,8 +503,8 @@ def read_frame_points_and_colors(
     SDK). Si no hay imagen RGB correlacionada, usa gris neutro para que la
     captura no parezca una medicion coloreada por altura. Con
     'preserve_organization=True', una nube organizada se devuelve como grids
-    HxWx3; los puntos invalidos llevan NaN para poder estabilizar la lectura
-    temporal por pixel en la vista en vivo.
+    HxWx3; los puntos invalidos llevan NaN. No mezcla frames ni modifica
+    las coordenadas validas recibidas del SDK.
     """
     _, _, DEPTHCAM_FRAME_TYPE_POINT3D, _ = _import_sdk()
     sdk = connection.sdk
@@ -590,8 +538,8 @@ def read_frame_points_and_colors(
     valid = ~np.all(points == 0, axis=1)
     valid &= np.all(np.isfinite(points), axis=1)
     distance = np.linalg.norm(points, axis=1)
-    max_range = max_distance_m if (max_distance_m is not None and max_distance_m > 0) else 50.0
-    valid &= (distance > 0.1) & (distance < max_range)
+    if max_distance_m is not None and max_distance_m > 0:
+        valid &= distance < max_distance_m
 
     if cone_angle_deg is not None:
         if cone_angle_deg <= 0 or cone_angle_deg > 180:
@@ -878,8 +826,8 @@ def capture_reference_frame(
     valid = ~np.all(point_grid == 0, axis=2)
     valid &= np.all(np.isfinite(point_grid), axis=2)
     distance = np.linalg.norm(point_grid, axis=2)
-    max_range = max_distance_m if (max_distance_m is not None and max_distance_m > 0) else 50.0
-    valid &= (distance > 0.1) & (distance < max_range)
+    if max_distance_m is not None and max_distance_m > 0:
+        valid &= distance < max_distance_m
     point_grid[~valid] = np.nan
 
     image_uint8 = np.clip(img_rgb * 255.0, 0, 255).astype(np.uint8)
@@ -966,7 +914,7 @@ def capture_snapshot(
             max_distance_m=max_distance_m,
             cone_angle_deg=cone_angle_deg,
             forward_axis=forward_axis,
-            preserve_organization=True,
+            preserve_organization=accumulate_static,
         )
         if points is None:
             continue

@@ -23,7 +23,6 @@ import open3d as o3d
 
 from aurora_sensor import (
     AuroraConnection,
-    TemporalFrameMedianFilter,
     read_frame_points_and_colors,
 )
 from live_stream_server import LiveStreamServer
@@ -274,7 +273,6 @@ class LiveViewer:
         last_colored: o3d.geometry.PointCloud | None = None
         last_sensor_poll = 0.0
         last_stream_send = 0.0
-        live_smoother = TemporalFrameMedianFilter(window=5)
 
         while not self._stop_event.is_set():
             with self._lock:
@@ -322,11 +320,8 @@ class LiveViewer:
                         max_distance_m=live_max_distance_m,
                         cone_angle_deg=live_cone_angle_deg,
                         forward_axis=live_forward_axis,
-                        preserve_organization=True,
                     )
                     if points is not None and len(points) > 0:
-                        if points.ndim == 3:
-                            points, colors = live_smoother.update(points, colors)
                         points = self._apply_axis_transform(points, live_invert_y, live_invert_z)
                         with self._lock:
                             self._last_live_points = points.copy()
@@ -372,7 +367,6 @@ class LiveViewer:
         """Poll the sensor and publish colored frames for the modern 3D window."""
         last_sensor_poll = 0.0
         last_stream_send = 0.0
-        live_smoother = TemporalFrameMedianFilter(window=5)
         while not self._stop_event.is_set():
             with self._lock:
                 connection = self.aurora_connection
@@ -393,11 +387,8 @@ class LiveViewer:
                         max_distance_m=max_distance,
                         cone_angle_deg=cone_angle,
                         forward_axis=forward_axis,
-                        preserve_organization=True,
                     )
                     if points is not None and len(points):
-                        if points.ndim == 3:
-                            points, colors = live_smoother.update(points, colors)
                         points = self._apply_axis_transform(points, invert_y, invert_z)
                         with self._lock:
                             self._last_live_points = points.copy()

@@ -147,7 +147,7 @@ SDK oficial no esta en PyPI (se compila a mano desde `py_aurora_remote`, ver
 README seccion 3.1). `connect`/`disconnect` (IP, default `192.168.11.1`),
 `read_frame_points_and_colors` (un frame, color de camara RGB o gris neutro si
 no hay imagen), `capture_snapshot` (adquiere frames durante el tiempo minimo
-configurado en Medicion rapida; opcionalmente acumula una cantidad de frames
+configurado en Medicion rapida y guarda por defecto el frame nativo de mayor cobertura, sin suavizado; opcionalmente acumula una cantidad de frames
 proporcional al tiempo; conserva la cobertura del mejor frame nativo y mejora/completa
 pixeles con consenso estable usando mediciones reales, sin promediar coordenadas), `capture_aligned_snapshot`
 (experimental: registra frames con poses SLAM y los fusiona en el marco de la primera vista),
@@ -205,8 +205,9 @@ Cada pestaña tiene su `_build_*_page()`:
      conectado / rojo = desconectado / amarillo = conectando).
    - **"Capturar tunel original"** / **"Capturar tunel con shotcrete"**
      (`_capture_clicked`) — espera al menos 15 frames validos y el tiempo
-     configurable en Medicion rapida (1–60 s; 3 s por defecto); aplica mediana
-     temporal de cinco y guarda una sola vista por defecto. La casilla opcional
+     configurable en Medicion rapida (1–60 s; 3 s por defecto); guarda un unico
+     frame nativo de mayor cobertura, sin mediana temporal. Acumular captura fija
+     esta desactivado por defecto. La casilla opcional
      "Captura movil alineada" registra cada frame con la pose SLAM y fusiona
      los puntos en el marco de la primera vista. Al guardar
      cambia sola a "Comparacion" con el archivo ya
