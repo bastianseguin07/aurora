@@ -13,6 +13,7 @@ import open3d as o3d
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import aurora_sensor
 from live_viewer import LiveViewer
+from sensor_backend import LiveSample
 
 
 def connection_for(frames):
@@ -123,9 +124,9 @@ class NativeCaptureTests(unittest.TestCase):
             def read_and_stop(*args, **kwargs):
                 result = read(*args, **kwargs)
                 viewer._stop_event.set()
-                return result
+                return [LiveSample(*result, 0)]
 
-            with patch("live_viewer.read_frame_points_and_colors", side_effect=read_and_stop):
+            with patch("live_viewer.read_view_samples", side_effect=read_and_stop):
                 viewer._run_live_feed()
             with np.load(path) as saved:
                 np.testing.assert_array_equal(saved["points"], self.expected)

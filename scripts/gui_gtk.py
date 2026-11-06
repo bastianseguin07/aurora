@@ -41,7 +41,7 @@ from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango  # noqa: E402
 
 import numpy as np  # noqa: E402
 
-import aurora_sensor  # noqa: E402
+import sensor_backend as aurora_sensor  # noqa: E402
 from embedded_viewer import EmbeddedComparisonViewer  # noqa: E402
 from live_stream_server import make_qr_image  # noqa: E402
 from live_viewer import LiveViewer  # noqa: E402
@@ -675,6 +675,8 @@ class AuroraGUI:
             pass
 
         self.sensor_connection = None
+        self._closing = False
+        self._sensor_connect_stop = threading.Event()
         self.capture_stop_event: threading.Event | None = None
         self.last_base_capture_path: str | None = None
         self.last_updated_capture_path: str | None = None
@@ -1128,9 +1130,20 @@ class AuroraGUI:
         """Flujo guiado de entrada para operadores nuevos; delega en los flujos existentes."""
         page = self._new_page()
 
-        files_frame, files_box = self._section("1. Sensor Aurora y nubes de entrada")
+        files_frame, files_box = self._section("1. Sensor y nubes de entrada")
+        self.quick_sensor_notice_label = Gtk.Label(xalign=0)
+        self.quick_sensor_notice_label.set_line_wrap(True)
+        self.quick_sensor_notice_label.set_no_show_all(True)
+        self.quick_sensor_notice_label.hide()
+        files_box.pack_start(self.quick_sensor_notice_label, False, False, 0)
         sensor_row = self._row(files_box)
-        sensor_row.pack_start(Gtk.Label(label="Sensor · IP:", xalign=0), False, False, 0)
+        self.sensor_selector = Gtk.ComboBoxText()
+        self.sensor_selector.append("aurora", "Slamtec Aurora")
+        self.sensor_selector.append("unitree", "Unitree LiDAR L2")
+        self.sensor_selector.set_active_id("aurora")
+        self.sensor_selector.connect("changed", self._on_sensor_kind_changed)
+        sensor_row.pack_start(self.sensor_selector, False, False, 0)
+        sensor_row.pack_start(Gtk.Label(label="IP:", xalign=0), False, False, 0)
         self.quick_sensor_address_entry = Gtk.Entry()
         self.quick_sensor_address_entry.set_text("192.168.11.1")
         self.quick_sensor_address_entry.set_width_chars(16)
@@ -1199,7 +1212,7 @@ class AuroraGUI:
         self.quick_capture_duration_scale.set_round_digits(0)
         self.quick_capture_duration_scale.connect(
             "format-value",
-            lambda _scale, value: "Nativo: un frame" if value < 0.5 else f"Acumular {value:.0f} s",
+            lambda _scale, value: "Nativo: una nube" if value < 0.5 else f"Acumular {value:.0f} s",
         )
         self.quick_capture_duration_scale.set_draw_value(True)
         self.quick_capture_duration_scale.set_value_pos(Gtk.PositionType.RIGHT)
@@ -1250,6 +1263,7 @@ class AuroraGUI:
             xalign=0,
         )
         note.set_line_wrap(True)
+        self.quick_imu_note = note
         files_box.pack_start(note, False, False, 0)
         page.pack_start(files_frame, False, True, 0)
 
@@ -1506,7 +1520,7 @@ class AuroraGUI:
 
     def _quick_capture(self, target: str) -> None:
         if self.sensor_connection is None:
-            self.quick_capture_status_label.set_text("Conecta el Aurora antes de capturar.")
+            self.quick_capture_status_label.set_text("Conecta el sensor antes de capturar.")
             return
         self._capture_clicked(target)
 
@@ -1823,6 +1837,7 @@ class AuroraGUI:
             self.quick_imu_status_label.set_text(
                 "La compensacion se activa cuando ambas nubes tienen pose guardada."
             )
+        self._update_pose_capability_notice()
         self._refresh_recalculate_button()
 
     # -- Pagina: Captura ---------------------------------------------------------
@@ -1831,12 +1846,23 @@ class AuroraGUI:
         page = self._new_page()
 
         sensor_panel, sensor_box = self._capture_panel(
-            "Sensor Aurora",
+            "Conexion del sensor",
             "Conecta el sensor, captura ambas etapas y revisa las nubes guardadas.",
         )
         page.pack_start(sensor_panel, False, True, 0)
+        self.sensor_notice_label = Gtk.Label(xalign=0)
+        self.sensor_notice_label.set_line_wrap(True)
+        self.sensor_notice_label.set_no_show_all(True)
+        self.sensor_notice_label.hide()
+        sensor_box.pack_start(self.sensor_notice_label, False, False, 0)
 
         row = self._row(sensor_box)
+        self.capture_sensor_selector = Gtk.ComboBoxText()
+        self.capture_sensor_selector.append("aurora", "Slamtec Aurora")
+        self.capture_sensor_selector.append("unitree", "Unitree LiDAR L2")
+        self.capture_sensor_selector.set_active_id("aurora")
+        self.capture_sensor_selector.connect("changed", self._on_sensor_kind_changed)
+        row.pack_start(self.capture_sensor_selector, False, False, 0)
         row.pack_start(Gtk.Label(label="Direccion del sensor:"), False, False, 0)
         self.sensor_address_entry = Gtk.Entry()
         self.sensor_address_entry.set_text("192.168.11.1")
@@ -1851,13 +1877,48 @@ class AuroraGUI:
         row.pack_start(self.sensor_status_label, False, False, 0)
         row.pack_start(
             self._info_button(
-                "Direccion IP del sensor Aurora en la red (por defecto 192.168.11.1). "
-                "Conecta la PC a la red WiFi del sensor antes de presionar Conectar."
+                "Aurora usa la IP de su red. Unitree usa la IP del LiDAR; configura tambien "
+                "la interfaz local y los puertos en Conexion Unitree. Los valores iniciales "
+                "son ejemplos y deben coincidir con tu red."
             ),
             False,
             False,
             0,
         )
+
+        unitree_expander = Gtk.Expander(label="Conexion Unitree (UDP o ROS opcional)")
+        self.unitree_options_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        unitree_expander.add(self.unitree_options_box)
+        sensor_box.pack_start(unitree_expander, False, False, 0)
+        row = self._row(self.unitree_options_box)
+        self.unitree_transport_combo = Gtk.ComboBoxText()
+        for key, title in (("udp", "SDK UDP directo"), ("ros1", "ROS 1: driver externo"), ("ros2", "ROS 2: driver externo")):
+            self.unitree_transport_combo.append(key, title)
+        self.unitree_transport_combo.set_active_id("udp")
+        row.pack_start(self.unitree_transport_combo, False, False, 0)
+        self.unitree_entries = {}
+        for key, label, default in (
+            ("local_ip", "IP local de la PC", "192.168.1.2"),
+            ("sensor_port", "Puerto del sensor", "6101"),
+            ("local_port", "Puerto local", "6201"),
+            ("cloud_scan_num", "Barridos por nube SDK", "18"),
+            ("ros_python", "Python del entorno ROS", "/usr/bin/python3"),
+            ("ros_topic", "Topic de nube ROS", "/unilidar/cloud"),
+            ("imu_topic", "Topic IMU ROS (sin pose SLAM)", "/unilidar/imu"),
+            ("frame_id", "Frame esperado", "unilidar_lidar"),
+        ):
+            row = self._row(self.unitree_options_box)
+            row.pack_start(Gtk.Label(label=label + ":"), False, False, 0)
+            entry = Gtk.Entry(); entry.set_text(default)
+            row.pack_start(entry, True, True, 0)
+            self.unitree_entries[key] = entry
+        self.unitree_system_time_check = Gtk.CheckButton(label="SDK: timestamps del sistema (desmarcado = reloj del sensor)")
+        self.unitree_system_time_check.set_active(True)
+        self.unitree_options_box.pack_start(self.unitree_system_time_check, False, False, 0)
+        self.sensor_capabilities_label = Gtk.Label(
+            label="Aurora: profundidad organizada, foto de referencia y pose SLAM.", xalign=0)
+        self.sensor_capabilities_label.set_line_wrap(True)
+        sensor_box.pack_start(self.sensor_capabilities_label, False, False, 0)
 
         row = self._row(sensor_box)
         self.capture_base_button = Gtk.Button(label="Capturar tunel original")
@@ -2315,10 +2376,12 @@ class AuroraGUI:
             self._set_imu_guide_disabled("Conecta el sensor en la pestana 'Captura' para ver la guia en vivo.")
             return True
 
+        if not aurora_sensor.capabilities(self.sensor_connection).pose:
+            self._set_imu_guide_disabled("Unitree: guia de pose no disponible; la IMU no entrega posicion SLAM.")
+            return True
         if self.imu_reference_pose is None:
             self._set_imu_guide_disabled("No hay posicion de referencia cargada (ver arriba).")
             return True
-
         try:
             pose = aurora_sensor.get_current_pose(self.sensor_connection)
         except Exception as exc:
@@ -2559,6 +2622,7 @@ class AuroraGUI:
             "Elegir manualmente el archivo _ref.npz (foto + profundidad) si el .ply se "
             "movio/renombro y ya no se detecta automaticamente."
         )
+        self.load_base_photo_button = load_base_photo_button
         load_base_photo_button.connect("clicked", lambda _b: self._load_manual_reference_photo("base"))
         row.pack_start(load_base_photo_button, False, False, 0)
         self.landmark_base_manual_photo_label = Gtk.Label(
@@ -2591,6 +2655,7 @@ class AuroraGUI:
             "Elegir manualmente el archivo _ref.npz (foto + profundidad) si el .ply se "
             "movio/renombro y ya no se detecta automaticamente."
         )
+        self.load_updated_photo_button = load_updated_photo_button
         load_updated_photo_button.connect("clicked", lambda _b: self._load_manual_reference_photo("updated"))
         row.pack_start(load_updated_photo_button, False, False, 0)
         self.landmark_updated_manual_photo_label = Gtk.Label(label="")
@@ -3357,11 +3422,11 @@ class AuroraGUI:
         def worker():
             try:
                 before, after = self._load_test_crop_pair(compensate_pose)
-                seed = pick_crop_seed_from_pair(before, after, heatmap_spec)
+                seed = pick_crop_seed_from_pair(before, after, heatmap_spec, forward_axis=self._cloud_forward_axis())
                 if seed is None:
                     self._ui(self._on_test_crop_wall_detected, None, None, "manual", None)
                     return
-                seed, bounds = estimate_wall_crop_bounds(before, after, seed)
+                seed, bounds = estimate_wall_crop_bounds(before, after, seed, forward_axis=self._cloud_forward_axis())
                 self._ui(self._on_test_crop_wall_detected, seed, bounds, "manual", None)
             except Exception as exc:
                 self._ui(self._on_test_crop_wall_detected, None, None, "manual", str(exc))
@@ -3382,7 +3447,7 @@ class AuroraGUI:
         def worker():
             try:
                 before, after = self._load_test_crop_pair(compensate_pose)
-                seed, bounds = estimate_wall_crop_bounds(before, after)
+                seed, bounds = estimate_wall_crop_bounds(before, after, forward_axis=self._cloud_forward_axis())
                 self._ui(self._on_test_crop_wall_detected, seed, bounds, "automático", None)
             except Exception as exc:
                 self._ui(self._on_test_crop_wall_detected, None, None, "automático", str(exc))
@@ -4048,6 +4113,18 @@ class AuroraGUI:
         page.pack_start(view_frame, False, True, 0)
 
         live_frame, live_box = self._section("Ajustes de captura en vivo")
+        self.live_notice_label = Gtk.Label(xalign=0)
+        self.live_notice_label.set_line_wrap(True)
+        self.live_notice_label.set_no_show_all(True)
+        self.live_notice_label.hide()
+        live_box.pack_start(self.live_notice_label, False, False, 0)
+        row = self._row(live_box)
+        row.pack_start(Gtk.Label(label="Decay time (s):"), False, False, 0)
+        self.live_decay_entry = Gtk.Entry(); self.live_decay_entry.set_text("1")
+        self.live_decay_entry.set_width_chars(8)
+        self.live_decay_entry.set_tooltip_text("Ventana visual de 0–60 s. 0 muestra solo la ultima nube; no afecta capturas guardadas.")
+        self.live_decay_entry.connect("changed", lambda _entry: self._apply_viewer_settings())
+        row.pack_start(self.live_decay_entry, False, False, 0)
         row = self._row(live_box)
         row.pack_start(Gtk.Label(label="Distancia maxima (m):"), False, False, 0)
         self.live_max_distance_entry = Gtk.Entry()
@@ -4791,8 +4868,17 @@ class AuroraGUI:
 
         GLib.idle_add(wrapper)
 
+    def _show_sensor_notice(self, message):
+        for name in ("quick_sensor_notice_label", "sensor_notice_label", "live_notice_label"):
+            label = getattr(self, name, None)
+            if label is not None and label.get_text() != message:
+                label.set_text(message)
+                label.show() if message else label.hide()
+
     def _log(self, message: str) -> None:
         self.log_queue.put(message)
+        if "sobrecarga" in message.lower() or "error leyendo" in message.lower():
+            self._ui(self._show_sensor_notice, message)
         progress = self._progress_for_log(message)
         if progress is not None:
             fraction, label = progress
@@ -4908,6 +4994,94 @@ class AuroraGUI:
 
     # ------------------------------------------------------------ Sensor
 
+    def _sensor_kind(self):
+        return "unitree" if self.sensor_selector.get_active_id() == "unitree" else "aurora"
+
+    def _cloud_forward_axis(self):
+        # A saved Unitree sidecar takes priority over the currently selected hardware.
+        for value in (self.updated_path, self.base_path):
+            if not value:
+                continue
+            path = Path(value)
+            if path.with_name(path.stem + "_unitree.npz").is_file():
+                return "x"
+        return aurora_sensor.capabilities(kind=self._sensor_kind()).forward_axis
+
+    def _unitree_config(self):
+        from unitree_sensor import UnitreeConfig
+        values = {key: entry.get_text().strip() for key, entry in self.unitree_entries.items()}
+        for key in ("sensor_port", "local_port", "cloud_scan_num"):
+            values[key] = int(values[key])
+        return UnitreeConfig(sensor_ip=self.sensor_address_entry.get_text().strip(),
+                             transport=self.unitree_transport_combo.get_active_id(),
+                             use_system_timestamp=self.unitree_system_time_check.get_active(), **values)
+
+    def _on_sensor_kind_changed(self, source):
+        kind = source.get_active_id()
+        if kind not in ("aurora", "unitree"):
+            return
+        old_kind = getattr(self, "_last_sensor_kind", "aurora")
+        addresses = getattr(self, "_sensor_addresses", {"aurora": "192.168.11.1", "unitree": "192.168.1.62"})
+        if kind != old_kind:
+            addresses[old_kind] = self.quick_sensor_address_entry.get_text()
+        self._sensor_addresses = addresses
+        self._last_sensor_kind = kind
+        for name in ("sensor_selector", "capture_sensor_selector"):
+            selector = getattr(self, name, None)
+            if selector is not None and selector.get_active_id() != kind:
+                selector.set_active_id(kind)
+        for name in ("sensor_address_entry", "quick_sensor_address_entry"):
+            entry = getattr(self, name, None)
+            if entry is not None:
+                entry.set_text(addresses[kind])
+        self._apply_sensor_capabilities()
+
+    def _update_pose_capability_notice(self):
+        if not hasattr(self, "quick_imu_note"):
+            return
+        if self._sensor_kind() == "unitree":
+            self.quick_imu_compensate_check.set_active(False)
+            self.quick_imu_compensate_check.set_sensitive(False)
+            self.quick_imu_status_label.set_text("Unitree: sin posicion SLAM; compensacion automatica no disponible.")
+            self.quick_imu_note.set_text("Mantén el trípode fijo entre ANTES y DESPUÉS. Si cambias la posición del sensor, alinea por puntos 3D antes de medir.")
+            if self.base_path and self.updated_path and not self.alignment_applied:
+                self.quick_alignment_status.set_text("Verifica el registro: sensor fijo o alineación por puntos 3D.")
+                self.quick_status_label.set_text("Ambas nubes listas. Comprueba la alineación antes de calcular el espesor.")
+        else:
+            self.quick_imu_note.set_text("Puedes mover el sensor entre capturas si el tracking sigue en el mismo mapa. Con la casilla activada, se compensa el cambio de pose antes de calcular.")
+
+    def _apply_sensor_capabilities(self):
+        caps = aurora_sensor.capabilities(self.sensor_connection, self._sensor_kind())
+        if hasattr(self, "sensor_capabilities_label"):
+            self.sensor_capabilities_label.set_text(
+                caps.frame_description + (". Foto y pose SLAM disponibles." if caps.pose else
+                ". Sin foto de referencia, seleccion por pixel ni pose SLAM. Usa alineacion por puntos 3D."))
+        for which in ("base", "updated"):
+            photo = getattr(self, f"landmark_{which}_source_photo_rb", None)
+            cloud = getattr(self, f"landmark_{which}_source_3d_rb", None)
+            if photo is not None:
+                photo.set_sensitive(caps.reference_image)
+                photo.set_tooltip_text("Foto de referencia Aurora" if caps.reference_image else "Unitree no tiene camara de profundidad alineada")
+            load_photo = getattr(self, f"load_{which}_photo_button", None)
+            if load_photo is not None:
+                load_photo.set_sensitive(caps.reference_image)
+            if not caps.reference_image and cloud is not None:
+                cloud.set_active(True)
+        if not caps.pose:
+            self.quick_imu_compensate_check.set_active(False)
+        self.quick_imu_compensate_check.set_sensitive(caps.pose)
+        self._update_pose_capability_notice()
+        for name in ("experimental_mobile_base_button", "experimental_mobile_updated_button"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.set_sensitive(caps.pose and self.sensor_connection is not None)
+        for name in ("capture_forward_axis_combo", "live_forward_axis_combo"):
+            combo = getattr(self, name, None)
+            if combo is not None:
+                combo.set_active("xyz".index(caps.forward_axis))
+        if hasattr(self, "capture_persistence_entry") and not caps.organized_cloud:
+            self.capture_persistence_entry.set_text("0")
+
     def _sync_sensor_address(self, source_entry) -> None:
         if not hasattr(self, "sensor_address_entry") or not hasattr(self, "quick_sensor_address_entry"):
             return
@@ -4928,10 +5102,15 @@ class AuroraGUI:
             self.quick_capture_base_button.set_sensitive(connected and not connecting)
         if hasattr(self, "quick_capture_updated_button"):
             self.quick_capture_updated_button.set_sensitive(connected and not connecting)
+        for selector_name in ("sensor_selector", "capture_sensor_selector", "unitree_options_box"):
+            selector = getattr(self, selector_name, None)
+            if selector is not None:
+                selector.set_sensitive(not connected and not connecting)
+        pose_available = aurora_sensor.capabilities(self.sensor_connection, self._sensor_kind()).pose
         for name in ("experimental_mobile_base_button", "experimental_mobile_updated_button"):
             button = getattr(self, name, None)
             if button is not None:
-                button.set_sensitive(connected and not connecting)
+                button.set_sensitive(connected and not connecting and pose_available)
 
     def _toggle_sensor_connection(self, automatic: bool = False) -> None:
         if self.sensor_connection is not None:
@@ -4939,18 +5118,34 @@ class AuroraGUI:
             return
 
         address = self.sensor_address_entry.get_text().strip()
+        kind = self._sensor_kind()
+        try:
+            config = self._unitree_config() if kind == "unitree" else None
+            if config is not None:
+                config.command()  # validate before starting a worker
+        except (ValueError, TypeError) as exc:
+            self._show_error("Configuracion del sensor", str(exc))
+            return
+        self._sensor_connect_stop.clear()
         self._set_sensor_ui_state(False, connecting=True)
 
         def worker():
             try:
-                connection = aurora_sensor.connect(address)
+                connection = aurora_sensor.connect(address, kind=kind, config=config, log=self._log, stop_event=self._sensor_connect_stop)
+                if self._closing:
+                    aurora_sensor.disconnect(connection)
+                    return
                 self._ui(self._on_sensor_connected, connection)
             except Exception as exc:
-                self._ui(self._on_sensor_connect_failed, exc, automatic)
+                if not self._closing:
+                    self._ui(self._on_sensor_connect_failed, exc, automatic)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_sensor_connected(self, connection) -> None:
+        if self._closing:
+            aurora_sensor.disconnect(connection)
+            return
         self.sensor_connection = connection
         self._set_sensor_ui_state(True)
         self.capture_base_button.set_sensitive(True)
@@ -4962,7 +5157,8 @@ class AuroraGUI:
         if self.viewer is not None and self.source_live_rb.get_active():
             self.viewer.set_live_sensor(connection)
             self._apply_viewer_settings()
-        self._log(f"Conectado al sensor Aurora en {self.sensor_address_entry.get_text()}.")
+        self._apply_sensor_capabilities()
+        self._log(f"Conectado: {aurora_sensor.capabilities(connection).name} en {self.sensor_address_entry.get_text()}.")
 
     def _on_sensor_connect_failed(self, exc: Exception, automatic: bool = False) -> None:
         self._set_sensor_ui_state(False)
@@ -5001,10 +5197,16 @@ class AuroraGUI:
             self._show_warning("Sensor no conectado", "Conecta el sensor antes de capturar.")
             return
 
+        if aligned_multiview and not aurora_sensor.capabilities(self.sensor_connection).pose:
+            self._show_warning("Captura movil no disponible", "Este sensor requiere una fuente externa de pose validada.")
+            return
         try:
             persistence_ratio = float(self.capture_persistence_entry.get_text() or 0.0)
         except ValueError:
             self._show_error("Parametros invalidos", "La persistencia debe ser un numero.")
+            return
+        if self._sensor_kind() == "unitree" and persistence_ratio != 0:
+            self._show_warning("Persistencia no disponible", "Pon persistencia en 0 para conservar los retornos Unitree sin filtrar.")
             return
         if not np.isfinite(persistence_ratio) or not 0 <= persistence_ratio <= 1:
             self._show_error("Parametros invalidos", "La persistencia debe estar entre 0 y 1.")
@@ -5066,12 +5268,13 @@ class AuroraGUI:
         )
 
         stop_event = self.capture_stop_event
+        connection = self.sensor_connection
 
         def worker():
             try:
                 if aligned_multiview:
                     aligned_result = aurora_sensor.capture_aligned_snapshot(
-                        self.sensor_connection,
+                        connection,
                         duration_s=capture_duration_s,
                         timeout_s=max(15.0, capture_duration_s + 10.0),
                         stop_event=stop_event,
@@ -5098,7 +5301,7 @@ class AuroraGUI:
                     )
                     return
                 cloud = aurora_sensor.capture_snapshot(
-                    self.sensor_connection,
+                    connection,
                     persistence_ratio=persistence_ratio,
                     capture_duration_s=capture_duration_s,
                     stabilization_frames=1 if native_capture else 15,
@@ -5111,12 +5314,12 @@ class AuroraGUI:
                 )
                 try:
                     ref_image, ref_point_grid = aurora_sensor.capture_reference_frame(
-                        self.sensor_connection, max_distance_m=max_distance_m
+                        connection, max_distance_m=max_distance_m
                     )
                 except Exception:
                     ref_image, ref_point_grid = None, None
                 try:
-                    ref_pose = aurora_sensor.get_current_pose(self.sensor_connection)
+                    ref_pose = aurora_sensor.get_current_pose(connection)
                 except Exception:
                     ref_pose = None
                 self._ui(self._on_capture_done, target, cloud, ref_image, ref_point_grid, ref_pose)
@@ -5140,9 +5343,11 @@ class AuroraGUI:
             self._log("Captura detenida manualmente; se procesarán los frames válidos recibidos hasta ahora.")
 
     def _on_capture_done(self, target: str, cloud, ref_image=None, ref_point_grid=None, ref_pose=None) -> None:
+        capture_result = cloud
+        cloud = aurora_sensor.cloud_geometry(capture_result)
         self._finish_capture_progress()
-        self.capture_base_button.set_sensitive(True)
-        self.capture_updated_button.set_sensitive(True)
+        self.capture_base_button.set_sensitive(self.sensor_connection is not None)
+        self.capture_updated_button.set_sensitive(self.sensor_connection is not None)
         self.stop_capture_button.set_sensitive(False)
         if hasattr(self, "experimental_mobile_stop_button"):
             self.experimental_mobile_stop_button.set_sensitive(False)
@@ -5175,7 +5380,15 @@ class AuroraGUI:
 
         import open3d as o3d
 
-        o3d.io.write_point_cloud(path, cloud)
+        try:
+            if not o3d.io.write_point_cloud(path, cloud):
+                raise RuntimeError("No se pudo guardar el PLY")
+            metadata_path = aurora_sensor.save_capture_metadata(path, capture_result)
+            if metadata_path:
+                self._log(f"Campos nativos y limites de nubes guardados en {metadata_path}")
+        except Exception as exc:
+            self._show_error("Error guardando captura", str(exc))
+            return
         self._log(f"Captura guardada en: {path} ({len(cloud.points)} puntos)")
 
         if ref_image is None or ref_point_grid is None:
@@ -5247,8 +5460,8 @@ class AuroraGUI:
 
     def _on_capture_failed(self, exc: Exception) -> None:
         self._finish_capture_progress()
-        self.capture_base_button.set_sensitive(True)
-        self.capture_updated_button.set_sensitive(True)
+        self.capture_base_button.set_sensitive(self.sensor_connection is not None)
+        self.capture_updated_button.set_sensitive(self.sensor_connection is not None)
         self.stop_capture_button.set_sensitive(False)
         if hasattr(self, "experimental_mobile_stop_button"):
             self.experimental_mobile_stop_button.set_sensitive(False)
@@ -5424,9 +5637,13 @@ class AuroraGUI:
         if not self._ensure_live_capture_running():
             return
 
-        baseline_cloud, current_cloud, using_live_baseline = self.viewer.get_live_snapshot_clouds()
+        baseline_cloud, current_cloud, using_live_baseline, base_metadata, current_metadata = self.viewer.get_live_snapshot_clouds(include_metadata=True)
         if baseline_cloud is None or current_cloud is None:
             self._show_info("Sin frame disponible", "Aun no hay nube en vivo para guardar.")
+            return
+
+        if not len(baseline_cloud.points):
+            self._show_info("Falta BASE en vivo", "Fija una BASE en vivo antes de guardar ambas nubes.")
             return
 
         dialog = Gtk.FileChooserNative.new(
@@ -5450,8 +5667,11 @@ class AuroraGUI:
         base_path = Path(target_dir) / f"{baseline_name}_{timestamp}.ply"
         updated_path = Path(target_dir) / f"updated_live_{timestamp}.ply"
 
-        o3d.io.write_point_cloud(str(base_path), baseline_cloud)
-        o3d.io.write_point_cloud(str(updated_path), current_cloud)
+        if not o3d.io.write_point_cloud(str(base_path), baseline_cloud) or not o3d.io.write_point_cloud(str(updated_path), current_cloud):
+            self._show_error("Error guardando", "No se pudieron guardar las nubes en vivo")
+            return
+        aurora_sensor.save_capture_metadata(base_path, base_metadata)
+        aurora_sensor.save_capture_metadata(updated_path, current_metadata)
         self._log(f"Nubes en vivo guardadas en: {base_path} y {updated_path}")
 
         for cloud, cloud_path in ((baseline_cloud, base_path), (current_cloud, updated_path)):
@@ -6038,6 +6258,8 @@ class AuroraGUI:
             *paths,
             "--title",
             title,
+            "--forward-axis",
+            self._cloud_forward_axis(),
         ]
         if cleanup_dir:
             command.extend(("--cleanup-dir", cleanup_dir))
@@ -6333,6 +6555,9 @@ class AuroraGUI:
                 self.target_thickness_entry, "El espesor objetivo"
             ) / 100.0
             live_max_distance, live_cone_angle = self._parse_live_filter_params()
+            decay_s = float(self.live_decay_entry.get_text() or 0)
+            if not np.isfinite(decay_s) or not 0 <= decay_s <= 60:
+                raise ValueError("Decay time debe estar entre 0 y 60 s")
         except ValueError as exc:
             if hasattr(self, "visualization_status_label"):
                 self.visualization_status_label.set_markup(
@@ -6355,6 +6580,7 @@ class AuroraGUI:
         else:
             color_mode = "continuous"
         self.viewer.set_color_mode(color_mode, low_m, high_m, max_distance, target_thickness_m)
+        self.viewer.set_decay_time(decay_s)
         self.viewer.set_show_updated(self.show_updated_check.get_active())
         self.viewer.set_live_filters(
             max_distance_m=live_max_distance,
@@ -6396,6 +6622,10 @@ class AuroraGUI:
         self._apply_viewer_settings()
 
     def _on_close(self, *_args) -> None:
+        self._closing = True
+        self._sensor_connect_stop.set()
+        if self.capture_stop_event is not None:
+            self.capture_stop_event.set()
         if self._log_poll_source is not None:
             GLib.source_remove(self._log_poll_source)
             self._log_poll_source = None

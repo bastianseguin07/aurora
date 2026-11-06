@@ -8,10 +8,12 @@ set -e
 cd "$(dirname "$0")"
 
 INSTALL_SENSOR_SDK=0
+INSTALL_UNITREE_SDK=0
 for arg in "$@"; do
     case "$arg" in
         --with-sensor-sdk) INSTALL_SENSOR_SDK=1 ;;
-        *) echo "Opcion desconocida: $arg"; echo "Uso: ./setup.sh [--with-sensor-sdk]"; exit 2 ;;
+        --with-unitree-sdk) INSTALL_UNITREE_SDK=1 ;;
+        *) echo "Opcion desconocida: $arg"; echo "Uso: ./setup.sh [--with-sensor-sdk] [--with-unitree-sdk]"; exit 2 ;;
     esac
 done
 
@@ -20,9 +22,12 @@ if [ "$(uname -s)" != "Linux" ] || ! command -v apt-get >/dev/null 2>&1; then
     exit 1
 fi
 
-REQUIRED_PKGS="python3-venv libgl1-mesa-glx libgomp1 python3-gi gir1.2-gtk-3.0"
-if [ "$INSTALL_SENSOR_SDK" = "1" ]; then
+REQUIRED_PKGS="python3-venv libgl1 libgomp1 python3-gi python3-gi-cairo gir1.2-gtk-3.0"
+if [ "$INSTALL_SENSOR_SDK" = "1" ] || [ "$INSTALL_UNITREE_SDK" = "1" ]; then
     REQUIRED_PKGS="$REQUIRED_PKGS git"
+fi
+if [ "$INSTALL_UNITREE_SDK" = "1" ]; then
+    REQUIRED_PKGS="$REQUIRED_PKGS build-essential"
 fi
 missing=0
 for pkg in $REQUIRED_PKGS; do
@@ -53,6 +58,10 @@ echo "Instalando dependencias de Python (puede tardar unos minutos por Open3D)..
 
 if [ "$INSTALL_SENSOR_SDK" = "1" ]; then
     ./install_sensor_sdk.sh
+fi
+
+if [ "$INSTALL_UNITREE_SDK" = "1" ]; then
+    ./install_unitree_sdk.sh
 fi
 
 echo ""

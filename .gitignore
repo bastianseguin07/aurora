@@ -14,3 +14,7 @@ output/*
 # que trae el clone por defecto)
 aurora_sdk_src/
 py_aurora_remote/
+
+# Native bridge binaries and local sensor reference sources
+build/
+unitree-reference/

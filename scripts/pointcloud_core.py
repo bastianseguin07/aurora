@@ -403,6 +403,7 @@ def _pick_points_in_shared_viewer(
     max_points: int = 0,
     context_clouds: list[o3d.geometry.PointCloud] | None = None,
     require_shift: bool = False,
+    forward_axis: str = "z",
 ) -> np.ndarray:
     """Run the same decorated Open3D SceneWidget used by all inspection views."""
     with tempfile.TemporaryDirectory(prefix="aurora_point_picker_") as temp_dir:
@@ -431,6 +432,8 @@ def _pick_points_in_shared_viewer(
             str(max_points),
             "--pick-prompt",
             prompt,
+            "--forward-axis",
+            forward_axis,
         ]
         for context_path in context_paths:
             command.extend(("--context-cloud", str(context_path)))
@@ -1500,6 +1503,7 @@ def pick_crop_seed_from_pair(
     before: o3d.geometry.PointCloud,
     after: o3d.geometry.PointCloud,
     color_spec: dict | None = None,
+    forward_axis: str = "z",
 ) -> np.ndarray | None:
     """Pick one DESPUES wall point; the same cloud drives automatic detection."""
     _before_view, after_view = prepare_thickness_overlay(before, after, color_spec)
@@ -1510,6 +1514,7 @@ def pick_crop_seed_from_pair(
         max_points=1,
         context_clouds=[_before_view],
         require_shift=True,
+        forward_axis=forward_axis,
     )
     return picked[0].copy() if len(picked) else None
 
@@ -1518,12 +1523,12 @@ def estimate_wall_crop_bounds(
     before: o3d.geometry.PointCloud,
     after: o3d.geometry.PointCloud,
     seed: np.ndarray | None = None,
+    forward_axis: str = "z",
 ) -> tuple[np.ndarray, tuple[Vec3, Vec3]]:
     """Estimate an axis-aligned wall box from a clicked point or the center ray.
 
-    Aurora point clouds use +Z as the optical forward axis. Automatic mode
-    chooses the nearest point close to that axis, then extracts the local wall
-    extent in X/Y and fixes the face at the selected point's Z depth.
+    The forward axis selects the center ray (Aurora +Z, Unitree +X).
+    Plane fitting and cropping retain the original sensor coordinates.
     """
     after_points = np.asarray(after.points, dtype=np.float64)
     valid_after = np.isfinite(after_points).all(axis=1)
@@ -1531,17 +1536,20 @@ def estimate_wall_crop_bounds(
     if len(after_points) < 3:
         raise ValueError("La nube DESPUES no tiene suficientes puntos válidos.")
 
+    if forward_axis not in "xyz" or len(forward_axis) != 1:
+        raise ValueError("Eje frontal invalido")
+    axis = "xyz".index(forward_axis)
     if seed is None:
-        forward = after_points[:, 2] > 0.0
+        forward = after_points[:, axis] > 0.0
         candidates = after_points[forward]
         if not len(candidates):
             raise ValueError("No hay puntos delante del sensor para detectar la pared.")
-        radial = np.linalg.norm(candidates[:, :2], axis=1)
-        angles = np.arctan2(radial, np.maximum(candidates[:, 2], 1e-9))
+        radial = np.linalg.norm(np.delete(candidates, axis, axis=1), axis=1)
+        angles = np.arctan2(radial, np.maximum(candidates[:, axis], 1e-9))
         central = angles <= np.deg2rad(8.0)
         if np.any(central):
             candidates = candidates[central]
-        seed = candidates[int(np.argmin(candidates[:, 2]))].copy()
+        seed = candidates[int(np.argmin(candidates[:, axis]))].copy()
     else:
         seed = np.asarray(seed, dtype=np.float64).reshape(3)
     # Manual and automatic modes must derive the box from the same cloud and
@@ -1549,7 +1557,7 @@ def estimate_wall_crop_bounds(
     # a different face just because it came from the other button.
     points = after_points
 
-    radius = max(0.75, min(3.0, abs(float(seed[2])) * 1.25))
+    radius = max(0.75, min(3.0, abs(float(seed[axis])) * 1.25))
     local = points[np.linalg.norm(points - seed, axis=1) <= radius]
     if len(local) < 30:
         nearest = np.argsort(np.linalg.norm(points - seed, axis=1))[: min(len(points), 1000)]

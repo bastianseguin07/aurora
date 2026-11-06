@@ -21,11 +21,12 @@ from pathlib import Path
 import numpy as np
 import open3d as o3d
 
-from aurora_sensor import (
+from sensor_backend import (
     AuroraConnection,
-    read_frame_points_and_colors,
+    read_view_samples,
 )
 from live_stream_server import LiveStreamServer
+from live_decay import DecayBuffer
 from pointcloud_core import (
     _create_q_only_visualizer,
     _apply_sdk_render_style,
@@ -49,6 +50,8 @@ class LiveViewer:
         self._distance_reference_cloud = o3d.geometry.PointCloud(base_cloud)
         self._using_live_baseline = False
         self._log = log
+        self._decay = DecayBuffer(log=log)
+        self._live_clear_pending = False
         self.live_output_path = Path(live_output_path) if live_output_path else None
 
         self._lock = threading.Lock()
@@ -70,6 +73,8 @@ class LiveViewer:
         self._pending_static_colored_cloud: o3d.geometry.PointCloud | None = None
         self._pending_base_cloud: o3d.geometry.PointCloud | None = None
         self._last_live_points: np.ndarray | None = None
+        self._last_native_capture = None
+        self._baseline_native_capture = None
         self.live_max_distance_m: float | None = None
         self.live_cone_angle_deg: float | None = None
         self.live_forward_axis: str = "z"
@@ -134,7 +139,39 @@ class LiveViewer:
 
     def set_live_sensor(self, connection: AuroraConnection | None) -> None:
         with self._lock:
+            if self.aurora_connection is not connection:
+                self._decay.clear()
+                self._last_live_points = None
+                self._last_native_capture = None
+                self._baseline_native_capture = None
+                self._using_live_baseline = False
+                self._distance_reference_cloud = o3d.geometry.PointCloud(self._base_cloud_initial)
+                self._pending_base_cloud = o3d.geometry.PointCloud(self._base_cloud_initial)
+                self._stream_base_sent = False
+                self._live_clear_pending = True
             self.aurora_connection = connection
+
+    def set_decay_time(self, seconds):
+        with self._lock:
+            self._decay.configure(seconds)
+
+    def _read_live_cloud(self, connection, max_distance, cone_angle, forward_axis, invert_y, invert_z):
+        samples = read_view_samples(
+            connection, max_points=None, timeout_ms=50, max_distance_m=max_distance,
+            cone_angle_deg=cone_angle, forward_axis=forward_axis)
+        now = time.monotonic()
+        with self._lock:
+            for sample in samples:
+                if not len(sample.points):
+                    continue
+                points = self._apply_axis_transform(sample.points, invert_y, invert_z)
+                self._last_live_points = points.copy()
+                self._last_native_capture = sample.native_capture
+                # Arrival time comes from acquisition, not from delayed rendering.
+                if self._decay.decay_s == 0 or now - sample.received_at < self._decay.decay_s:
+                    self._decay.append(points, sample.colors, sample.received_at)
+            display_points, display_colors = self._decay.snapshot(now)
+        return self._colorize(display_points, display_colors)
 
     def set_live_filters(
         self,
@@ -163,6 +200,8 @@ class LiveViewer:
             self._distance_reference_cloud = baseline
             self._pending_base_cloud = baseline
             self._using_live_baseline = True
+            self._stream_base_sent = False
+            self._baseline_native_capture = self._last_native_capture
             return len(self._last_live_points)
 
     def clear_live_baseline(self) -> None:
@@ -172,19 +211,28 @@ class LiveViewer:
             self._distance_reference_cloud = baseline
             self._pending_base_cloud = baseline
             self._using_live_baseline = False
+            self._stream_base_sent = False
+            self._baseline_native_capture = None
 
-    def get_live_snapshot_clouds(self) -> tuple[o3d.geometry.PointCloud | None, o3d.geometry.PointCloud | None, bool]:
+    def get_live_snapshot_clouds(self, include_metadata=False):
         """Devuelve (base_referencia, frame_actual, usando_base_en_vivo) para guardar a disco."""
         with self._lock:
             if self._last_live_points is None or len(self._last_live_points) == 0:
-                return None, None, self._using_live_baseline
+                empty = (None, None, self._using_live_baseline)
+                return (*empty, None, None) if include_metadata else empty
 
             current = o3d.geometry.PointCloud()
             current.points = o3d.utility.Vector3dVector(self._last_live_points.copy())
             baseline = o3d.geometry.PointCloud(self._distance_reference_cloud)
             using_live_baseline = self._using_live_baseline
-
-        return baseline, current, using_live_baseline
+            base_metadata = self._baseline_native_capture if using_live_baseline else None
+            current_metadata = self._last_native_capture
+            if current_metadata is not None:
+                current = o3d.geometry.PointCloud(current_metadata.geometry)
+            if base_metadata is not None:
+                baseline = o3d.geometry.PointCloud(base_metadata.geometry)
+        result = (baseline, current, using_live_baseline)
+        return (*result, base_metadata, current_metadata) if include_metadata else result
 
     def push_static_points(self, points_xyz: np.ndarray) -> None:
         """Entrega una nube 'actualizada' fija (por ejemplo, la cargada desde archivo)."""
@@ -226,6 +274,8 @@ class LiveViewer:
     ) -> o3d.geometry.PointCloud:
         cloud = o3d.geometry.PointCloud()
         cloud.points = o3d.utility.Vector3dVector(points_xyz)
+        if len(points_xyz) == 0:
+            return cloud
         with self._lock:
             reference_cloud = o3d.geometry.PointCloud(self._distance_reference_cloud)
         if len(reference_cloud.points) == 0:
@@ -307,25 +357,25 @@ class LiveViewer:
                 )
                 self._stream_base_sent = self._stream_server.broadcast_base(np.asarray(base_vis.points), base_colors)
 
-            new_colored = None
+            with self._lock:
+                clear = self._live_clear_pending
+                self._live_clear_pending = False
+            new_colored = self._colorize(np.empty((0,3))) if clear else None
             if pending_static_colored is not None:
                 new_colored = pending_static_colored
             elif connection is not None:
                 now = time.time()
                 if now - last_sensor_poll > 0.08:
-                    points, colors = read_frame_points_and_colors(
-                        connection,
-                        max_points=None,
-                        timeout_ms=50,
-                        max_distance_m=live_max_distance_m,
-                        cone_angle_deg=live_cone_angle_deg,
-                        forward_axis=live_forward_axis,
-                    )
-                    if points is not None and len(points) > 0:
-                        points = self._apply_axis_transform(points, live_invert_y, live_invert_z)
+                    try:
+                        new_colored = self._read_live_cloud(
+                            connection, live_max_distance_m, live_cone_angle_deg,
+                            live_forward_axis, live_invert_y, live_invert_z)
+                    except Exception as exc:
+                        self._log(f"Error leyendo nube en vivo: {exc}")
                         with self._lock:
-                            self._last_live_points = points.copy()
-                        new_colored = self._colorize(points, colors)
+                            self._last_live_points = None
+                            self._decay.clear()
+                        new_colored = self._colorize(np.empty((0, 3)), np.empty((0, 3)))
                     last_sensor_poll = now
             elif pending_static is not None:
                 new_colored = self._colorize(np.asarray(pending_static.points))
@@ -338,10 +388,14 @@ class LiveViewer:
                             np.asarray(new_colored.points), np.asarray(new_colored.colors)
                         )
                         last_stream_send = now
-                last_colored = new_colored
+                last_colored = new_colored if len(new_colored.points) else None
                 updated_vis.points = new_colored.points
                 updated_vis.colors = new_colored.colors
-                if show and not updated_added:
+                if not len(new_colored.points):
+                    if updated_added:
+                        vis.remove_geometry(updated_vis, reset_bounding_box=False)
+                    updated_added = False
+                elif show and not updated_added:
                     vis.add_geometry(updated_vis, reset_bounding_box=False)
                     updated_added = True
                 elif updated_added:
@@ -363,6 +417,18 @@ class LiveViewer:
 
         vis.destroy_window()
 
+    def _publish_empty_live(self):
+        empty = np.empty((0, 3))
+        path = self.live_output_path
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp = path.with_name(path.name + ".tmp")
+            with temp.open("wb") as stream:
+                np.savez(stream, points=empty, colors=empty)
+            os.replace(temp, path)
+        if self._stream_server is not None and self._stream_server.is_running():
+            self._stream_server.broadcast_live(empty, empty)
+
     def _run_live_feed(self) -> None:
         """Poll the sensor and publish colored frames for the modern 3D window."""
         last_sensor_poll = 0.0
@@ -377,22 +443,17 @@ class LiveViewer:
                 invert_z = self.live_invert_z
                 stream_server = self._stream_server
 
+            with self._lock:
+                clear = self._live_clear_pending
+                self._live_clear_pending = False
+            if clear:
+                self._publish_empty_live()
             now = time.monotonic()
             if connection is not None and now - last_sensor_poll >= 0.08:
                 try:
-                    points, colors = read_frame_points_and_colors(
-                        connection,
-                        max_points=None,
-                        timeout_ms=50,
-                        max_distance_m=max_distance,
-                        cone_angle_deg=cone_angle,
-                        forward_axis=forward_axis,
-                    )
-                    if points is not None and len(points):
-                        points = self._apply_axis_transform(points, invert_y, invert_z)
-                        with self._lock:
-                            self._last_live_points = points.copy()
-                        colored = self._colorize(points, colors)
+                    colored = self._read_live_cloud(
+                        connection, max_distance, cone_angle, forward_axis, invert_y, invert_z)
+                    if colored is not None:
                         path = self.live_output_path
                         if path is not None:
                             path.parent.mkdir(parents=True, exist_ok=True)
@@ -423,6 +484,10 @@ class LiveViewer:
                                 last_stream_send = now
                 except Exception as exc:
                     self._log(f"Error leyendo el frame en vivo: {exc}")
+                    with self._lock:
+                        self._last_live_points = None
+                        self._decay.clear()
+                        self._live_clear_pending = True
                     time.sleep(0.1)
                 last_sensor_poll = now
             else:

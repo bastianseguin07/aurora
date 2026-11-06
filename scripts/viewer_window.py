@@ -82,7 +82,7 @@ def _legend_panel(spec: dict, em: int) -> gui.Vert:
     return panel
 
 
-def _look_at_sensor_pov(scene_widget, points: np.ndarray, fov_deg: float = 60.0) -> None:
+def _look_at_sensor_pov(scene_widget, points: np.ndarray, fov_deg: float = 60.0, forward_axis: str = "z") -> None:
     """Frame the main point mass; isolated bad depth returns must not zoom it away."""
     points = np.asarray(points, dtype=np.float64).reshape((-1, 3))
     points = points[np.isfinite(points).all(axis=1)]
@@ -94,15 +94,33 @@ def _look_at_sensor_pov(scene_widget, points: np.ndarray, fov_deg: float = 60.0)
     low, high = np.percentile(points, (1.0, 99.0), axis=0)
     center = 0.5 * (low + high)
     radius = 0.5 * float(np.linalg.norm(high - low))
-    off_axis = float(np.linalg.norm(center[:2]))
+    axis = "xyz".index(forward_axis)
+    off_axis = float(np.linalg.norm(np.delete(center, axis)))
     distance = (radius + off_axis) / max(math.sin(math.radians(fov_deg) / 2.0), 1e-6) * 1.1
     distance = max(distance, 0.5)
-    target = np.array([0.0, 0.0, float(center[2])])
+    target = np.zeros(3); target[axis] = center[axis]
+    direction = np.zeros(3); direction[axis] = distance
     scene_widget.look_at(
         target,
-        target - np.array([0.0, 0.0, distance]),
-        np.array([0.0, -1.0, 0.0]),
+        target - direction,
+        np.array([0.0, 0.0, 1.0]) if forward_axis != "z" else np.array([0.0, -1.0, 0.0]),
     )
+
+
+def _replace_live_geometry(scene, points, colors, material, already_added):
+    """Apply an empty cloud as a real scene update, not as a missing message."""
+    if already_added:
+        scene.remove_geometry("live")
+    if len(points) == 0:
+        return False
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(points)
+    if colors.shape == points.shape:
+        cloud.colors = o3d.utility.Vector3dVector(np.clip(colors, 0.0, 1.0))
+    else:
+        cloud.paint_uniform_color((0.10, 0.72, 0.95))
+    scene.add_geometry("live", cloud, material)
+    return True
 
 
 def _read_geometries(
@@ -240,6 +258,7 @@ def main() -> None:
         "kind", choices=("cloud", "pair", "pair_box", "thickness", "meshes", "live", "pick", "pose")
     )
     parser.add_argument("paths", nargs="+")
+    parser.add_argument("--forward-axis", choices=("x", "y", "z"), default="z")
     parser.add_argument("--title", default="Aurora - Vista 3D")
     parser.add_argument("--cleanup-dir")
     parser.add_argument("--legend-json")
@@ -539,7 +558,7 @@ def main() -> None:
                 np.zeros(3), np.array([0.0, -0.65, -1.7]), np.array([0.0, -1.0, 0.0])
             )
         elif point_sets:
-            _look_at_sensor_pov(scene_widget, np.concatenate(point_sets, axis=0), camera_fov_deg)
+            _look_at_sensor_pov(scene_widget, np.concatenate(point_sets, axis=0), camera_fov_deg, args.forward_axis)
         else:
             fitted_eye = np.asarray(scene_widget.scene.camera.get_model_matrix())[:3, 3]
             view_distance = float(np.linalg.norm(fitted_eye - np.asarray(center)))
@@ -848,6 +867,7 @@ def main() -> None:
         preview_frames = 0
         live_added = False
         last_live_mtime_ns = -1
+        live_camera_initialized = False
         last_live_poll = 0.0
         live_count_history: list[int] = []
 
@@ -925,7 +945,7 @@ def main() -> None:
                 return False
 
         def refresh_live_frame() -> bool:
-            nonlocal live_added, last_live_mtime_ns, last_live_poll
+            nonlocal live_added, last_live_mtime_ns, last_live_poll, live_camera_initialized
             now = time.monotonic()
             if now - last_live_poll < 0.08:
                 return False
@@ -937,27 +957,26 @@ def main() -> None:
                 with np.load(paths[0], allow_pickle=False) as frame:
                     points = np.asarray(frame["points"], dtype=np.float64)
                     colors = np.asarray(frame["colors"], dtype=np.float64)
-                if points.ndim != 2 or points.shape[1] != 3 or len(points) == 0:
+                if points.ndim != 2 or points.shape[1] != 3:
                     return False
-                cloud = o3d.geometry.PointCloud()
-                cloud.points = o3d.utility.Vector3dVector(points)
-                if colors.shape == points.shape:
-                    cloud.colors = o3d.utility.Vector3dVector(np.clip(colors, 0.0, 1.0))
-                else:
-                    cloud.paint_uniform_color((0.10, 0.72, 0.95))
-                if live_added:
-                    scene_widget.scene.remove_geometry("live")
-                scene_widget.scene.add_geometry("live", cloud, geometries[0][2])
-                live_added = True
+                if len(points) == 0:
+                    live_added = _replace_live_geometry(scene_widget.scene, points, colors, geometries[0][2], live_added)
+                    live_status.text = "En vivo · sin puntos recientes"
+                    live_count_history.clear()
+                    last_live_mtime_ns = mtime_ns
+                    scene_widget.force_redraw()
+                    return True
+                live_added = _replace_live_geometry(scene_widget.scene, points, colors, geometries[0][2], live_added)
                 live_count_history.append(len(points))
                 del live_count_history[:-5]
                 count_estimate = int(np.median(live_count_history))
                 live_status.text = f"En vivo · aprox. {round(count_estimate / 1000):,} mil puntos"
-                if last_live_mtime_ns < 0:
+                if not live_camera_initialized:
                     bounds = scene_widget.scene.bounding_box
                     center = bounds.get_center()
                     scene_widget.setup_camera(60.0, bounds, center)
-                    _look_at_sensor_pov(scene_widget, points)
+                    _look_at_sensor_pov(scene_widget, points, forward_axis=args.forward_axis)
+                    live_camera_initialized = True
                 last_live_mtime_ns = mtime_ns
                 scene_widget.force_redraw()
                 return True

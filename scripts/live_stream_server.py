@@ -170,7 +170,7 @@ class LiveStreamServer:
 
     def broadcast_base(self, points: np.ndarray, colors: np.ndarray) -> bool:
         """Devuelve True si efectivamente encolo un frame (False si no habia nada que enviar)."""
-        if not self.is_running() or len(points) == 0:
+        if not self.is_running():
             return False
         points, colors = _downsample(points, colors, MAX_STREAM_POINTS_BASE)
         frame = _encode_frame(MSG_BASE, points, colors)
@@ -180,7 +180,7 @@ class LiveStreamServer:
         return True
 
     def broadcast_live(self, points: np.ndarray, colors: np.ndarray) -> None:
-        if not self.is_running() or len(points) == 0:
+        if not self.is_running():
             return
         points, colors = _downsample(points, colors, MAX_STREAM_POINTS_LIVE)
         self._broadcast(_encode_frame(MSG_LIVE, points, colors))
