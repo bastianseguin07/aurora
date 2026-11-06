@@ -65,6 +65,21 @@ class NativeCaptureTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(points, self.expected[:2])
 
+    def test_zero_duration_captures_one_frame_without_fusion(self):
+        with patch.object(aurora_sensor, "_fuse_static_frames") as fusion:
+            cloud = aurora_sensor.capture_snapshot(
+                connection_for([self.frame]),
+                stabilization_frames=1, capture_duration_s=0,
+            )
+        fusion.assert_not_called()
+        np.testing.assert_array_equal(np.asarray(cloud.points), self.expected)
+
+    def test_accumulation_requires_positive_duration(self):
+        with self.assertRaisesRegex(ValueError, "acumulacion requiere"):
+            aurora_sensor.capture_snapshot(
+                connection_for([]), capture_duration_s=0, accumulate_static=True
+            )
+
     def test_best_coverage_remains_a_single_native_frame(self):
         sparse = self.frame.copy()
         sparse[1] = 0

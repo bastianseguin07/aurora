@@ -849,7 +849,7 @@ def capture_snapshot(
     voxel_size: float = 0.005,
     frame_timeout_ms: int = 300,
     stabilization_frames: int = 15,
-    capture_duration_s: float = 3.0,
+    capture_duration_s: float = 0.0,
     timeout_s: float = 10.0,
     persistence_ratio: float = 0.0,
     stop_event: threading.Event | None = None,
@@ -864,6 +864,8 @@ def capture_snapshot(
     conserva la cobertura del mejor frame nativo y usa mediciones estables reales para
     mejorar o completar pixeles, sin promediar coordenadas.
     No transforma por pose/SLAM ni aplica voxel downsample por defecto.
+    Con capture_duration_s=0 y stabilization_frames=1 devuelve el primer
+    frame valido, sin espera temporal ni acumulacion.
 
     Si se pasa 'stop_event' y se activa, guarda el mejor frame recibido hasta
     ese momento. 'timeout_s' evita esperar indefinidamente si no llegan frames.
@@ -879,8 +881,10 @@ def capture_snapshot(
         raise ValueError("El tiempo limite debe ser mayor que cero.")
     if stabilization_frames <= 0:
         raise ValueError("La cantidad de frames de estabilizacion debe ser mayor que cero.")
-    if not np.isfinite(capture_duration_s) or capture_duration_s <= 0:
-        raise ValueError("El tiempo de captura debe ser mayor que cero.")
+    if not np.isfinite(capture_duration_s) or capture_duration_s < 0:
+        raise ValueError("El tiempo de captura debe ser cero o mayor.")
+    if accumulate_static and capture_duration_s == 0:
+        raise ValueError("La acumulacion requiere un tiempo de captura mayor que cero.")
     if not np.isfinite(persistence_ratio) or not 0.0 <= persistence_ratio <= 1.0:
         raise ValueError("La persistencia debe estar entre 0 y 1.")
     if max_points_per_frame is not None and max_points_per_frame <= 0:

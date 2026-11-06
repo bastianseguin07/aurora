@@ -1190,12 +1190,17 @@ class AuroraGUI:
         self.quick_capture_status_label.set_hexpand(True)
         capture_status_row.pack_start(self.quick_capture_status_label, True, True, 0)
         capture_time_row = self._row(files_box)
-        capture_time_row.pack_start(Gtk.Label(label="Tiempo de captura:"), False, False, 0)
+        capture_time_row.pack_start(Gtk.Label(label="Captura fija:"), False, False, 0)
         self.quick_capture_duration_scale = Gtk.Scale.new_with_range(
-            Gtk.Orientation.HORIZONTAL, 1.0, 60.0, 1.0
+            Gtk.Orientation.HORIZONTAL, 0.0, 60.0, 1.0
         )
-        self.quick_capture_duration_scale.set_value(3.0)
+        self.quick_capture_duration_scale.set_value(0.0)
         self.quick_capture_duration_scale.set_digits(0)
+        self.quick_capture_duration_scale.set_round_digits(0)
+        self.quick_capture_duration_scale.connect(
+            "format-value",
+            lambda _scale, value: "Nativo: un frame" if value < 0.5 else f"Acumular {value:.0f} s",
+        )
         self.quick_capture_duration_scale.set_draw_value(True)
         self.quick_capture_duration_scale.set_value_pos(Gtk.PositionType.RIGHT)
         self.quick_capture_duration_scale.set_hexpand(True)
@@ -1203,27 +1208,23 @@ class AuroraGUI:
         self.quick_capture_duration_scale.get_style_context().add_class(
             "capture-duration-scale"
         )
-        for seconds in (1, 10, 20, 30, 40, 50, 60):
+        self.quick_capture_duration_scale.add_mark(
+            0, Gtk.PositionType.BOTTOM, "Nativo"
+        )
+        for seconds in (10, 20, 30, 40, 50, 60):
             self.quick_capture_duration_scale.add_mark(
                 seconds, Gtk.PositionType.BOTTOM, str(seconds)
             )
         self.quick_capture_duration_scale.set_tooltip_text(
-            "Tiempo de adquisición (1–60 s) para la captura fija."
+            "Extremo izquierdo: guarda un frame nativo del sensor. "
+            "De 1 a 60 segundos: acumula mediciones con sensor y escena quietos."
         )
         capture_time_row.pack_start(self.quick_capture_duration_scale, True, True, 0)
-        capture_time_row.pack_start(Gtk.Label(label="segundos"), False, False, 0)
-        static_capture_row = self._row(files_box)
-        self.quick_static_accumulate_check = Gtk.CheckButton(
-            label="Acumular captura fija"
+        capture_hint = Gtk.Label(
+            label="Mantén quietos el sensor y la escena durante la acumulación.", xalign=0
         )
-        self.quick_static_accumulate_check.set_active(False)
-        self.quick_static_accumulate_check.set_tooltip_text(
-            "Cuanto más dure la captura, más frames distribuidos se comparan, dentro de un "
-            "límite de memoria. Conserva toda la cobertura del mejor frame nativo y usa "
-            "mediciones reales estables para completar o mejorar píxeles. Desactívala "
-            "si necesitas un único frame nativo o si algo de la escena se mueve."
-        )
-        static_capture_row.pack_start(self.quick_static_accumulate_check, False, False, 0)
+        capture_hint.set_line_wrap(True)
+        files_box.pack_start(capture_hint, False, False, 0)
         imu_row = self._row(files_box)
         self.quick_imu_compensate_check = Gtk.CheckButton(
             label="Compensar automaticamente el movimiento del sensor con IMU/SLAM"
@@ -1881,8 +1882,9 @@ class AuroraGUI:
         row.pack_start(self.capture_status_label, True, True, 0)
         row.pack_start(
             self._info_button(
-                "En Medición rápida configura de 1 a 60 segundos. Por defecto se guarda "
-                "un solo frame nativo, sin suavizado ni mezcla de frames. La captura móvil "
+                "En Medición rápida, lleva la barra a Nativo para guardar un solo frame "
+                "sin suavizado ni mezcla. Muévela a 1–60 segundos para acumular con el "
+                "sensor y la escena quietos. La captura móvil "
                 "alineada está en la sección Experimental."
             ),
             False,
@@ -1923,10 +1925,11 @@ class AuroraGUI:
         row.pack_start(self.capture_persistence_entry, False, False, 0)
         row.pack_start(
             self._info_button(
-                "Sin acumulación, espera al menos 15 frames válidos y el tiempo elegido; "
-                "guarda el frame nativo con más puntos válidos, sin mediana ni mezcla de frames. "
-                "Deja la persistencia en 0 y los filtros desactivados para conservar todos sus puntos válidos.\n\n"
-                "Si activas Acumular captura fija, aumenta las muestras con el tiempo de captura, "
+                "Con la barra en Nativo, guarda el primer frame válido sin mediana ni mezcla "
+                "de frames. La persistencia no se aplica; deja los filtros desactivados para "
+                "conservar todos sus puntos válidos.\n\n"
+                "Al mover la barra a 1–60 segundos, activa la acumulación fija y aumenta "
+                "las muestras con el tiempo de captura, "
                 "dentro de un límite de memoria. "
                 "Mantiene la cobertura completa del mejor frame nativo y, donde hay consenso, "
                 "usa una medición real estable por píxel; puede completar retornos ausentes. "
@@ -5011,9 +5014,10 @@ class AuroraGUI:
             duration_s if duration_s is not None else self.quick_capture_duration_scale.get_value()
         )
         self._active_capture_aligned = aligned_multiview
-        accumulate_static = (
-            self.quick_static_accumulate_check.get_active() and not aligned_multiview
-        )
+        accumulate_static = capture_duration_s > 0 and not aligned_multiview
+        native_capture = not aligned_multiview and not accumulate_static
+        if native_capture:
+            persistence_ratio = 0.0
 
         cone_angle_deg = None
         max_distance_m = None
@@ -5044,10 +5048,11 @@ class AuroraGUI:
         self.capture_stop_event = threading.Event()
         label = "tunel original" if target == "base" else "tunel con shotcrete"
         self._start_capture_progress(
-            f"Capturando {label}", capture_duration_s
+            f"Capturando {label}", None if native_capture else capture_duration_s
         )
         self._log(
-            f"Capturando nube ({label}) durante al menos {capture_duration_s:.0f} s; "
+            f"Capturando nube ({label}); "
+            + ("un frame; " if native_capture else f"durante al menos {capture_duration_s:.0f} s; ")
             + (
                 "modo móvil alineado con pose SLAM; mueve el sensor lentamente..."
                 if aligned_multiview
@@ -5096,6 +5101,7 @@ class AuroraGUI:
                     self.sensor_connection,
                     persistence_ratio=persistence_ratio,
                     capture_duration_s=capture_duration_s,
+                    stabilization_frames=1 if native_capture else 15,
                     timeout_s=max(10.0, capture_duration_s + 5.0),
                     stop_event=stop_event,
                     max_distance_m=max_distance_m,
