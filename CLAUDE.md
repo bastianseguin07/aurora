@@ -1,3 +1,13 @@
+# Integración Unitree en feat/unitree-l2
+
+El contrato de sensor está en scripts/sensor_backend.py. Aurora sigue en
+scripts/aurora_sensor.py; Unitree en scripts/unitree_sensor.py. El puente nativo
+native/unitree_bridge.cpp usa un SDK clonado fuera del repositorio. Protocolo
+completo por nube, campos XYZ/intensity/time/ring sin promediado. ROS es opcional
+y corre en otro proceso/Python. DecayBuffer es solo visual: no participa en
+capturas. Unitree no ofrece pose SLAM validada ni foto organizada; no reutilizar
+el filtro por píxel de Aurora. Detalles, límites y pruebas en UNITREE_L2.md.
+
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.

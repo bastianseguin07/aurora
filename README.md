@@ -2,6 +2,18 @@
 
 La interfaz de escritorio de Aurora usa GTK3 (`scripts/gui_gtk.py`) y está preparada para Ubuntu 20.04 o posterior. El entorno Python se instala localmente en `venv/`.
 
+## Sensor Unitree LiDAR L2 (rama feat/unitree-l2)
+
+Esta rama conserva la GUI y los análisis y añade selección de sensor Aurora/Unitree,
+SDK UDP directo, puente ROS opcional y decay time separado de las capturas. Consulta
+[UNITREE_L2.md](UNITREE_L2.md) para instalación, red, captura nativa/acumulada,
+campos guardados y pruebas pendientes con hardware.
+
+```bash
+./setup.sh --with-unitree-sdk
+./run_gui.sh
+```
+
 ## Instalación e inicio en Ubuntu
 
 Ejecuta desde la carpeta del proyecto:

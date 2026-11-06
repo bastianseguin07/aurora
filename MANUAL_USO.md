@@ -20,6 +20,11 @@ La interfaz calcula un par ANTES/DESPUES por vez y no mantiene un historial de c
 
 ## Captura
 
+En la rama `feat/unitree-l2` puedes elegir Aurora o Unitree en el selector de sensor.
+Para Unitree usa las instrucciones de [UNITREE_L2.md](UNITREE_L2.md): una nube nativa
+completa o acumulacion fija de 1–60 s, conservando retornos y campos originales.
+La acumulacion por pixel descrita para Aurora no se aplica a Unitree.
+
 Conecta la PC al Aurora por red y usa la direccion del sensor (por defecto `192.168.11.1`). Pulsa **Conectar** y espera el indicador conectado. **Capturar tunel original** asigna la toma a ANTES; **Capturar tunel con shotcrete** la asigna a DESPUES.
 
 La barra **Captura fija** elige el modo. En el extremo izquierdo, **Nativo: un frame** (por defecto), guarda el primer frame valido del SDK sin espera programada, mediana temporal, suavizado, mezcla de frames ni reduccion por voxel; la persistencia no se aplica. Al moverla a **Acumular X s**, de 1 a 60 segundos, compara muestras durante ese tiempo con el sensor y la escena quietos. La acumulacion mantiene la cobertura del mejor frame nativo y selecciona mediciones reales estables para mejorar o completar pixeles, limitada por memoria; no promedia coordenadas. Puede reducir variaciones y completar retornos ausentes, pero no garantiza resolver detalles que no distingue el sensor. **Detener captura** termina antes; si no hay tres muestras, guarda un frame individual.
