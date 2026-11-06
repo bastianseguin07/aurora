@@ -224,7 +224,8 @@ nativa y acumulada, cancelación, cierre del proceso sin datos, sobrecarga, ROS
 ausente, decay sin mensajes nuevos, independencia de la captura y capacidades.
 También se prueba el selector GTK cuando hay pantalla, el eje X del LiDAR y un
 flujo de archivos con recorte, alineación, distancia conocida de 2 cm, heatmap y
-PDF. Las pruebas sin pantalla omiten solamente la de widgets GTK. Los puentes ROS 1
+PDF, ademas de raycasting con Delaunay y Poisson sobre una pared orientada al
+eje X del LiDAR. Las pruebas sin pantalla omiten solamente la de widgets GTK. Los puentes ROS 1
 y ROS 2 tambien se ejecutan contra modulos simulados; esto no sustituye una
 prueba de esos runtimes con el driver real.
 

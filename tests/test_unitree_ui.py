@@ -10,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from gui_gtk import AuroraGUI, Gtk
 from pointcloud_core import (
     PipelineParams,
+    RaycastPipelineParams,
+    run_raycast_pipeline,
     run_pipeline,
     crop_point_cloud,
     estimate_wall_crop_bounds,
@@ -71,6 +73,38 @@ class SavedWorkflowTests(unittest.TestCase):
             ui._show_error.assert_not_called()
             pdf = next((root / "output").glob("informe_aurora_*.pdf"))
             self.assertTrue(pdf.read_bytes().startswith(b"%PDF"))
+
+    def test_existing_mesh_methods_accept_unitree_x_facing_wall_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            yy, zz = np.meshgrid(np.linspace(-0.3, 0.3, 20), np.linspace(-0.3, 0.3, 20))
+            xyz = np.column_stack([np.full(yy.size, 2.0), yy.ravel(), zz.ravel()])
+            before = o3d.geometry.PointCloud()
+            before.points = o3d.utility.Vector3dVector(xyz)
+            after = o3d.geometry.PointCloud()
+            after.points = o3d.utility.Vector3dVector(xyz - np.array([0.02, 0, 0]))
+            paths = [root / "before.ply", root / "after.ply"]
+            for path, cloud in zip(paths, (before, after)):
+                o3d.io.write_point_cloud(str(path), cloud)
+            for method in ("delaunay", "poisson"):
+                with self.subTest(method=method):
+                    params = RaycastPipelineParams(
+                        paths[0],
+                        paths[1],
+                        root / method,
+                        mesh_method=method,
+                        poisson_depth=5,
+                        ray_method="normal",
+                    )
+                    result = run_raycast_pipeline(params, log=lambda _: None)
+                    self.assertGreater(len(result.distances), 100)
+                    self.assertAlmostEqual(
+                        float(np.median(result.distances)), 0.02, delta=0.004
+                    )
+                    self.assertTrue(result.heatmap_path.is_file())
+            np.testing.assert_array_equal(
+                np.asarray(o3d.io.read_point_cloud(str(paths[0])).points), xyz
+            )
 
     def test_empty_live_update_removes_previous_wall(self):
         scene = Mock()
