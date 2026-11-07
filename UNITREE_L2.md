@@ -139,7 +139,7 @@ captura en vivo**, `Decay time` controla exclusivamente los puntos mostrados:
 
 - `0`: muestra solo la última nube recibida; no acumula historia ilimitada.
 - `0 < valor <= 60`: conserva las nubes de los últimos X segundos. El valor
-  inicial es 1 s, como el RViz de referencia.
+  inicial es 10 s en Aurora.
 - Con un valor positivo, la escena se vacía cuando expira la última nube aunque
   no lleguen mensajes nuevos. Al desconectar se limpia la vista.
 
@@ -157,6 +157,43 @@ disponibles. Cambiar el decay no cambia las capturas ni los archivos de entrada.
 Las colas del SDK, UDP y ROS también tienen límites externos a la aplicación:
 esto no demuestra ausencia de pérdidas físicas o del middleware. Hay que medir
 la tasa real y comprobar el rendimiento con el sensor antes de usarlo en obra.
+
+### Panel 3D persistente
+
+El panel derecho permanece visible al cambiar de página; el separador permite
+ajustar su ancho manteniendo la navegación y los controles originales. Muestra
+una cuadrícula de 1 m y controles de decay, tamaño de punto, color por intensidad,
+altura o distancia, rango de color automático/manual, pausa y limpieza visual.
+El ratón conserva órbita, desplazamiento y zoom.
+
+Con Unitree por ROS 2 dibuja todos los puntos de `/unilidar/cloud`, ubicados en
+el mapa usando las poses de Point-LIO interpoladas para el tiempo de cada retorno.
+No usa la nube reducida por vóxeles de Point-LIO. El dibujo tiene un límite de
+300.000 puntos, distribuido por la zona seleccionada y toda la historia del decay;
+las capturas y los cálculos conservan sus datos completos.
+La primera captura guardada con pose válida fija el inicio:
+al abrir la GUI se usa un cero visual nuevo en la posición inicial del sensor,
+sin cargar una referencia de captura anterior ni reiniciar Point-LIO.
+La referencia de medición se crea únicamente con la primera captura de la GUI.
+un cuadrado blanco marca el inicio, un cuadrado amarillo grande la posición
+actual, con solo su eje X, y una línea violeta los une. El panel informa X/Y/Z y distancia
+al inicio en centímetros. Una segunda captura conserva ese mismo inicio. Al
+reiniciarse Point-LIO, cambia el identificador de sesión y se descarta la
+referencia anterior; la siguiente captura válida fija el nuevo inicio. Las poses
+caducadas se muestran como última posición, sin indicarlas como seguimiento activo.
+
+Sin Point-LIO disponible muestra la nube local del sensor, sin inventar una
+posición global. El entorno muestra la escena completa para orientarse; las
+capturas siguen aplicando sus filtros propios. La historia visual respeta el
+decay configurado. El botón de zona alterna entre la escena completa y los mismos
+filtros utilizados al capturar. En Medición rápida se puede seleccionar Arco de
+túnel (predeterminado, +X/−X/techo con límite lateral) o Solo pared frontal
+(cono de 60° en +X, sin techo vertical ni puntos detrás del sensor).
+El seguimiento arranca y se recupera desde la GUI; una captura espera su
+inicialización para poder guardar una referencia válida. La guía aplica una
+tolerancia visual de 1,5 cm a la posición, sin modificar las poses guardadas.
+Estas copias visuales no modifican las nubes PLY/PCD, campos nativos, sidecars,
+recortes, cálculo de espesor ni exportaciones existentes.
 
 ## ROS opcional
 

@@ -17,6 +17,8 @@ from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import PointCloud2, PointField, Imu
 from nav_msgs.msg import Odometry
 from unitree_sensor import UnitreeConfig, connect, capture_snapshot
+from unitree_protocol import read_frame
+from scene_feed import SceneFeed
 
 
 def main():
@@ -27,6 +29,7 @@ def main():
     )
     imu_publisher = node.create_publisher(Imu, "/unilidar/imu", qos_profile_sensor_data)
     pose_publisher = node.create_publisher(Odometry, "/unitree_lio/odometry", qos_profile_sensor_data)
+    scene_publisher = node.create_publisher(PointCloud2, "/unitree_lio/cloud_registered", qos_profile_sensor_data)
     records = [(1.25 + i, 0.5, 0.25, 12 + i, 0.125, 70000 + i) for i in range(4)]
 
     def publish():
@@ -50,6 +53,10 @@ def main():
             b"".join(struct.pack("<dddddI", *point) for point in records)
         )
         publisher.publish(message)
+        import copy
+        registered = copy.deepcopy(message)
+        registered.header.frame_id = "unitree_lio_origin_synthetic_check"
+        scene_publisher.publish(registered)
         imu = Imu()
         imu.header.stamp = message.header.stamp
         imu.header.frame_id = "unilidar_imu"
@@ -103,8 +110,27 @@ def main():
         assert connection.imu_diagnostic["orientation_valid"] is True
         assert connection.pose_history.latest().session_id == "unitree_lio_origin_synthetic_check"
         assert connection.pose_history.for_capture(accumulated).position_spread_m < 1e-9
+        registered = connection.read_registered_batch(1000)[-1]
+        assert registered.frame_id == "unitree_lio_origin_synthetic_check"
+        np.testing.assert_array_equal(registered.xyz, np.array(records)[:, :3])
+        scene = SceneFeed(start=False)
+        scene.set_connection(connection)
+        reference = connection.pose_history.for_capture(accumulated)
+        assert scene.set_reference(reference)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            scene._poll(connection)
+            if len(scene.snapshot()["points"]):
+                break
+            time.sleep(.05)
+        state = scene.snapshot()
+        assert state["pose_ok"] and state["registered"]
+        np.testing.assert_allclose(state["position"], [0, 0, 0], atol=1e-9)
+        assert len(state["points"]) >= len(records)
+        np.testing.assert_allclose(state["points"][:4], np.array(records)[:, :3], atol=1e-6)
+        np.testing.assert_array_equal(cloud.unitree_fields["ring"], [70000, 70001, 70002, 70003])
         print(
-            "ROS real: conexion, XYZ, ring uint32, nanosegundos, acumulacion e IMU continua verificados. Dominio aislado 137."
+            "ROS real: captura nativa, IMU, pose, nube registrada y origen de la escena verificados. Dominio aislado 137."
         )
     finally:
         if connection:

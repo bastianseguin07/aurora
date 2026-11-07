@@ -43,6 +43,8 @@ import numpy as np  # noqa: E402
 
 import sensor_backend as aurora_sensor  # noqa: E402
 from embedded_viewer import EmbeddedComparisonViewer  # noqa: E402
+from persistent_scene import PersistentScenePanel  # noqa: E402
+from tracking_runtime import ensure_tracking  # noqa: E402
 from live_stream_server import make_qr_image  # noqa: E402
 from live_viewer import LiveViewer  # noqa: E402
 from pose_alignment_viewer import PoseAlignmentViewer  # noqa: E402
@@ -675,7 +677,7 @@ box.calculation-indicator {{
 class AuroraGUI:
     def __init__(self, window: Gtk.Window) -> None:
         self.window = window
-        self.window.set_default_size(1440, 960)
+        self.window.set_default_size(1840, 960)
         self.window.set_size_request(1120, 760)
         self.window.connect("destroy", self._on_close)
 
@@ -728,8 +730,12 @@ class AuroraGUI:
         self._live_view_monitor_source: int | None = None
         self._log_poll_source: int | None = None
         self._syncing_capture_live_filters = False
+        self._tracking_thread = None
+        self._tracking_retry_at = 0.
+        self._pending_pose_capture = None
 
         self._build_layout()
+        self._apply_sensor_capabilities()
         self._log_poll_source = GLib.timeout_add(150, self._poll_log_queue)
 
     # ------------------------------------------------------------------ UI
@@ -784,12 +790,17 @@ class AuroraGUI:
 
         content_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         content_box.set_vexpand(True)
-        root_box.pack_start(content_box, True, True, 0)
+        self.workspace_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        self.workspace_paned.set_wide_handle(True)
+        self.workspace_paned.pack1(content_box, resize=True, shrink=False)
+        root_box.pack_start(self.workspace_paned, True, True, 0)
 
         self.stack = Gtk.Stack()
         self.stack.set_name("aurora-content")
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         self.stack.set_transition_duration(150)
+        self.stack.set_hhomogeneous(False)
+        self.stack.set_vhomogeneous(False)
         self.stack.connect("notify::visible-child-name", self._update_section_title)
 
         self.stack.add_titled(self._build_quick_measurement_page(), "medicion_rapida", "Medicion rapida")
@@ -829,6 +840,25 @@ class AuroraGUI:
         self.sidebar_revealer.add(self.sidebar)
         content_box.pack_start(self.sidebar_revealer, False, False, 0)
         content_box.pack_start(self.stack, True, True, 0)
+        self._constrain_wrapped_labels(self.stack)
+        self.scene_panel = PersistentScenePanel(on_decay_changed=self._scene_decay_changed)
+        self.workspace_paned.pack2(self.scene_panel, resize=False, shrink=False)
+        self.workspace_paned.set_position(1140)
+        self.scene_panel.set_decay_time(float(self.live_decay_entry.get_text()))
+        self._sync_scene_capture_settings()
+
+    def _scene_decay_changed(self, seconds):
+        value = f"{seconds:g}"
+        if self.live_decay_entry.get_text() != value:
+            self.live_decay_entry.set_text(value)
+
+    @staticmethod
+    def _constrain_wrapped_labels(widget) -> None:
+        if isinstance(widget, Gtk.Label) and widget.get_line_wrap() and widget.get_max_width_chars() < 0:
+            widget.set_max_width_chars(72)
+        if isinstance(widget, Gtk.Container):
+            for child in widget.get_children():
+                AuroraGUI._constrain_wrapped_labels(child)
 
     @staticmethod
     def _draw_sidebar_menu_icon(_widget, cr) -> bool:
@@ -1227,6 +1257,7 @@ class AuroraGUI:
         capture_status_row.pack_start(self.quick_capture_spinner, False, False, 0)
         self.quick_capture_status_label = Gtk.Label(label="", xalign=0)
         self.quick_capture_status_label.set_hexpand(True)
+        self.quick_capture_status_label.set_line_wrap(True)
         self.quick_capture_status_label.get_style_context().add_class("capture-status")
         capture_status_row.pack_start(self.quick_capture_status_label, True, True, 0)
         self.quick_capture_progress = Gtk.ProgressBar()
@@ -1266,11 +1297,23 @@ class AuroraGUI:
             "De 1 a 60 segundos: acumula mediciones."
         )
         capture_time_row.pack_start(self.quick_capture_duration_scale, True, True, 0)
+        profile_row = self._row(files_box)
+        profile_row.pack_start(Gtk.Label(label="Zona de captura:"), False, False, 0)
+        self.quick_capture_profile = Gtk.ComboBoxText()
+        self.quick_capture_profile.append("arc", "Arco de túnel (pared + techo + atrás)")
+        self.quick_capture_profile.append("front", "Solo pared frontal")
+        self.quick_capture_profile.append("custom", "Personalizada (ajustes de Captura)")
+        self.quick_capture_profile.set_active_id("arc")
+        self.quick_capture_profile.set_tooltip_text("Aplica a ANTES y DESPUÉS. En Unitree, la pared frontal está en +X.")
+        self.quick_capture_profile.connect("changed", self._capture_profile_changed)
+        profile_row.pack_start(self.quick_capture_profile, False, False, 0)
         imu_row = self._row(files_box)
         self.quick_imu_compensate_check = Gtk.CheckButton(
             label="Compensar automaticamente el movimiento del sensor con IMU/SLAM"
         )
         self.quick_imu_compensate_check.set_active(True)
+        self.quick_imu_compensate_check.get_child().set_line_wrap(True)
+        self.quick_imu_compensate_check.get_child().set_max_width_chars(54)
         self.quick_imu_compensate_check.set_tooltip_text(
             "Si ambas capturas tienen pose guardada y el sensor se movio, transforma DESPUES "
             "al marco de ANTES antes de calcular. Requiere que el tracking conserve el mismo mapa."
@@ -1281,6 +1324,7 @@ class AuroraGUI:
             xalign=0,
         )
         self.quick_imu_status_label.set_line_wrap(True)
+        self.quick_imu_status_label.set_max_width_chars(28)
         self.quick_imu_status_label.set_hexpand(True)
         imu_row.pack_start(self.quick_imu_status_label, True, True, 0)
         note = Gtk.Label(
@@ -2077,6 +2121,7 @@ class AuroraGUI:
         self.capture_max_lateral_entry = Gtk.Entry()
         self.capture_max_lateral_entry.set_text("0.5")
         self.capture_max_lateral_entry.set_width_chars(8)
+        self.capture_max_lateral_entry.connect("changed", lambda *_: self._sync_scene_capture_settings())
         lateral_row.pack_start(self.capture_max_lateral_entry, False, False, 0)
         lateral_row.pack_start(
             Gtk.Label(label="X: adelante/atrás · Y: lados · Z: techo", xalign=0),
@@ -2242,7 +2287,7 @@ class AuroraGUI:
 
     # -- Pagina: Alineacion IMU ----------------------------------------------------
 
-    IMU_POSITION_TOLERANCE_CM = 0.5
+    IMU_POSITION_TOLERANCE_CM = 1.5
     IMU_ROTATION_TOLERANCE_DEG = 3.0
     IMU_SPREAD_WARN_CM = 1.5
     IMU_SPREAD_CLEAR_CM = 1.0
@@ -2389,11 +2434,17 @@ class AuroraGUI:
         if not (PROJECT_ROOT / "build/ros2_lio_ws/install/setup.bash").is_file():
             self._show_warning("Falta preparar Point-LIO", "Ejecuta ./setup_unitree_lio.sh y vuelve a iniciar el seguimiento.")
             return
-        log_path = PROJECT_ROOT / "build/point_lio.log"
-        with log_path.open("a") as stream:
-            subprocess.Popen([str(PROJECT_ROOT / "run_unitree_lio.sh"), "rviz:=false"],
-                             stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
-        self._log("Iniciando Point-LIO. Mantén quieto el sensor durante la inicializacion.")
+        if self._tracking_thread is not None and self._tracking_thread.is_alive():
+            return
+        connection = self.sensor_connection
+        self._tracking_retry_at = time.monotonic() + 30
+        def worker():
+            try:
+                ensure_tracking(PROJECT_ROOT, connection, log=self._log)
+            except Exception as exc:
+                self._log(f"No se pudo preparar el seguimiento: {exc}")
+        self._tracking_thread = threading.Thread(target=worker, daemon=True)
+        self._tracking_thread.start()
 
     def _start_unitree_ros_driver(self) -> None:
         """Start the ROS 2 LiDAR driver so the default pose guide can receive data."""
@@ -2494,8 +2545,8 @@ class AuroraGUI:
             self._close_imu_pose_viewer()
         self.imu_guide_status_label.set_text(message)
         for label in self.imu_axis_labels.values():
-            label.set_text("")
-        self.imu_total_distance_label.set_text("")
+            label.set_text("—")
+        self.imu_total_distance_label.set_text("—")
 
     def _start_imu_poll(self) -> None:
         if self.imu_poll_source_id is not None:
@@ -2518,7 +2569,7 @@ class AuroraGUI:
             return True
 
         if not aurora_sensor.capabilities(self.sensor_connection).pose:
-            self._set_imu_guide_disabled("Esperando pose de Point-LIO. Aurora lo inicia al conectar por ROS 2; revisa build/point_lio.log si no aparece.")
+            self._set_imu_guide_disabled("Preparando el seguimiento del sensor…")
             return True
         try:
             pose = aurora_sensor.get_current_pose(self.sensor_connection)
@@ -2560,7 +2611,8 @@ class AuroraGUI:
                         f"Mover hacia {word.upper()}: {abs(value_cm):.0f} cm",
                     )
             color = COLOR_OK if within else COLOR_WARN
-            label = f"OK · {abs(value_cm):.0f} cm" if within else f"mover hacia {word.upper()}: {abs(value_cm):.0f} cm"
+            displayed_cm = 0.0 if within else abs(value_cm)
+            label = f"OK · {displayed_cm:.1f} cm" if within else f"mover hacia {word.upper()}: {displayed_cm:.1f} cm"
             markup = f'<span foreground="{color}">{label}</span>'
             self.imu_axis_labels[axis].set_markup(markup)
 
@@ -2577,12 +2629,12 @@ class AuroraGUI:
                         f"Girar {axis.upper()} {direction}: {abs(value_deg):.0f}°",
                     )
             color = COLOR_OK if within else COLOR_WARN
-            label = f"OK · {abs(value_deg):.0f}°" if within else f"girar {direction}: {abs(value_deg):.0f}°"
+            label = "OK · 0.0°" if within else f"girar {direction}: {abs(value_deg):.1f}°"
             markup = f'<span foreground="{color}">{label}</span>'
             self.imu_axis_labels[axis].set_markup(markup)
 
         total_distance_cm = float(np.linalg.norm(position_error_m)) * 100.0
-        self.imu_total_distance_label.set_text(f"{total_distance_cm:.0f} cm")
+        self.imu_total_distance_label.set_text(f"{0.0 if position_ok else total_distance_cm:.1f} cm")
         spread_cm = float(getattr(pose, "position_spread_m", 0)) * 100.0
         if not self.imu_spread_warning and spread_cm > self.IMU_SPREAD_WARN_CM:
             self.imu_spread_warning = True
@@ -4882,7 +4934,7 @@ class AuroraGUI:
 
     def _scrolled(self, widget: Gtk.Widget) -> Gtk.Widget:
         scroller = Gtk.ScrolledWindow()
-        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scroller.add(widget)
         return scroller
 
@@ -4965,6 +5017,8 @@ class AuroraGUI:
         return button
 
     def _set_path_label(self, label: Gtk.Label, path: str) -> None:
+        label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        label.set_max_width_chars(28)
         name = os.path.basename(path) if path else ""
         if name:
             escaped_name = GLib.markup_escape_text(name)
@@ -5217,6 +5271,12 @@ class AuroraGUI:
                     self.quick_imu_compensate_check.set_active(True)
                 self._apply_sensor_capabilities()
                 self._refresh_quick_status()
+            if not ready and self.unitree_transport_combo.get_active_id() == "ros2" and time.monotonic() > self._tracking_retry_at:
+                hub = self.sensor_connection.hub
+                with hub.condition:
+                    recent_data = bool(hub.frames and time.monotonic() - hub.frames[-1][1].received_at < 1)
+                if recent_data:
+                    self._start_unitree_tracking()
         return True
 
     def _parse_xyz(self, text: str, field_name: str) -> tuple[float, float, float]:
@@ -5286,8 +5346,8 @@ class AuroraGUI:
                 return
             self.quick_imu_compensate_check.set_active(False)
             self.quick_imu_compensate_check.set_sensitive(False)
-            self.quick_imu_status_label.set_text("Esperando pose Point-LIO para habilitar la guía y la compensación.")
-            self.quick_imu_note.set_text("Aurora inicia el seguimiento al conectar por ROS 2. Si no aparece, revisa build/point_lio.log.")
+            self.quick_imu_status_label.set_text("Preparando el seguimiento del sensor…")
+            self.quick_imu_note.set_text("La posición y la compensación se habilitarán al terminar la inicialización.")
             if self.base_path and self.updated_path and not self.alignment_applied:
                 self.quick_alignment_status.set_text("Verifica el registro: sensor fijo o alineación por puntos 3D.")
                 self.quick_status_label.set_text("Ambas nubes listas. Comprueba la alineación antes de calcular el espesor.")
@@ -5402,6 +5462,7 @@ class AuroraGUI:
             aurora_sensor.disconnect(connection)
             return
         self.sensor_connection = connection
+        self.scene_panel.feed.set_connection(connection)
         self._set_sensor_ui_state(True)
         self.capture_base_button.set_sensitive(True)
         self.capture_updated_button.set_sensitive(True)
@@ -5424,15 +5485,21 @@ class AuroraGUI:
 
     def _on_sensor_connect_failed(self, exc: Exception, automatic: bool = False) -> None:
         self._set_sensor_ui_state(False)
-        if automatic:
-            self.quick_capture_status_label.set_text(
-                f"Conexión automática falló: {exc}. Puedes reintentar desde aquí."
-            )
-            self._log(f"Fallo de conexión automática al Aurora: {exc}")
-        else:
-            self._show_error("Error de conexion", str(exc))
+        summary = "No se pudo conectar al sensor. Revisa alimentación, cable y red."
+        error_text = str(exc).lower()
+        if "no llegaron nubes" in error_text:
+            summary = "No llegan datos del sensor. Revisa alimentación, cable y red."
+        elif "ip local" in error_text and "asignada" in error_text:
+            summary = "Falta configurar la IP local en la interfaz Ethernet del Unitree."
+        elif "no-carrier" in error_text or "no tiene enlace" in error_text:
+            summary = "Sin enlace Ethernet. Revisa el cable y la alimentación del sensor."
+        self.quick_capture_status_label.set_text(summary + " Pulsa «Conectar sensor» para reintentar.")
+        self._log(f"Fallo de conexión{' automática' if automatic else ''}: {exc}")
+        if not automatic:
+            self._show_error("Error de conexión", summary)
 
     def _disconnect_sensor(self) -> None:
+        self.scene_panel.feed.set_connection(None)
         if self.viewer is not None:
             self.viewer.set_live_sensor(None)
         try:
@@ -5454,9 +5521,24 @@ class AuroraGUI:
         target: str,
         aligned_multiview: bool = False,
         duration_s: float | None = None,
+        wait_for_pose: bool = True,
     ) -> None:
         if self.sensor_connection is None:
             self._show_warning("Sensor no conectado", "Conecta el sensor antes de capturar.")
+            return
+
+        if (wait_for_pose and self._sensor_kind() == "unitree"
+                and self.unitree_transport_combo.get_active_id() == "ros2"
+                and not aurora_sensor.capabilities(self.sensor_connection).pose):
+            if self._pending_pose_capture is not None:
+                return
+            self._pending_pose_capture = (target, aligned_multiview, duration_s, time.monotonic() + 20)
+            self.quick_capture_status_label.set_text("Preparando la posición antes de capturar…")
+            self.quick_capture_base_button.set_sensitive(False)
+            self.quick_capture_updated_button.set_sensitive(False)
+            self.stop_capture_button.set_sensitive(True)
+            self._start_unitree_tracking()
+            GLib.timeout_add(200, self._capture_when_tracking_ready)
             return
 
         if aligned_multiview and not aurora_sensor.capabilities(self.sensor_connection).pose:
@@ -5621,7 +5703,29 @@ class AuroraGUI:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _capture_when_tracking_ready(self):
+        pending = self._pending_pose_capture
+        if pending is None or self._closing:
+            return GLib.SOURCE_REMOVE
+        target, aligned, duration, deadline = pending
+        if self.sensor_connection is None:
+            self._pending_pose_capture = None
+            return GLib.SOURCE_REMOVE
+        if aurora_sensor.capabilities(self.sensor_connection).pose or time.monotonic() >= deadline:
+            self._pending_pose_capture = None
+            if not aurora_sensor.capabilities(self.sensor_connection).pose:
+                self._log("Seguimiento no disponible: se conservará la captura sin referencia de posición.")
+            self._capture_clicked(target, aligned, duration, wait_for_pose=False)
+            return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_CONTINUE
+
     def _stop_capture_clicked(self) -> None:
+        if self._pending_pose_capture is not None:
+            self._pending_pose_capture = None
+            self._finish_capture_progress()
+            self.stop_capture_button.set_sensitive(False)
+            self.quick_capture_status_label.set_text("Captura cancelada.")
+            return
         if self.capture_stop_event is not None:
             self.capture_stop_event.set()
             self.stop_capture_button.set_sensitive(False)
@@ -5683,6 +5787,8 @@ class AuroraGUI:
             self._show_error("Error guardando captura", str(exc))
             return
         self._log(f"Captura guardada en: {path} ({len(cloud.points)} puntos)")
+        if self.scene_panel.feed.set_reference(ref_pose):
+            self._log("Inicio del entorno 3D fijado en la primera captura de esta sesión Point-LIO.")
 
         if (ref_image is None or ref_point_grid is None) and aurora_sensor.capabilities(kind=self._sensor_kind()).reference_image:
             try:
@@ -5760,11 +5866,13 @@ class AuroraGUI:
             self.experimental_mobile_stop_button.set_sensitive(False)
         self.capture_stop_event = None
         self.capture_status_label.set_text("")
+        summary = "No se pudo completar la captura. Revisa el sensor y vuelve a intentar."
         if hasattr(self, "experimental_mobile_status_label"):
-            self.experimental_mobile_status_label.set_text(f"Error de captura: {exc}")
+            self.experimental_mobile_status_label.set_text(summary)
         if hasattr(self, "quick_capture_status_label"):
-            self.quick_capture_status_label.set_text(f"Error al capturar: {exc}")
-        self._show_error("Error de captura", str(exc))
+            self.quick_capture_status_label.set_text(summary)
+        self._log(f"Error de captura: {exc}")
+        self._show_error("Error de captura", summary)
 
     def _start_capture_progress(self, label: str, duration_s: float | None) -> None:
         self._capture_progress_started_at = time.monotonic()
@@ -6504,6 +6612,45 @@ class AuroraGUI:
         finally:
             self._syncing_capture_live_filters = False
         self._apply_viewer_settings()
+        self._sync_scene_capture_settings()
+
+    def _capture_profile_changed(self, combo):
+        if not hasattr(self, "capture_limit_fov_check") or combo.get_active_id() == "custom":
+            return
+        self._applying_capture_profile = True
+        try:
+            self.capture_limit_fov_check.set_active(True)
+            arc = combo.get_active_id() == "arc"
+            self.capture_cone_angle_entry.set_text("360" if arc and self._sensor_kind() == "unitree" else "180" if arc else "60")
+            axis = "x" if self._sensor_kind() == "unitree" else "z"
+            self.capture_forward_axis_combo.set_active("xyz".index(axis))
+        finally:
+            self._applying_capture_profile = False
+        self._sync_capture_filters_to_live()
+
+    def _sync_scene_capture_settings(self):
+        if not hasattr(self, "scene_panel"):
+            return
+        try:
+            enabled = self.capture_limit_fov_check.get_active()
+            cone = float(self.capture_cone_angle_entry.get_text().replace(",", ".") or 360)
+            distance = float(self.capture_max_distance_entry.get_text().replace(",", ".") or 0)
+            lateral = float(self.capture_max_lateral_entry.get_text().replace(",", ".") or 0)
+        except ValueError:
+            return
+        arc_angle = 360 if self._sensor_kind() == "unitree" else 180
+        profile = "arc" if enabled and cone == arc_angle else "front" if enabled and cone == 60 else "custom"
+        if not getattr(self, "_applying_capture_profile", False) and self.quick_capture_profile.get_active_id() != profile:
+            # Update the label without reapplying the preset over manual settings.
+            self.quick_capture_profile.handler_block_by_func(self._capture_profile_changed)
+            self.quick_capture_profile.set_active_id(profile)
+            self.quick_capture_profile.handler_unblock_by_func(self._capture_profile_changed)
+        self.scene_panel.set_capture_settings(dict(
+            enabled=enabled, cone_angle_deg=cone, max_distance_m=distance or None,
+            max_lateral_m=lateral if self._sensor_kind() == "unitree" and lateral > 0 else None,
+            forward_axis=self.capture_forward_axis_combo.get_active_text() or "x",
+            label="Arco de túnel" if profile == "arc" else "Solo pared frontal" if profile == "front" else "Zona de captura",
+        ))
 
     def _sync_live_filters_to_capture(self) -> None:
         if self._syncing_capture_live_filters or not hasattr(self, "capture_max_distance_entry"):
@@ -6922,6 +7069,9 @@ class AuroraGUI:
                 )
             return
 
+        if hasattr(self, "scene_panel"):
+            self.scene_panel.set_decay_time(decay_s)
+
         if self.viewer is None:
             if hasattr(self, "visualization_status_label"):
                 self.visualization_status_label.set_text(
@@ -6979,6 +7129,8 @@ class AuroraGUI:
 
     def _on_close(self, *_args) -> None:
         self._closing = True
+        if hasattr(self, "scene_panel"):
+            self.scene_panel.stop()
         self._sensor_connect_stop.set()
         if self.capture_stop_event is not None:
             self.capture_stop_event.set()

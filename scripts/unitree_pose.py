@@ -155,6 +155,31 @@ class PoseHistory:
             return latest
         return self.average(poses, latest.timestamp_ns)
 
+    def points_to_world(self, frame):
+        """Place every native return using its timestamp, without voxel reduction."""
+        latest = self.latest()
+        with self.lock:
+            values = [v for v, _ in self.samples]
+        if len(values) < 2:
+            raise RuntimeError("Esperando poses para ubicar la nube completa")
+        stamps = np.array([v["stamp_ns"] for v in values], dtype=np.int64)
+        offsets = np.asarray(frame.fields["time"])
+        if frame.stamp_ns <= 0 or not np.isfinite(offsets).all():
+            raise ValueError("La nube no tiene tiempos válidos para el seguimiento")
+        query = frame.stamp_ns + np.rint(offsets * 1e9).astype(np.int64)
+        if len(query) and (query.min() < stamps[0] or query.max() > stamps[-1]):
+            raise RuntimeError("Esperando pose del final de la nube")
+        indices = np.clip(np.searchsorted(stamps, query, side="right") - 1, 0, len(stamps) - 2)
+        if np.any(stamps[indices + 1] - stamps[indices] > 250_000_000):
+            raise RuntimeError("Interrupción del seguimiento durante la nube")
+        times = (stamps - stamps[0]) / 1e9
+        point_times = (query - stamps[0]) / 1e9
+        rotations = Slerp(times, Rotation.from_quat([v["quaternion_xyzw"] for v in values]))(point_times)
+        positions = np.array([v["position"] for v in values])
+        translation = np.column_stack([np.interp(point_times, times, positions[:, i]) for i in range(3)])
+        # Same IMU→LiDAR lever arm as the capture pose, applied per return.
+        return rotations.apply(frame.xyz + [0.007698, 0.014655, -0.00667]) + translation, latest.session_id
+
     def for_capture(self, cloud, timeout=1.0):
         start = int(cloud.cloud_stamps_ns[0])
         end = max(

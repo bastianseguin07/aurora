@@ -150,9 +150,9 @@ class GtkSelectorTests(unittest.TestCase):
             self.assertEqual(app.capture_sensor_selector.get_active_id(), "unitree")
             self.assertEqual(app._cloud_forward_axis(), "x")
             self.assertFalse(app.quick_imu_compensate_check.get_active())
-            self.assertIn("sin posicion SLAM", app.quick_imu_status_label.get_text())
+            self.assertIn("Preparando el seguimiento", app.quick_imu_status_label.get_text())
             app._refresh_quick_status()
-            self.assertIn("sin posicion SLAM", app.quick_imu_status_label.get_text())
+            self.assertIn("Preparando el seguimiento", app.quick_imu_status_label.get_text())
             self.assertFalse(app.landmark_base_source_photo_rb.get_sensitive())
             self.assertFalse(app.load_base_photo_button.get_sensitive())
             app._show_sensor_notice("Sobrecarga de prueba: 2 nubes descartadas")
@@ -162,7 +162,7 @@ class GtkSelectorTests(unittest.TestCase):
             self.assertEqual(app.capture_forward_axis_combo.get_active_text(), "x")
             config = app._unitree_config()
             self.assertEqual(config.cloud_scan_num, 18)
-            self.assertEqual(app.live_decay_entry.get_text(), "1")
+            self.assertEqual(app.live_decay_entry.get_text(), "10")
             cloud = UnitreeCloud([frame(2)], config)
             with tempfile.TemporaryDirectory() as d:
                 path = Path(d) / "unitree.ply"
@@ -176,6 +176,48 @@ class GtkSelectorTests(unittest.TestCase):
             app.capture_sensor_selector.set_active_id("aurora")
             self.assertEqual(app.sensor_selector.get_active_id(), "aurora")
             self.assertEqual(app.capture_forward_axis_combo.get_active_text(), "z")
+        finally:
+            app._on_close()
+            window.destroy()
+
+    def test_persistent_scene_survives_navigation_and_first_pcd_capture_sets_origin(self):
+        from unitree_pose import PoseHistory
+        window = Gtk.Window()
+        app = AuroraGUI(window)
+        reference = PoseHistory._pose(dict(
+            position=[1, 2, 3], quaternion_xyzw=[0, 0, 0, 1],
+            stamp_ns=1, frame_id="unitree_lio_origin_ui_test",
+        ))
+        try:
+            panel = app.scene_panel
+            parent = panel.get_parent()
+            for page in ("configuracion", "captura", "alineacion_imu", "resultados", "medicion_rapida"):
+                app.stack.set_visible_child_name(page)
+                self.assertIs(panel.get_parent(), parent)
+                self.assertTrue(app.sidebar_revealer.get_reveal_child())
+                self.assertIsNotNone(app.stack.get_child_by_name(page))
+            cloud = UnitreeCloud([frame(2)], app._unitree_config())
+            with tempfile.TemporaryDirectory() as directory:
+                for index, delta in enumerate((0, 1)):
+                    target = Path(directory) / f"capture_{index}.pcd"
+                    later = PoseHistory._pose(dict(
+                        position=[1 + delta, 2, 3], quaternion_xyzw=[0, 0, 0, 1],
+                        stamp_ns=2, frame_id=reference.session_id,
+                    ))
+                    with patch.object(app, "_save_file_dialog", return_value=str(target)):
+                        app._on_capture_done("base", cloud, ref_pose=later)
+                    self.assertTrue(target.is_file())
+                    np.testing.assert_allclose(np.asarray(o3d.io.read_point_cloud(str(target)).points),
+                                               np.asarray(cloud.points), atol=1e-6)
+                    with np.load(target.with_name(target.stem + "_unitree.npz")) as saved:
+                        np.testing.assert_array_equal(saved["fields"], cloud.unitree_fields)
+                    np.testing.assert_allclose(panel.feed.reference.position, reference.position)
+            for view in ("Órbita", "Superior", "Frontal", "Lateral"):
+                panel.canvas.view(view)
+                self.assertTrue(np.isfinite(panel.canvas._matrix(1.5)).all())
+            previous = panel.canvas.distance
+            panel.canvas.zoom(.8)
+            self.assertLess(panel.canvas.distance, previous)
         finally:
             app._on_close()
             window.destroy()

@@ -215,7 +215,7 @@ class CaptureTests(unittest.TestCase):
         start = time.monotonic()
         with patch.object(UnitreeConfig, "command", return_value=command):
             with self.assertRaisesRegex(RuntimeError, "cancelada"):
-                connect(timeout_s=5, stop_event=stop, log=lambda _: None)
+                connect(UnitreeConfig(transport="ros1"), timeout_s=5, stop_event=stop, log=lambda _: None)
         timer.join(1)
         self.assertLess(time.monotonic() - start, 1)
 
@@ -329,7 +329,7 @@ class ProcessTests(unittest.TestCase):
         command = [sys.executable, "-c", "import time;time.sleep(20)"]
         with patch.object(UnitreeConfig, "command", return_value=command):
             with self.assertRaisesRegex(RuntimeError, "No llegaron"):
-                connect(timeout_s=0.03, log=lambda _: None)
+                connect(UnitreeConfig(transport="ros1"), timeout_s=0.03, log=lambda _: None)
 
     def test_missing_ros_is_a_clear_subprocess_error(self):
         config = UnitreeConfig(transport="ros1", ros_python=sys.executable)

@@ -144,14 +144,20 @@ class UnitreeConnection:
         self.config = config
         self.log = log
         self.hub = FrameHub(max_bytes)
+        self.scene_hub = FrameHub(max_bytes)
         self.local = threading.local()
         self.capture_lock = threading.Lock()
         self.stop = threading.Event()
         self.stderr_tail = deque(maxlen=12)
         self.imu_diagnostic = None
         self.pose_history = PoseHistory()
+        command = None
+        if process is None:
+            command = config.command()
+            if config.transport == "ros2":
+                command += ["--scene"]
         self.process = process or subprocess.Popen(
-            config.command(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
         )
         self.threads = [
             threading.Thread(target=self._read, daemon=True),
@@ -189,13 +195,17 @@ class UnitreeConnection:
                     time.monotonic(),
                     frame.stamp_ns,
                 )
-                if frame.frame_id != self.config.frame_id:
+                if self.config.transport == "ros2" and frame.frame_id.startswith("unitree_lio_origin_"):
+                    self.scene_hub.publish(frame)
+                elif frame.frame_id != self.config.frame_id:
                     raise RuntimeError(
                         f"Frame recibido {frame.frame_id!r}; se esperaba {self.config.frame_id!r}. No se transforman ejes automaticamente."
                     )
-                self.hub.publish(frame)
+                else:
+                    self.hub.publish(frame)
         except Exception as exc:
             self.hub.close(str(exc))
+            self.scene_hub.close(str(exc))
         finally:
             if self.process.poll() is None:
                 self.process.terminate()
@@ -223,9 +233,22 @@ class UnitreeConnection:
             size += more.nbytes
         return frames
 
+    def read_registered_batch(self, timeout_ms=0):
+        cursor = getattr(self.local, "scene_cursor", self.scene_hub.cursor())
+        frames = []
+        while True:
+            cursor, frame, dropped = self.scene_hub.read(cursor, timeout_ms / 1000 if not frames else 0)
+            self.local.scene_cursor = cursor
+            if dropped:
+                self.log(f"Sobrecarga de entorno Point-LIO: {dropped} nubes descartadas")
+            if frame is None:
+                return frames
+            frames.append(frame)
+
     def disconnect(self):
         self.stop.set()
         self.hub.close()
+        self.scene_hub.close()
         if self.process.poll() is None:
             self.process.terminate()
             try:

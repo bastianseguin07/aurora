@@ -167,6 +167,7 @@ class LiveSample:
     colors: object
     received_at: float
     native_capture: object = None
+    intensity: object = None
 
 
 def read_view_samples(connection, **kwargs):
@@ -188,6 +189,7 @@ def read_view_samples(connection, **kwargs):
                 unitree.intensity_colors(filtered.fields),
                 frame.received_at,
                 native,
+                filtered.fields["intensity"],
             )
         )
     return samples

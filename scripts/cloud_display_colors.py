@@ -5,7 +5,7 @@ import numpy as np
 import open3d as o3d
 
 
-def rviz_intensity_colors(intensity):
+def rviz_intensity_colors(intensity, bounds=None):
     """RViz's default, non-inverted rainbow with automatic intensity bounds.
 
     Equivalent to IntensityPCTransformer/getRainbowColor in ros2/rviz:
@@ -17,8 +17,9 @@ def rviz_intensity_colors(intensity):
     if not valid.any():
         return colors
     values = intensity[valid]
-    span = np.ptp(values)
-    normalized = (values - values.min()) / span if span else np.zeros(len(values))
+    low, high = (values.min(), values.max()) if bounds is None else bounds
+    span = high - low
+    normalized = np.clip((values - low) / span, 0, 1) if span else np.zeros(len(values))
     stops = np.linspace(0, 1, 6)
     palette = np.array(
         [[1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 1, 1], [0, 0, 1], [1, 0, 1]]

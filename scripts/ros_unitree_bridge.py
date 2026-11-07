@@ -58,25 +58,25 @@ def encode_pointcloud2(msg, sequence=0):
     )
     out.extend(frame)
     data = memoryview(msg.data)
-    for row in range(msg.height):
-        for col in range(msg.width):
-            offset = row * msg.row_step + col * msg.point_step
-            values = {}
-            for name, (decoder, position) in decoders.items():
-                values[name] = decoder.unpack_from(data, offset + position)[0]
-            ring = int(values.get("ring", 0xFFFFFFFF))
-            if not 0 <= ring <= 0xFFFFFFFF:
-                raise ValueError("Ring PointCloud2 fuera de rango")
-            out.extend(
-                RECORD.pack(
-                    values["x"],
-                    values["y"],
-                    values["z"],
-                    values.get("intensity", math.nan),
-                    values.get("time", math.nan),
-                    ring,
-                )
+    for index in range(count):
+        row, col = divmod(index, msg.width)
+        offset = row * msg.row_step + col * msg.point_step
+        values = {}
+        for name, (decoder, position) in decoders.items():
+            values[name] = decoder.unpack_from(data, offset + position)[0]
+        ring = int(values.get("ring", 0xFFFFFFFF))
+        if not 0 <= ring <= 0xFFFFFFFF:
+            raise ValueError("Ring PointCloud2 fuera de rango")
+        out.extend(
+            RECORD.pack(
+                values["x"],
+                values["y"],
+                values["z"],
+                values.get("intensity", math.nan),
+                values.get("time", math.nan),
+                ring,
             )
+        )
     return out
 
 
@@ -87,6 +87,7 @@ def main():
     parser.add_argument("--imu-topic", default="/unilidar/imu")
     parser.add_argument("--frame", default="unilidar_lidar")
     parser.add_argument("--pose-topic", default="/unitree_lio/odometry")
+    parser.add_argument("--scene", action="store_true", help="Include full registered clouds for the scene")
     args = parser.parse_args()
     # ROS and native dependencies may write logs to fd 1. Keep the original
     # pipe for IPC and move all ordinary stdout logging to stderr first.
@@ -96,6 +97,18 @@ def main():
     lock = threading.Lock()
     sequence = 0
     last_imu_log = 0.0
+    scene_sequence = 0
+
+    def scene_callback(msg):
+        nonlocal scene_sequence
+        try:
+            payload = encode_pointcloud2(msg, sequence=scene_sequence)
+            with lock:
+                ipc.write(payload)
+                ipc.flush()
+            scene_sequence += 1
+        except Exception as exc:
+            print(f"Vista Point-LIO: {exc}", file=sys.stderr, flush=True)
 
     def pose_callback(msg):
         pose = msg.pose.pose
@@ -185,6 +198,11 @@ def main():
             node.create_subscription(
                 Imu, args.imu_topic, imu_callback, qos_profile_sensor_data
             )
+            if args.scene:
+                node.create_subscription(
+                    PointCloud2, "/unitree_lio/cloud_registered", scene_callback,
+                    qos_profile_sensor_data,
+                )
             try:
                 from nav_msgs.msg import Odometry
             except ImportError:
