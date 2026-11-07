@@ -196,6 +196,14 @@ distinto del esperado produce un error: no se aplica una transformación implíc
 
 ## Coordenadas y funciones disponibles
 
+Al abrir una captura individual ANTES o DESPUES, el visor usa fondo oscuro y
+el arcoiris de intensidad de RViz. Lee la intensidad nativa del sidecar Unitree
+cuando corresponde a los mismos XYZ, o el campo intensity de un PCD. Para
+archivos antiguos monocromos utiliza su brillo; si no hay intensidad ni RGB,
+colorea por altura. Los RGB de un archivo que ya tiene color se conservan.
+El color se aplica a una copia visual: no reescribe la captura ni se usa como
+espesor. Las comparaciones de dos nubes conservan su escala de espesor.
+
 Unitree entrega XYZ en metros en un marco derecho: +X se opone a la salida del
 cable inferior, +Y está 90° antihorario respecto a +X, +Z sale de la base hacia
 arriba. La IMU tiene un desplazamiento respecto al origen LiDAR, aunque sus ejes

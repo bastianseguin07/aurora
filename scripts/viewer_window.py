@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import open3d as o3d
 from open3d.visualization import gui, rendering
+from cloud_display_colors import color_individual_cloud
 
 from pointcloud_core import (
     compute_pose_relative_transform,
@@ -133,9 +134,8 @@ def _read_geometries(
     material.point_size = 3.2 if kind in ("pair", "pair_box", "thickness") else 2.5
 
     if kind == "cloud":
-        cloud = load_point_cloud(paths[0])
-        if not cloud.has_colors():
-            cloud.paint_uniform_color((0.7, 0.72, 0.76))
+        cloud = color_individual_cloud(paths[0], load_point_cloud(paths[0]))
+        material.point_size = 3.0
         return [("nube", cloud, material)]
     if kind == "live":
         cloud = o3d.geometry.PointCloud()
@@ -365,6 +365,8 @@ def main() -> None:
         window = app.create_window(args.title, 1280, 800, -1, -1, 1)
         scene_widget = gui.SceneWidget()
         scene_widget.scene = rendering.Open3DScene(window.renderer)
+        if args.kind == "cloud":
+            scene_widget.scene.set_background(np.array([48/255, 48/255, 48/255, 1.0]))
 
         for name, geometry, material in geometries:
             if args.kind != "live":
