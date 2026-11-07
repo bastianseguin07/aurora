@@ -30,6 +30,10 @@ Confirma primero las IPs de tu red y configura la IP local en la interfaz Ethern
 ```
 
 Abre RViz con `/unilidar/cloud`, frame `unilidar_lidar`, intensidad y decay de 1 s.
+La herramienta **Move Camera** permite girar arrastrando con el botón izquierdo,
+desplazarse con el botón central y acercar/alejar con la rueda. El panel **Views**
+usa el controlador **Orbit**. La configuración incluye las herramientas para que
+los eventos del mouse lleguen al controlador de cámara.
 Para ejecutar el driver sin abrir RViz:
 
 ```bash

@@ -112,6 +112,8 @@ def generate_launch_description():
 (package / "rviz/aurora.rviz").write_text("""Panels:
   - Class: rviz_common/Displays
     Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
 Visualization Manager:
   Class: ""
   Displays:
@@ -137,6 +139,10 @@ Visualization Manager:
       Channel Name: intensity
       Autocompute Intensity Bounds: true
       Position Transformer: XYZ
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
   Global Options:
     Fixed Frame: unilidar_lidar
     Frame Rate: 30
