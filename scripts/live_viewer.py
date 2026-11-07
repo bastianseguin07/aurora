@@ -27,6 +27,7 @@ from sensor_backend import (
 )
 from live_stream_server import LiveStreamServer
 from live_decay import DecayBuffer
+from cloud_display_colors import rviz_intensity_colors
 from pointcloud_core import (
     _create_q_only_visualizer,
     _apply_sdk_render_style,
@@ -283,9 +284,12 @@ class LiveViewer:
             # camera image colors (normally its native grayscale) instead of
             # implying a thickness map with a fixed cyan color.
             if sensor_colors is not None and np.asarray(sensor_colors).shape == points_xyz.shape:
-                cloud.colors = o3d.utility.Vector3dVector(
-                    np.clip(np.asarray(sensor_colors), 0.0, 1.0)
-                )
+                sensor_colors = np.clip(np.asarray(sensor_colors), 0.0, 1.0)
+                if np.allclose(sensor_colors[:, 0], sensor_colors[:, 1]) and np.allclose(
+                    sensor_colors[:, 1], sensor_colors[:, 2]
+                ):
+                    sensor_colors = rviz_intensity_colors(sensor_colors[:, 0])
+                cloud.colors = o3d.utility.Vector3dVector(sensor_colors)
             else:
                 cloud.paint_uniform_color((0.72, 0.72, 0.72))
             return cloud

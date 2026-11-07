@@ -392,6 +392,25 @@ label {{
     color: {COLOR_TEXT};
 }}
 
+label.capture-status {{
+    font-size: 13pt;
+    font-weight: 700;
+    color: {COLOR_TEXT};
+}}
+
+progressbar.capture-progress trough {{
+    min-height: 20px;
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 7px;
+    background-color: {COLOR_CARD};
+}}
+
+progressbar.capture-progress progress {{
+    min-height: 18px;
+    border-radius: 6px;
+    background-color: {COLOR_ACCENT};
+}}
+
 label.dim-label {{
     color: {COLOR_TEXT_MUTED};
     opacity: 1;
@@ -447,6 +466,7 @@ button.suggested-action:hover {{
 button.suggested-action:active {{
     background-color: {COLOR_ACCENT_DARK};
 }}
+
 
 scale.capture-duration-scale trough {{
     min-height: 6px;
@@ -675,6 +695,7 @@ class AuroraGUI:
             pass
 
         self.sensor_connection = None
+        self.unitree_ros_driver_process: subprocess.Popen | None = None
         self._closing = False
         self._sensor_connect_stop = threading.Event()
         self.capture_stop_event: threading.Event | None = None
@@ -1008,6 +1029,11 @@ class AuroraGUI:
         card, self.stat_std = self._stat_card("Desviación estándar")
         self.cards_row.pack_start(card, False, False, 0)
         stats_box.pack_start(self.cards_row, False, False, 0)
+        self.minimum_thickness_summary = Gtk.Label(xalign=0)
+        self.minimum_thickness_summary.set_line_wrap(True)
+        self.minimum_thickness_summary.set_no_show_all(True)
+        self.minimum_thickness_summary.hide()
+        stats_box.pack_start(self.minimum_thickness_summary, False, False, 4)
         self.thickness_alert_label = Gtk.Label(xalign=0)
         self.thickness_alert_label.set_line_wrap(True)
         self.thickness_alert_label.set_margin_top(8)
@@ -1140,12 +1166,12 @@ class AuroraGUI:
         self.sensor_selector = Gtk.ComboBoxText()
         self.sensor_selector.append("aurora", "Slamtec Aurora")
         self.sensor_selector.append("unitree", "Unitree LiDAR L2")
-        self.sensor_selector.set_active_id("aurora")
+        self.sensor_selector.set_active_id("unitree")
         self.sensor_selector.connect("changed", self._on_sensor_kind_changed)
         sensor_row.pack_start(self.sensor_selector, False, False, 0)
         sensor_row.pack_start(Gtk.Label(label="IP:", xalign=0), False, False, 0)
         self.quick_sensor_address_entry = Gtk.Entry()
-        self.quick_sensor_address_entry.set_text("192.168.11.1")
+        self.quick_sensor_address_entry.set_text("192.168.1.62")
         self.quick_sensor_address_entry.set_width_chars(16)
         self.quick_sensor_address_entry.connect("changed", self._sync_sensor_address)
         sensor_row.pack_start(self.quick_sensor_address_entry, False, False, 0)
@@ -1201,13 +1227,20 @@ class AuroraGUI:
         capture_status_row.pack_start(self.quick_capture_spinner, False, False, 0)
         self.quick_capture_status_label = Gtk.Label(label="", xalign=0)
         self.quick_capture_status_label.set_hexpand(True)
+        self.quick_capture_status_label.get_style_context().add_class("capture-status")
         capture_status_row.pack_start(self.quick_capture_status_label, True, True, 0)
+        self.quick_capture_progress = Gtk.ProgressBar()
+        self.quick_capture_progress.set_no_show_all(True)
+        self.quick_capture_progress.hide()
+        self.quick_capture_progress.set_size_request(-1, 22)
+        self.quick_capture_progress.get_style_context().add_class("capture-progress")
+        files_box.pack_start(self.quick_capture_progress, False, False, 0)
         capture_time_row = self._row(files_box)
         capture_time_row.pack_start(Gtk.Label(label="Captura fija:"), False, False, 0)
         self.quick_capture_duration_scale = Gtk.Scale.new_with_range(
             Gtk.Orientation.HORIZONTAL, 0.0, 60.0, 1.0
         )
-        self.quick_capture_duration_scale.set_value(0.0)
+        self.quick_capture_duration_scale.set_value(10.0)
         self.quick_capture_duration_scale.set_digits(0)
         self.quick_capture_duration_scale.set_round_digits(0)
         self.quick_capture_duration_scale.connect(
@@ -1230,14 +1263,9 @@ class AuroraGUI:
             )
         self.quick_capture_duration_scale.set_tooltip_text(
             "Extremo izquierdo: guarda un frame nativo del sensor. "
-            "De 1 a 60 segundos: acumula mediciones con sensor y escena quietos."
+            "De 1 a 60 segundos: acumula mediciones."
         )
         capture_time_row.pack_start(self.quick_capture_duration_scale, True, True, 0)
-        capture_hint = Gtk.Label(
-            label="Mantén quietos el sensor y la escena durante la acumulación.", xalign=0
-        )
-        capture_hint.set_line_wrap(True)
-        files_box.pack_start(capture_hint, False, False, 0)
         imu_row = self._row(files_box)
         self.quick_imu_compensate_check = Gtk.CheckButton(
             label="Compensar automaticamente el movimiento del sensor con IMU/SLAM"
@@ -1271,7 +1299,8 @@ class AuroraGUI:
         crop_note = Gtk.Label(
             label=(
                 "Define la region de trabajo en ambas capturas. La deteccion automatica viene seleccionada; "
-                "tambien puedes elegir un punto de la pared."
+                "tambien puedes elegir un punto de la superficie. Ancho y alto recorren la cara; profundidad "
+                "va perpendicular a ella (en un techo horizontal Unitree, coincide con Z)."
             ),
             xalign=0,
         )
@@ -1313,19 +1342,22 @@ class AuroraGUI:
         crop_row.pack_start(self.quick_crop_apply_button, False, False, 0)
         crop_dimensions_row = self._row(crop_box)
         crop_dimensions_row.pack_start(Gtk.Label(label="Ancho (cm):"), False, False, 0)
-        self.quick_crop_face_size_entry = self._numeric_entry("20", 7)
+        self.quick_crop_face_size_entry = self._numeric_entry("40", 7)
         self.quick_crop_face_size_entry.connect(
             "changed", lambda entry: self._sync_quick_crop_dimension(entry, "width")
         )
         crop_dimensions_row.pack_start(self.quick_crop_face_size_entry, False, False, 0)
         crop_dimensions_row.pack_start(Gtk.Label(label="Alto (cm):"), False, False, 0)
-        self.quick_crop_height_entry = self._numeric_entry("20", 7)
+        self.quick_crop_height_entry = self._numeric_entry("40", 7)
         self.quick_crop_height_entry.connect(
             "changed", lambda entry: self._sync_quick_crop_dimension(entry, "height")
         )
         crop_dimensions_row.pack_start(self.quick_crop_height_entry, False, False, 0)
         crop_dimensions_row.pack_start(Gtk.Label(label="Profundidad (cm):"), False, False, 0)
-        self.quick_crop_depth_entry = self._numeric_entry("100", 7)
+        self.quick_crop_depth_entry = self._numeric_entry("30", 7)
+        self.quick_crop_depth_entry.set_tooltip_text(
+            "Grosor de la caja perpendicular a la superficie seleccionada."
+        )
         self.quick_crop_depth_entry.connect(
             "changed", lambda entry: self._sync_quick_crop_dimension(entry, "depth")
         )
@@ -1865,12 +1897,12 @@ class AuroraGUI:
         self.capture_sensor_selector = Gtk.ComboBoxText()
         self.capture_sensor_selector.append("aurora", "Slamtec Aurora")
         self.capture_sensor_selector.append("unitree", "Unitree LiDAR L2")
-        self.capture_sensor_selector.set_active_id("aurora")
+        self.capture_sensor_selector.set_active_id("unitree")
         self.capture_sensor_selector.connect("changed", self._on_sensor_kind_changed)
         row.pack_start(self.capture_sensor_selector, False, False, 0)
         row.pack_start(Gtk.Label(label="Direccion del sensor:"), False, False, 0)
         self.sensor_address_entry = Gtk.Entry()
-        self.sensor_address_entry.set_text("192.168.11.1")
+        self.sensor_address_entry.set_text("192.168.1.62")
         self.sensor_address_entry.set_width_chars(16)
         self.sensor_address_entry.connect("changed", self._sync_sensor_address)
         row.pack_start(self.sensor_address_entry, False, False, 0)
@@ -1945,7 +1977,14 @@ class AuroraGUI:
         row.pack_start(self.capture_progress_spinner, False, False, 0)
         self.capture_status_label = Gtk.Label(xalign=0)
         self.capture_status_label.set_hexpand(True)
+        self.capture_status_label.get_style_context().add_class("capture-status")
         row.pack_start(self.capture_status_label, True, True, 0)
+        self.capture_progress_bar = Gtk.ProgressBar()
+        self.capture_progress_bar.set_no_show_all(True)
+        self.capture_progress_bar.hide()
+        self.capture_progress_bar.set_size_request(-1, 22)
+        self.capture_progress_bar.get_style_context().add_class("capture-progress")
+        sensor_box.pack_start(self.capture_progress_bar, False, False, 0)
         row.pack_start(
             self._info_button(
                 "En Medición rápida, lleva la barra a Nativo para guardar un solo frame "
@@ -2015,11 +2054,11 @@ class AuroraGUI:
 
         row = self._row(capture_options_box)
         self.capture_limit_fov_check = Gtk.CheckButton(label="Activar filtros de captura")
-        self.capture_limit_fov_check.set_active(False)
+        self.capture_limit_fov_check.set_active(True)
         row.pack_start(self.capture_limit_fov_check, False, False, 0)
         row.pack_start(Gtk.Label(label="Cono (grados):"), False, False, 0)
         self.capture_cone_angle_entry = Gtk.Entry()
-        self.capture_cone_angle_entry.set_text("90")
+        self.capture_cone_angle_entry.set_text("360")
         self.capture_cone_angle_entry.set_width_chars(6)
         row.pack_start(self.capture_cone_angle_entry, False, False, 0)
         row.pack_start(Gtk.Label(label="Eje frontal:"), False, False, 0)
@@ -2033,6 +2072,18 @@ class AuroraGUI:
         self.capture_max_distance_entry.set_text("0")
         self.capture_max_distance_entry.set_width_chars(8)
         row.pack_start(self.capture_max_distance_entry, False, False, 0)
+        lateral_row = self._row(capture_options_box)
+        lateral_row.pack_start(Gtk.Label(label="Límite lateral Unitree (m, ±):"), False, False, 0)
+        self.capture_max_lateral_entry = Gtk.Entry()
+        self.capture_max_lateral_entry.set_text("0.5")
+        self.capture_max_lateral_entry.set_width_chars(8)
+        lateral_row.pack_start(self.capture_max_lateral_entry, False, False, 0)
+        lateral_row.pack_start(
+            Gtk.Label(label="X: adelante/atrás · Y: lados · Z: techo", xalign=0),
+            False,
+            False,
+            0,
+        )
         self.capture_limit_fov_check.connect(
             "toggled", lambda _widget: self._sync_capture_filters_to_live()
         )
@@ -2047,10 +2098,9 @@ class AuroraGUI:
         )
         row.pack_start(
             self._info_button(
-                "Cono visual: 90 grados por defecto, aplicado solo cuando activas los filtros. "
-                "Descarta puntos fuera "
-                "del cono centrado en el eje frontal indicado; puede ayudar a aislar una "
-                "zona, pero tambien puede dejar fuera parte de la pared.\n\n"
+                "En Unitree, apertura 360 grados y límite lateral ±0.5 m conservan adelante "
+                "(+X), atrás (-X) y techo (+Z), recortando puntos alejados a los lados (+/-Y). "
+                "Un cono menor solo conserva puntos cercanos a la dirección frontal.\n\n"
                 "Distancia maxima: 0 = sin limite. Cuando activas los filtros, un valor mayor "
                 "que cero descarta puntos mas lejanos. El check activa o desactiva ambos filtros."
             ),
@@ -2194,6 +2244,10 @@ class AuroraGUI:
 
     IMU_POSITION_TOLERANCE_CM = 0.5
     IMU_ROTATION_TOLERANCE_DEG = 3.0
+    IMU_SPREAD_WARN_CM = 1.5
+    IMU_SPREAD_CLEAR_CM = 1.0
+    IMU_VIEWER_POSITION_DEADBAND_M = 0.015
+    IMU_VIEWER_ROTATION_DEADBAND_DEG = 1.0
 
     def _build_imu_alignment_page(self) -> Gtk.Widget:
         page = self._new_page()
@@ -2202,22 +2256,16 @@ class AuroraGUI:
         self.imu_reference_source_path: str | None = None
         self.imu_direction_words: dict[str, tuple[str, str]] | None = None
         self.imu_poll_source_id: int | None = None
+        self.imu_spread_warning = False
+        self.imu_viewer_last_displayed_pose: tuple[np.ndarray, np.ndarray] | None = None
 
         info_frame, info_box = self._section("Reposicionar el sensor (IMU/SLAM)")
         note = Gtk.Label(
             label=(
-                "Aurora utiliza su tracking integrado. Unitree requiere el seguimiento "
-                "Point-LIO por ROS 2 (boton de inicio abajo). Al capturar el 'Tunel original' se guarda la "
-                "posicion como referencia. Podes mover el sensor libremente para aplicar "
-                "el shotcrete; antes de capturar el 'Tunel con shotcrete', usa esta "
-                "pagina para devolverlo a la misma posicion fisica siguiendo la guia de "
-                "abajo. Mantén el tracking activo entre ambas capturas; reiniciarlo cambia "
-                "el origen y exige una nueva captura ANTES.\n\n"
-                "La guia indica hacia donde mover con palabras (adelante/atras, "
-                "izquierda/derecha, arriba/abajo) calculadas a partir de hacia donde "
-                "miraba el sensor al capturar ANTES. En Unitree, adelante es +X "
-                "(opuesto al cable). Las indicaciones usan una pose reciente de esa misma "
-                "sesion. Verifica los ejes y el registro con referencias fisicas antes de medir espesor."
+                "Unitree: al iniciar Aurora se abren el driver ROS 2 y Point-LIO para mostrar "
+                "la pose en vivo. Requiere el entorno preparado y el sensor conectado por Ethernet. "
+                "Captura ANTES con el seguimiento activo; conserva esa sesión para DESPUÉS. "
+                "Sigue las flechas y la distancia para volver a la posición de referencia."
             ),
             xalign=0,
         )
@@ -2322,6 +2370,10 @@ class AuroraGUI:
             reference_rpy_deg=reference_rpy_deg,
         )
         self.pose_viewer.start()
+        self.imu_viewer_last_displayed_pose = (
+            reference_position.copy(),
+            reference_rpy_deg.copy(),
+        )
         self.close_imu_viewer_button.set_sensitive(True)
 
     def _start_unitree_tracking(self) -> None:
@@ -2343,10 +2395,72 @@ class AuroraGUI:
                              stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
         self._log("Iniciando Point-LIO. Mantén quieto el sensor durante la inicializacion.")
 
+    def _start_unitree_ros_driver(self) -> None:
+        """Start the ROS 2 LiDAR driver so the default pose guide can receive data."""
+        if self._sensor_kind() != "unitree" or self.unitree_transport_combo.get_active_id() != "ros2":
+            return
+        if not (PROJECT_ROOT / "build/ros2_ws/install/setup.bash").is_file():
+            self._log("Falta el driver ROS 2 de Unitree; ejecuta ./setup_unitree_ros2.sh.")
+            return
+        local_ip = self.unitree_entries["local_ip"].get_text().strip()
+        try:
+            address_lines = subprocess.run(
+                ["ip", "-o", "-4", "addr", "show"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            ).stdout.splitlines()
+            interface = next(
+                (
+                    fields[1].split("@", 1)[0]
+                    for fields in (line.split() for line in address_lines)
+                    if len(fields) >= 4
+                    and fields[2] == "inet"
+                    and fields[3].split("/", 1)[0] == local_ip
+                ),
+                None,
+            )
+            if interface is None:
+                self.quick_capture_status_label.set_text(
+                    f"Falta configurar {local_ip} en la interfaz Ethernet del Unitree."
+                )
+                self._log(f"No inicio el driver Unitree: la IP local {local_ip} no está asignada.")
+                return
+            carrier = (Path("/sys/class/net") / interface / "carrier").read_text().strip()
+            if carrier == "0":
+                self.quick_capture_status_label.set_text(
+                    f"Sin enlace Ethernet en {interface}; revisa cable y alimentación del sensor."
+                )
+                self._log(f"No inicio el driver Unitree: {interface} está en NO-CARRIER.")
+                return
+        except (OSError, subprocess.SubprocessError) as exc:
+            self._log(f"No se pudo comprobar el enlace Ethernet del Unitree: {exc}")
+            return
+        log_path = PROJECT_ROOT / "build/unitree_ros2_driver.log"
+        try:
+            with log_path.open("a", encoding="utf-8") as stream:
+                self.unitree_ros_driver_process = subprocess.Popen(
+                    [
+                        str(PROJECT_ROOT / "run_unitree_ros2.sh"),
+                        f"lidar_ip:={self.sensor_address_entry.get_text().strip()}",
+                        f"local_ip:={self.unitree_entries['local_ip'].get_text().strip()}",
+                        "rviz:=false",
+                    ],
+                    cwd=PROJECT_ROOT,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            self._log("Iniciando driver ROS 2 Unitree; el registro queda en build/unitree_ros2_driver.log.")
+        except OSError as exc:
+            self._log(f"No se pudo iniciar el driver ROS 2 Unitree: {exc}")
+
     def _close_imu_pose_viewer(self) -> None:
         if self.pose_viewer is not None:
             self.pose_viewer.stop()
             self.pose_viewer = None
+        self.imu_viewer_last_displayed_pose = None
         self.close_imu_viewer_button.set_sensitive(False)
 
     def _refresh_imu_reference(self) -> None:
@@ -2404,17 +2518,24 @@ class AuroraGUI:
             return True
 
         if not aurora_sensor.capabilities(self.sensor_connection).pose:
-            self._set_imu_guide_disabled("Unitree: sin posicion Point-LIO reciente. Conecta por ROS 2 y ejecuta ./run_unitree_lio.sh.")
-            return True
-        if self.imu_reference_pose is None:
-            self._set_imu_guide_disabled("No hay posicion de referencia cargada (ver arriba).")
+            self._set_imu_guide_disabled("Esperando pose de Point-LIO. Aurora lo inicia al conectar por ROS 2; revisa build/point_lio.log si no aparece.")
             return True
         try:
             pose = aurora_sensor.get_current_pose(self.sensor_connection)
-            if getattr(self.imu_reference_pose, "session_id", None) != getattr(pose, "session_id", None):
+            if self.imu_reference_pose is not None and getattr(self.imu_reference_pose, "session_id", None) != getattr(pose, "session_id", None):
                 raise RuntimeError("La referencia pertenece a otra sesion de tracking. Vuelve a capturar ANTES sin reiniciar Point-LIO.")
         except Exception as exc:
             self._set_imu_guide_disabled(f"No se pudo leer la posicion del sensor: {exc}")
+            return True
+
+        if self.imu_reference_pose is None:
+            for label in self.imu_axis_labels.values():
+                label.set_text("Sin referencia")
+            self.imu_total_distance_label.set_text("—")
+            self.imu_guide_status_label.set_markup(
+                f'<span foreground="{COLOR_OK}">Seguimiento activo · captura ANTES para guardar '
+                "la referencia y ver el desplazamiento.</span>"
+            )
             return True
 
         ref_position, ref_rpy_deg = self.imu_reference_pose
@@ -2424,17 +2545,23 @@ class AuroraGUI:
         rotation_error_deg = ((ref_rpy_deg - pose.rpy_deg + 180.0) % 360.0) - 180.0
 
         position_ok = True
-        pending_move: tuple[str, float] | None = None  # (palabra, cm) del primer eje sin corregir
+        largest_deviation: tuple[float, str] | None = None
         for axis, value_m in zip(("x", "y", "z"), position_error_m):
             value_cm = value_m * 100.0
             positive_word, negative_word = self.imu_direction_words[axis]
             word = positive_word if value_cm >= 0 else negative_word
             within = abs(value_cm) <= self.IMU_POSITION_TOLERANCE_CM
             position_ok = position_ok and within
-            if not within and pending_move is None:
-                pending_move = (word, abs(value_cm))
+            if not within:
+                score = abs(value_cm) / self.IMU_POSITION_TOLERANCE_CM
+                if largest_deviation is None or score > largest_deviation[0]:
+                    largest_deviation = (
+                        score,
+                        f"Mover hacia {word.upper()}: {abs(value_cm):.0f} cm",
+                    )
             color = COLOR_OK if within else COLOR_WARN
-            markup = f'<span foreground="{color}">mover hacia {word.upper()}: {abs(value_cm):.1f} cm</span>'
+            label = f"OK · {abs(value_cm):.0f} cm" if within else f"mover hacia {word.upper()}: {abs(value_cm):.0f} cm"
+            markup = f'<span foreground="{color}">{label}</span>'
             self.imu_axis_labels[axis].set_markup(markup)
 
         rotation_ok = True
@@ -2442,32 +2569,57 @@ class AuroraGUI:
             direction = "+" if value_deg >= 0 else "-"
             within = abs(value_deg) <= self.IMU_ROTATION_TOLERANCE_DEG
             rotation_ok = rotation_ok and within
+            if not within:
+                score = abs(value_deg) / self.IMU_ROTATION_TOLERANCE_DEG
+                if largest_deviation is None or score > largest_deviation[0]:
+                    largest_deviation = (
+                        score,
+                        f"Girar {axis.upper()} {direction}: {abs(value_deg):.0f}°",
+                    )
             color = COLOR_OK if within else COLOR_WARN
-            markup = f'<span foreground="{color}">girar {direction}: {abs(value_deg):.1f}°</span>'
+            label = f"OK · {abs(value_deg):.0f}°" if within else f"girar {direction}: {abs(value_deg):.0f}°"
+            markup = f'<span foreground="{color}">{label}</span>'
             self.imu_axis_labels[axis].set_markup(markup)
 
         total_distance_cm = float(np.linalg.norm(position_error_m)) * 100.0
-        self.imu_total_distance_label.set_text(f"{total_distance_cm:.1f} cm")
+        self.imu_total_distance_label.set_text(f"{total_distance_cm:.0f} cm")
+        spread_cm = float(getattr(pose, "position_spread_m", 0)) * 100.0
+        if not self.imu_spread_warning and spread_cm > self.IMU_SPREAD_WARN_CM:
+            self.imu_spread_warning = True
+        elif self.imu_spread_warning and spread_cm < self.IMU_SPREAD_CLEAR_CM:
+            self.imu_spread_warning = False
         if self.pose_viewer is not None and self.pose_viewer.is_running():
-            self.pose_viewer.update_current_pose(pose.position, pose.rpy_deg)
+            previous = self.imu_viewer_last_displayed_pose
+            if previous is None:
+                previous = (ref_position, ref_rpy_deg)
+            position_delta = float(np.linalg.norm(pose.position - previous[0]))
+            rotation_delta = np.abs(
+                ((pose.rpy_deg - previous[1] + 180.0) % 360.0) - 180.0
+            )
+            if (
+                position_delta >= self.IMU_VIEWER_POSITION_DEADBAND_M
+                or float(np.max(rotation_delta)) >= self.IMU_VIEWER_ROTATION_DEADBAND_DEG
+            ):
+                self.pose_viewer.update_current_pose(pose.position, pose.rpy_deg)
+                self.imu_viewer_last_displayed_pose = (
+                    pose.position.copy(),
+                    pose.rpy_deg.copy(),
+                )
 
-        if pending_move is not None:
-            word, value_cm = pending_move
+        if largest_deviation is not None:
+            _, headline = largest_deviation
             status_markup = (
                 f'<span foreground="{COLOR_WARN}" size="large" weight="bold">'
-                f"Mover hacia {word.upper()}: {value_cm:.1f} cm</span>"
+                f"{GLib.markup_escape_text(headline)}</span>"
             )
-        elif getattr(pose, "position_spread_m", 0) > self.IMU_POSITION_TOLERANCE_CM / 100:
-            status_markup = f'<span foreground="{COLOR_WARN}">Posicion cercana; la pose aun varia mas que la tolerancia. Mantén quieto el sensor.</span>'
+        elif self.imu_spread_warning:
+            status_markup = f'<span foreground="{COLOR_WARN}">Seguimiento inestable · variación de pose: {spread_cm:.0f} cm</span>'
         elif not rotation_ok:
             status_markup = (
                 f'<span foreground="{COLOR_WARN}">Posicion correcta — ajusta la rotacion (ver abajo)</span>'
             )
         else:
             status_markup = f'<span foreground="{COLOR_OK}">✓ Sensor en posicion, listo para capturar</span>'
-        spread = getattr(pose, "position_spread_m", 0)
-        if spread:
-            status_markup += f" · variacion de pose: {spread*100:.1f} cm"
         self.imu_guide_status_label.set_markup(status_markup)
 
         return True
@@ -3066,9 +3218,9 @@ class AuroraGUI:
 
         row = self._row(bounds_box)
         row.pack_start(Gtk.Label(label="Lado de la cara cuadrada (cm):"), False, False, 0)
-        self.test_crop_face_size_entry = self._numeric_entry("20", 7)
+        self.test_crop_face_size_entry = self._numeric_entry("40", 7)
         self.test_crop_face_size_entry.set_tooltip_text(
-            "Controla el ancho y el alto iguales de la cara cuadrada, centrada en el punto elegido."
+            "Lado de la cara cuadrada, centrada en el punto elegido y sobre la superficie."
         )
         self.test_crop_face_size_entry.connect("changed", lambda _entry: self._on_test_crop_face_size_changed())
         self.test_crop_face_size_entry.connect(
@@ -3079,7 +3231,10 @@ class AuroraGUI:
         row = self._row(bounds_box)
         row.pack_start(Gtk.Label(label="Profundidad (cm):"), False, False, 0)
         self.test_crop_depth_spin = Gtk.Entry()
-        self.test_crop_depth_spin.set_text("100")
+        self.test_crop_depth_spin.set_text("30")
+        self.test_crop_depth_spin.set_tooltip_text(
+            "Grosor de la caja perpendicular a la superficie seleccionada."
+        )
         self.test_crop_depth_spin.set_width_chars(8)
         self.test_crop_depth_spin.set_input_purpose(Gtk.InputPurpose.NUMBER)
         self.test_crop_depth_spin.connect("changed", lambda _entry: self._on_test_crop_depth_changed())
@@ -3935,8 +4090,8 @@ class AuroraGUI:
         return self._build_advanced_expander_page2()[0]
 
     def _build_advanced_expander_page2(self) -> tuple[Gtk.Widget, Gtk.Box]:
-        expander = Gtk.Expander(label="Opciones avanzadas de Cloud-to-Cloud")
-        expander.set_expanded(False)
+        expander = Gtk.Expander(label="Opciones avanzadas y umbral mínimo de espesor")
+        expander.set_expanded(True)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.get_style_context().add_class("expander-content")
         box.set_margin_start(4)
@@ -3973,6 +4128,28 @@ class AuroraGUI:
         )
 
         row = self._row(box)
+        self.minimum_thickness_check = Gtk.CheckButton(
+            label="Excluir mediciones menores al espesor mínimo"
+        )
+        self.minimum_thickness_check.set_active(True)
+        row.pack_start(self.minimum_thickness_check, False, False, 0)
+        row.pack_start(Gtk.Label(label="Umbral (cm):"), False, False, 0)
+        self.minimum_thickness_entry = Gtk.Entry()
+        self.minimum_thickness_entry.set_text("1.0")
+        self.minimum_thickness_entry.set_width_chars(7)
+        row.pack_start(self.minimum_thickness_entry, False, False, 0)
+        row.pack_start(
+            self._info_button(
+                "Las distancias menores al umbral se excluyen de las estadísticas, CSV e "
+                "histograma. El resultado informa cuántos puntos se excluyeron. Desactiva "
+                "este filtro si necesitas conservar espesores menores al umbral."
+            ),
+            False,
+            False,
+            0,
+        )
+
+        row = self._row(box)
         self.use_icp_check = Gtk.CheckButton(label="Corregir alineacion entre capturas (ICP)")
         row.pack_start(self.use_icp_check, False, False, 0)
         row.pack_start(Gtk.Label(label="Umbral (m):"), False, False, 0)
@@ -4002,6 +4179,14 @@ class AuroraGUI:
         row.pack_start(change_output_button, False, False, 0)
 
         return expander, box
+
+    def _minimum_thickness_m(self) -> float:
+        if not self.minimum_thickness_check.get_active():
+            return 0.0
+        threshold_cm = self._read_numeric_entry(
+            self.minimum_thickness_entry, "El umbral mínimo", 0.01, 1000
+        )
+        return float(threshold_cm) / 100.0
 
     # -- Controles de visualizacion integrados en Resultados ----------------------
 
@@ -4154,7 +4339,7 @@ class AuroraGUI:
         live_box.pack_start(self.live_notice_label, False, False, 0)
         row = self._row(live_box)
         row.pack_start(Gtk.Label(label="Decay time (s):"), False, False, 0)
-        self.live_decay_entry = Gtk.Entry(); self.live_decay_entry.set_text("1")
+        self.live_decay_entry = Gtk.Entry(); self.live_decay_entry.set_text("10")
         self.live_decay_entry.set_width_chars(8)
         self.live_decay_entry.set_tooltip_text("Ventana visual de 0–60 s. 0 muestra solo la ultima nube; no afecta capturas guardadas.")
         self.live_decay_entry.connect("changed", lambda _entry: self._apply_viewer_settings())
@@ -4218,7 +4403,9 @@ class AuroraGUI:
         self.live_forward_axis_combo.connect(
             "changed", lambda _combo: self._sync_live_filters_to_capture()
         )
-        self._sync_live_filters_to_capture()
+        # Capture settings are the source of truth at startup. Importing empty
+        # live-view defaults here used to silently uncheck the capture filter.
+        self._sync_capture_filters_to_live()
 
         page.pack_start(live_frame, False, True, 0)
     # -- Pagina: Comparacion (prueba / experimental) ----------------------------
@@ -4472,6 +4659,7 @@ class AuroraGUI:
                 if self.quick_smooth_check.get_active()
                 else 0
             )
+            minimum_thickness_m = self._minimum_thickness_m()
         except ValueError as exc:
             self._show_error("Parametros invalidos", str(exc))
             return
@@ -4507,6 +4695,7 @@ class AuroraGUI:
             mesh_smoothing_iterations=int(smooth_iterations),
             delaunay_max_edge_trim_factor=float(delaunay_trim),
             color_spec=self._selected_preview_heatmap_spec(),
+            minimum_thickness_m=minimum_thickness_m,
         )
 
         self._invalidate_results()
@@ -4542,6 +4731,7 @@ class AuroraGUI:
                 "mesh_smoothing_iterations": params.mesh_smoothing_iterations,
                 "delaunay_max_edge_trim_factor": params.delaunay_max_edge_trim_factor,
                 "color_spec": params.color_spec,
+                "minimum_thickness_m": params.minimum_thickness_m,
             }
             self._raycast_log("Iniciando calculo aislado; la interfaz seguira disponible...")
             process = subprocess.Popen(
@@ -4615,6 +4805,7 @@ class AuroraGUI:
         self._set_stat(self.stat_std, f"{stats.std * 100:.2f} cm")
         self.cards_row.set_no_show_all(False)
         self.cards_row.show_all()
+        self._show_minimum_thickness_summary(stats)
         self.results_empty_label.hide()
         self.status_label.set_markup(
             f'<span foreground="{COLOR_OK}">●</span>  Analisis con malla completo — '
@@ -5062,7 +5253,7 @@ class AuroraGUI:
         kind = source.get_active_id()
         if kind not in ("aurora", "unitree"):
             return
-        old_kind = getattr(self, "_last_sensor_kind", "aurora")
+        old_kind = getattr(self, "_last_sensor_kind", "unitree")
         addresses = getattr(self, "_sensor_addresses", {"aurora": "192.168.11.1", "unitree": "192.168.1.62"})
         if kind != old_kind:
             addresses[old_kind] = self.quick_sensor_address_entry.get_text()
@@ -5095,18 +5286,19 @@ class AuroraGUI:
                 return
             self.quick_imu_compensate_check.set_active(False)
             self.quick_imu_compensate_check.set_sensitive(False)
-            self.quick_imu_status_label.set_text("Unitree: sin posicion SLAM reciente; inicia Point-LIO para disponer de guia y compensacion.")
-            self.quick_imu_note.set_text("Conecta por ROS 2 y ejecuta ./run_unitree_lio.sh. Sin pose reciente, mantén el trípode fijo o alinea por puntos 3D.")
+            self.quick_imu_status_label.set_text("Esperando pose Point-LIO para habilitar la guía y la compensación.")
+            self.quick_imu_note.set_text("Aurora inicia el seguimiento al conectar por ROS 2. Si no aparece, revisa build/point_lio.log.")
             if self.base_path and self.updated_path and not self.alignment_applied:
                 self.quick_alignment_status.set_text("Verifica el registro: sensor fijo o alineación por puntos 3D.")
                 self.quick_status_label.set_text("Ambas nubes listas. Comprueba la alineación antes de calcular el espesor.")
         elif self._sensor_kind() == "unitree":
-            self.quick_imu_note.set_text("Point-LIO activo: captura ANTES y DESPUÉS en la misma sesion, sin reiniciar el tracking. Mantén quieto el sensor durante cada captura. Verifica el registro con referencias fijas antes de medir.")
+            self.quick_imu_note.set_text("Point-LIO activo: captura ANTES y DESPUÉS en la misma sesión, sin reiniciar el seguimiento. Verifica el registro con referencias fijas antes de medir.")
         else:
             self.quick_imu_note.set_text("Puedes mover el sensor entre capturas si el tracking sigue en el mismo mapa. Con la casilla activada, se compensa el cambio de pose antes de calcular.")
 
     def _apply_sensor_capabilities(self):
         caps = aurora_sensor.capabilities(self.sensor_connection, self._sensor_kind())
+        kind = self._sensor_kind()
         if hasattr(self, "sensor_capabilities_label"):
             self.sensor_capabilities_label.set_text(
                 caps.frame_description + (". Pose SLAM disponible." if caps.pose else ". Sin posicion SLAM reciente.")
@@ -5136,6 +5328,12 @@ class AuroraGUI:
             combo = getattr(self, name, None)
             if combo is not None:
                 combo.set_active("xyz".index(caps.forward_axis))
+        if getattr(self, "_filter_default_sensor_kind", None) != kind:
+            if hasattr(self, "capture_cone_angle_entry"):
+                self.capture_cone_angle_entry.set_text("360" if kind == "unitree" else "60")
+            self._filter_default_sensor_kind = kind
+        if hasattr(self, "capture_max_lateral_entry"):
+            self.capture_max_lateral_entry.set_sensitive(kind == "unitree")
         if hasattr(self, "capture_persistence_entry") and not caps.organized_cloud:
             self.capture_persistence_entry.set_text("0")
 
@@ -5216,6 +5414,13 @@ class AuroraGUI:
             self._apply_viewer_settings()
         self._apply_sensor_capabilities()
         self._log(f"Conectado: {aurora_sensor.capabilities(connection).name} en {self.sensor_address_entry.get_text()}.")
+        if self._sensor_kind() == "unitree" and self.unitree_transport_combo.get_active_id() == "ros2":
+            GLib.timeout_add(1000, self._start_tracking_after_connect)
+
+    def _start_tracking_after_connect(self) -> bool:
+        if self.sensor_connection is not None and self._sensor_kind() == "unitree":
+            self._start_unitree_tracking()
+        return GLib.SOURCE_REMOVE
 
     def _on_sensor_connect_failed(self, exc: Exception, automatic: bool = False) -> None:
         self._set_sensor_ui_state(False)
@@ -5285,8 +5490,9 @@ class AuroraGUI:
                 cone_text = self.capture_cone_angle_entry.get_text().strip()
                 if cone_text:
                     cone_angle_deg = float(cone_text)
-                    if not np.isfinite(cone_angle_deg) or cone_angle_deg <= 0 or cone_angle_deg > 180:
-                        raise ValueError("El cono debe estar entre 0 y 180 grados.")
+                    max_cone_angle = 360 if self._sensor_kind() == "unitree" else 180
+                    if not np.isfinite(cone_angle_deg) or cone_angle_deg <= 0 or cone_angle_deg > max_cone_angle:
+                        raise ValueError(f"La apertura debe estar entre 0 y {max_cone_angle} grados.")
                 dist_text = self.capture_max_distance_entry.get_text().strip()
                 if dist_text:
                     distance_value = float(dist_text)
@@ -5298,6 +5504,29 @@ class AuroraGUI:
             self._show_error("Parametros invalidos", str(exc) or "Cono y distancia maxima deben ser numeros.")
             return
         forward_axis = self.capture_forward_axis_combo.get_active_text() or "z"
+        max_lateral_m = None
+        if self._sensor_kind() == "unitree" and self.capture_limit_fov_check.get_active():
+            lateral_text = self.capture_max_lateral_entry.get_text().strip().replace(",", ".")
+            if lateral_text:
+                try:
+                    max_lateral_m = float(lateral_text)
+                except ValueError:
+                    self._show_error("Parametros invalidos", "El límite lateral debe ser un número mayor que cero.")
+                    return
+                if not np.isfinite(max_lateral_m) or max_lateral_m <= 0:
+                    self._show_error("Parametros invalidos", "El límite lateral debe ser mayor que cero.")
+                    return
+        if cone_angle_deg is not None or max_distance_m is not None or max_lateral_m is not None:
+            filter_parts = []
+            if cone_angle_deg is not None:
+                filter_parts.append(f"cono {cone_angle_deg:g}° en eje {forward_axis.upper()}")
+            if max_distance_m is not None:
+                filter_parts.append(f"distancia máxima {max_distance_m:g} m")
+            if max_lateral_m is not None:
+                filter_parts.append(f"arco lateral ±{max_lateral_m:g} m en Y")
+            self._log("Filtro de captura aplicado: " + ", ".join(filter_parts) + ".")
+        else:
+            self._log("Filtro de captura desactivado.")
 
         self.capture_base_button.set_sensitive(False)
         self.capture_updated_button.set_sensitive(False)
@@ -5316,7 +5545,7 @@ class AuroraGUI:
                 "modo móvil alineado con pose SLAM; mueve el sensor lentamente..."
                 if aligned_multiview
                 else (
-                    "captura fija acumulada; mantén quietos sensor y escena..."
+                    "captura fija acumulada..."
                     if accumulate_static
                     else "se conserva un único frame nativo..."
                 )
@@ -5326,6 +5555,11 @@ class AuroraGUI:
 
         stop_event = self.capture_stop_event
         connection = self.sensor_connection
+        sensor_filter_kwargs = (
+            {"max_lateral_m": max_lateral_m}
+            if self._sensor_kind() == "unitree" and max_lateral_m is not None
+            else {}
+        )
 
         def worker():
             try:
@@ -5368,6 +5602,7 @@ class AuroraGUI:
                     cone_angle_deg=cone_angle_deg,
                     forward_axis=forward_axis,
                     accumulate_static=accumulate_static,
+                    **sensor_filter_kwargs,
                 )
                 try:
                     ref_image, ref_point_grid = aurora_sensor.capture_reference_frame(
@@ -5538,6 +5773,14 @@ class AuroraGUI:
         self.capture_progress_spinner.set_no_show_all(False)
         self.capture_progress_spinner.show()
         self.capture_progress_spinner.start()
+        for name in ("capture_progress_bar", "quick_capture_progress"):
+            progress = getattr(self, name, None)
+            if progress is not None:
+                progress.set_fraction(0.0)
+                progress.set_text("Iniciando captura…")
+                progress.set_show_text(True)
+                progress.set_no_show_all(False)
+                progress.show()
         if hasattr(self, "quick_capture_spinner"):
             self.quick_capture_spinner.set_no_show_all(False)
             self.quick_capture_spinner.show()
@@ -5575,6 +5818,20 @@ class AuroraGUI:
             self.quick_capture_status_label.set_text(text)
         if hasattr(self, "experimental_mobile_status_label"):
             self.experimental_mobile_status_label.set_text(text)
+        for name in ("capture_progress_bar", "quick_capture_progress"):
+            progress = getattr(self, name, None)
+            if progress is None:
+                continue
+            if self._capture_progress_duration_s is None:
+                progress.pulse()
+                progress.set_text("Capturando…")
+            elif elapsed <= self._capture_progress_duration_s:
+                fraction = min(1.0, elapsed / max(self._capture_progress_duration_s, 1.0))
+                progress.set_fraction(fraction)
+                progress.set_text(f"{round(fraction * 100):.0f}%")
+            else:
+                progress.pulse()
+                progress.set_text("Procesando nube…")
         return GLib.SOURCE_CONTINUE
 
     def _finish_capture_progress(self) -> None:
@@ -5584,6 +5841,11 @@ class AuroraGUI:
         self.capture_progress_spinner.stop()
         self.capture_progress_spinner.set_no_show_all(True)
         self.capture_progress_spinner.hide()
+        for name in ("capture_progress_bar", "quick_capture_progress"):
+            progress = getattr(self, name, None)
+            if progress is not None:
+                progress.set_no_show_all(True)
+                progress.hide()
         if hasattr(self, "quick_capture_spinner"):
             self.quick_capture_spinner.stop()
             self.quick_capture_spinner.set_no_show_all(True)
@@ -5821,6 +6083,7 @@ class AuroraGUI:
             use_icp=self.use_icp_check.get_active(),
             icp_threshold=float(self.icp_threshold_entry.get_text() or 0.05),
             max_distance=max_distance,
+            minimum_thickness_m=self._minimum_thickness_m(),
         )
 
     def _run_pipeline_worker(self, params: PipelineParams, generation: int) -> None:
@@ -5848,6 +6111,7 @@ class AuroraGUI:
         self._set_stat(self.stat_std, f"{stats.std * 100:.2f} cm")
         self.cards_row.set_no_show_all(False)
         self.cards_row.show_all()
+        self._show_minimum_thickness_summary(stats)
         self.results_empty_label.hide()
         self.open_result_viewer_button.set_sensitive(True)
         self.open_result_viewer_button.set_label("Abrir vista 3D")
@@ -5873,6 +6137,18 @@ class AuroraGUI:
         self.status_label.set_markup(f'<span foreground="{COLOR_ERROR}">●</span>  El analisis fallo')
         self.stack.set_visible_child_name("resultados")
         self._show_error("Error durante el analisis", message)
+
+    def _show_minimum_thickness_summary(self, stats) -> None:
+        if stats.minimum_thickness_m > 0:
+            pct = 100.0 * stats.excluded_n_points / max(1, stats.input_n_points)
+            self.minimum_thickness_summary.set_text(
+                f"Umbral mínimo: {stats.minimum_thickness_m * 100:.1f} cm · "
+                f"excluidos: {stats.excluded_n_points:,} de {stats.input_n_points:,} "
+                f"({pct:.1f}%)."
+            )
+            self.minimum_thickness_summary.show()
+        else:
+            self.minimum_thickness_summary.hide()
 
     # ------------------------------------------------------- Alertas e informe
 
@@ -6037,6 +6313,11 @@ class AuroraGUI:
             ["Espesor mediano", f"{stats.median * 100:.2f}"],
             ["Desviación estándar", f"{stats.std * 100:.2f}"],
         ]
+        if stats.minimum_thickness_m > 0:
+            stats_rows.extend([
+                ["Umbral mínimo aplicado", f"{stats.minimum_thickness_m * 100:.1f}"],
+                ["Puntos excluidos", f"{stats.excluded_n_points:,} de {stats.input_n_points:,}"],
+            ])
         stats_table = Table(stats_rows, colWidths=[8 * rl_cm, 6 * rl_cm])
         stats_table.setStyle(
             TableStyle(
@@ -6207,6 +6488,13 @@ class AuroraGUI:
                 if filters_enabled
                 else ""
             )
+            try:
+                if cone and float(cone.replace(",", ".")) > 180:
+                    # The live viewer uses a conventional forward cone; a full
+                    # capture arc is represented there by no cone restriction.
+                    cone = ""
+            except ValueError:
+                pass
             self.live_cone_angle_entry.set_text(cone)
             axis = self.capture_forward_axis_combo.get_active_text() or "z"
             for index in range(3):
@@ -6229,7 +6517,17 @@ class AuroraGUI:
                 distance_active = float(distance.replace(",", ".")) > 0
             except ValueError:
                 distance_active = bool(distance)
-            self.capture_limit_fov_check.set_active(bool(cone or distance_active))
+            lateral_active = False
+            if self._sensor_kind() == "unitree":
+                try:
+                    lateral_active = float(
+                        self.capture_max_lateral_entry.get_text().replace(",", ".")
+                    ) > 0
+                except ValueError:
+                    lateral_active = bool(self.capture_max_lateral_entry.get_text().strip())
+            self.capture_limit_fov_check.set_active(
+                bool(cone or distance_active or lateral_active)
+            )
             if cone:
                 self.capture_cone_angle_entry.set_text(cone)
             active_axis = self.live_forward_axis_combo.get_active_text() or "z"
@@ -6703,12 +7001,14 @@ class AuroraGUI:
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--sensor", choices=("aurora", "unitree"), default="aurora")
-    parser.add_argument("--transport", choices=("udp", "ros1", "ros2"), default="udp")
+    parser.add_argument("--sensor", choices=("aurora", "unitree"), default="unitree")
+    parser.add_argument("--transport", choices=("udp", "ros1", "ros2"), default="ros2")
     parser.add_argument("--base")
     parser.add_argument("--updated")
-    parser.add_argument("--capture-seconds", type=float, default=0)
-    parser.add_argument("--pose-guide", action="store_true")
+    parser.add_argument("--capture-seconds", type=float, default=10)
+    parser.add_argument("--pose-guide", dest="pose_guide", action="store_true")
+    parser.add_argument("--no-pose-guide", dest="pose_guide", action="store_false")
+    parser.set_defaults(pose_guide=False)
     args = parser.parse_args()
     settings = Gtk.Settings.get_default()
     if settings is not None:
@@ -6736,7 +7036,11 @@ def main() -> None:
     window.show_all()
     if args.pose_guide:
         GLib.idle_add(lambda: app.stack.set_visible_child_name("alineacion_imu"))
-    GLib.idle_add(app._toggle_sensor_connection, True)
+    def startup_connect():
+        app._start_unitree_ros_driver()
+        GLib.timeout_add(1500, app._toggle_sensor_connection, True)
+        return GLib.SOURCE_REMOVE
+    GLib.idle_add(startup_connect)
     Gtk.main()
 
 

@@ -53,6 +53,10 @@ texto; la aplicación usa el nuevo puente configurable. No ejecutes ambos a la v
    motivo y los últimos mensajes del driver.
 5. Captura ANTES y DESPUÉS y revisa las nubes antes de calcular.
 
+Al cerrar Aurora o desconectar la sesión, se libera el socket UDP de la PC, pero
+no se envía `stopLidarRotation`: el Unitree sigue girando y escaneando. Para
+detenerlo, corta su alimentación o usa su control externo.
+
 Valores de referencia encontrados en el repositorio, que debes confirmar:
 
 | Parámetro | Valor inicial |
@@ -88,11 +92,13 @@ corta una nube por la mitad. Sensor, trípode y escena deben permanecer quietos.
 No se aplica el consenso por píxel de Aurora, ni mediana, promediado espacial,
 voxel, ICP, normalización de coordenadas o reconstrucción de malla al capturar.
 
-Solo se descartan coordenadas inválidas: NaN, infinito o el vector cero. Distancia
-y cono son recortes opcionales, apagados inicialmente. La persistencia por píxel
-no se aplica a Unitree: debe estar en cero. No se heredan el límite de 1,5 m ni
-la eliminación estadística de puntos de la GUI antigua. Su antigua “persistencia”
-medía la duración de la toma, no la persistencia de cada punto.
+Solo se descartan coordenadas inválidas: NaN, infinito o el vector cero. En la GUI,
+los filtros de captura parten activos: apertura de 360° y límite lateral Unitree
+de ±0,5 m en Y. Así se conservan puntos hacia delante (+X), detrás (-X) y arriba
+(+Z), mientras se recortan retornos laterales más lejanos. La distancia máxima
+radial queda en 0 (sin límite) y puede cambiarse. La persistencia por píxel no se
+aplica a Unitree: debe estar en cero. La antigua “persistencia” medía la duración
+de la toma, no la persistencia de cada punto.
 
 Cada captura produce un `.ply` con XYZ y colores de intensidad y un archivo
 `<nombre>_unitree.npz` con:

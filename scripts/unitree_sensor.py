@@ -242,6 +242,40 @@ class UnitreeConnection:
 
 def connect(config=None, log=print, timeout_s=5.0, stop_event=None):
     config = config or UnitreeConfig()
+    if config.transport == "udp":
+        # Fail before starting the SDK: it commands the lidar to rotate, then
+        # would time out if the selected Ethernet interface has no physical link.
+        try:
+            addresses = subprocess.run(
+                ["ip", "-o", "-4", "addr", "show"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            ).stdout.splitlines()
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(f"No se pudo comprobar la red local antes de conectar: {exc}") from exc
+        interface = None
+        for line in addresses:
+            fields = line.split()
+            if len(fields) >= 4 and fields[2] == "inet" and fields[3].split("/", 1)[0] == config.local_ip:
+                interface = fields[1].split("@", 1)[0]
+                break
+        if interface is None:
+            raise RuntimeError(
+                f"La IP local {config.local_ip} no está asignada a ninguna interfaz. "
+                "Configura la IP de la PC en la interfaz Ethernet conectada al Unitree."
+            )
+        try:
+            carrier = (Path("/sys/class/net") / interface / "carrier").read_text().strip()
+        except OSError:
+            carrier = "unknown"
+        if carrier == "0":
+            raise RuntimeError(
+                f"La interfaz Ethernet {interface} no tiene enlace físico (NO-CARRIER). "
+                "Revisa el cable, el puerto/adaptador y que el Unitree esté encendido; "
+                "el sensor no se activó."
+            )
     try:
         connection = UnitreeConnection(config, log)
     except FileNotFoundError as exc:
@@ -274,7 +308,7 @@ def connect(config=None, log=print, timeout_s=5.0, stop_event=None):
 
 
 def filter_frame(
-    frame, max_distance_m=None, cone_angle_deg=None, forward_axis="x", **_
+    frame, max_distance_m=None, cone_angle_deg=None, forward_axis="x", max_lateral_m=None, **_
 ):
     xyz = frame.xyz
     valid = np.isfinite(xyz).all(axis=1) & np.any(xyz != 0, axis=1)
@@ -282,12 +316,18 @@ def filter_frame(
     if max_distance_m is not None and max_distance_m > 0:
         valid &= distance < max_distance_m
     if cone_angle_deg is not None:
-        if not 0 < cone_angle_deg <= 180 or forward_axis not in ("x", "y", "z"):
+        if not 0 < cone_angle_deg <= 360 or forward_axis not in ("x", "y", "z"):
             raise ValueError("Cono o eje frontal invalido")
-        safe = np.where(distance > 0, distance, 1)
-        valid &= xyz[:, "xyz".index(forward_axis)] / safe >= np.cos(
-            np.radians(cone_angle_deg / 2)
-        )
+        if cone_angle_deg < 360:
+            safe = np.where(distance > 0, distance, 1)
+            valid &= xyz[:, "xyz".index(forward_axis)] / safe >= np.cos(
+                np.radians(cone_angle_deg / 2)
+            )
+    if max_lateral_m is not None:
+        if not np.isfinite(max_lateral_m) or max_lateral_m <= 0:
+            raise ValueError("El límite lateral debe ser mayor que cero")
+        # Unitree's native frame is +X forward, +Y lateral and +Z upward.
+        valid &= np.abs(xyz[:, 1]) <= max_lateral_m
     return frame.subset(valid)
 
 
@@ -340,6 +380,7 @@ def capture_snapshot(
     max_distance_m=None,
     cone_angle_deg=None,
     forward_axis="x",
+    max_lateral_m=None,
     max_capture_bytes=256 * 1024 * 1024,
     **_,
 ):
@@ -386,7 +427,13 @@ def capture_snapshot(
                 continue
             if accumulate_static and frame.received_at > deadline:
                 break
-            frame = filter_frame(frame, max_distance_m, cone_angle_deg, forward_axis)
+            frame = filter_frame(
+                frame,
+                max_distance_m,
+                cone_angle_deg,
+                forward_axis,
+                max_lateral_m=max_lateral_m,
+            )
             if not len(frame.fields):
                 continue
             used_bytes += frame.nbytes

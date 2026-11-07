@@ -93,7 +93,10 @@ int main(int argc, char** argv) {
                 offset += static_cast<size_t>(n);
             }
         }
-        reader->stopLidarRotation(); reader->closeUDP();
+        // Closing Aurora releases the PC-side UDP socket but deliberately does
+        // not send stopLidarRotation(): the Unitree keeps scanning until power
+        // is removed or its own control interface stops it.
+        reader->closeUDP();
         close(ipc_fd); close(lock_fd);
         return 0;
     } catch (const std::exception& e) {

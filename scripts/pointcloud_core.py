@@ -40,6 +40,9 @@ class DistanceStats:
     max: float
     p95: float
     n_points: int
+    input_n_points: int = 0
+    excluded_n_points: int = 0
+    minimum_thickness_m: float = 0.0
 
     def __str__(self) -> str:
         return (
@@ -47,6 +50,12 @@ class DistanceStats:
             f"  Espesor medio     : {self.mean * 100:.2f} cm\n"
             f"  Espesor mediano   : {self.median * 100:.2f} cm\n"
             f"  Desv. estandar    : {self.std * 100:.2f} cm"
+            + (
+                f"\n  Excluidos (< {self.minimum_thickness_m * 100:.2f} cm): "
+                f"{self.excluded_n_points:,} de {self.input_n_points:,}"
+                if self.minimum_thickness_m > 0
+                else ""
+            )
         )
 
 
@@ -62,6 +71,7 @@ class PipelineParams:
     crop_min: Vec3 | None = None
     crop_max: Vec3 | None = None
     max_distance: float | None = None
+    minimum_thickness_m: float = 0.0
 
 
 @dataclass
@@ -825,6 +835,33 @@ def compute_c2c_distance(
 
 
 def summarize(distances: np.ndarray) -> DistanceStats:
+    return summarize_filtered(distances)
+
+
+def filter_measurements(
+    points: np.ndarray, distances: np.ndarray, minimum_thickness_m: float = 0.0
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Exclude below-threshold measurements while keeping points aligned to distances."""
+    points = np.asarray(points)
+    distances = np.asarray(distances, dtype=np.float64)
+    if not np.isfinite(minimum_thickness_m) or minimum_thickness_m < 0:
+        raise ValueError("El umbral mínimo de espesor debe ser cero o mayor.")
+    if len(points) != len(distances):
+        raise ValueError("Puntos y distancias no tienen el mismo tamaño.")
+    mask = distances >= minimum_thickness_m if minimum_thickness_m > 0 else np.ones(len(distances), dtype=bool)
+    excluded = int(len(distances) - np.count_nonzero(mask))
+    return points[mask], distances[mask], excluded
+
+
+def summarize_filtered(
+    distances: np.ndarray,
+    input_n_points: int | None = None,
+    excluded_n_points: int = 0,
+    minimum_thickness_m: float = 0.0,
+) -> DistanceStats:
+    distances = np.asarray(distances, dtype=np.float64)
+    if not distances.size:
+        raise ValueError("El umbral mínimo excluyó todos los puntos; reduce el umbral.")
     return DistanceStats(
         mean=float(np.mean(distances)),
         median=float(np.median(distances)),
@@ -833,6 +870,9 @@ def summarize(distances: np.ndarray) -> DistanceStats:
         max=float(np.max(distances)),
         p95=float(np.percentile(distances, 95)),
         n_points=int(distances.size),
+        input_n_points=int(input_n_points if input_n_points is not None else distances.size),
+        excluded_n_points=int(excluded_n_points),
+        minimum_thickness_m=float(minimum_thickness_m),
     )
 
 
@@ -998,6 +1038,7 @@ class RaycastPipelineParams:
     poisson_depth: int = 9
     density_trim_quantile: float = 0.02
     max_distance: float | None = None
+    minimum_thickness_m: float = 0.0
     # Origen del sensor a usar si el .ply no tiene sidecar de pose (p. ej.
     # nubes cargadas a mano, sin sensor conectado, para probar el flujo).
     # Si es None se exige el sidecar (ver run_raycast_pipeline). Solo se usa
@@ -1398,14 +1439,29 @@ def run_raycast_pipeline(params: RaycastPipelineParams, log=print) -> RaycastPip
             "Ningun rayo impacto ambas mallas. Revisa que las dos capturas cubran "
             "la misma zona del tunel."
         )
-    stats = summarize(distances)
+    input_n_points = len(distances)
+    hit_count = len(distances)
+    hit_points, distances, excluded_count = filter_measurements(
+        hit_points, distances, params.minimum_thickness_m
+    )
+    stats = summarize_filtered(
+        distances,
+        input_n_points=input_n_points,
+        excluded_n_points=excluded_count,
+        minimum_thickness_m=params.minimum_thickness_m,
+    )
     sample_total = len(base_source.points) if params.ray_method == "normal" else len(updated_source.points)
     unmatched_count = len(unmatched_points)
-    coverage = 100.0 * len(distances) / max(1, sample_total)
+    coverage = 100.0 * hit_count / max(1, sample_total)
     log(
-        f"Cobertura de rayos: {len(distances):,}/{sample_total:,} puntos originales "
+        f"Cobertura de rayos: {hit_count:,}/{sample_total:,} puntos originales "
         f"({coverage:.1f}%); sin coincidencia: {unmatched_count:,}."
     )
+    if params.minimum_thickness_m > 0:
+        log(
+            f"Umbral mínimo {params.minimum_thickness_m * 100:.2f} cm: "
+            f"{excluded_count:,}/{input_n_points:,} puntos excluidos."
+        )
     log("")
     log("Resultados (raycasting):")
     log(str(stats))
@@ -1674,8 +1730,24 @@ def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
         updated_cloud = align_clouds(updated_cloud, base_cloud, params.icp_threshold)
 
     log("Calculando distancia Cloud-to-Cloud...")
-    distances = compute_c2c_distance(updated_cloud, base_cloud)
-    stats = summarize(distances)
+    raw_distances = compute_c2c_distance(updated_cloud, base_cloud)
+    input_n_points = len(raw_distances)
+    if not np.isfinite(params.minimum_thickness_m) or params.minimum_thickness_m < 0:
+        raise ValueError("El umbral mínimo de espesor debe ser cero o mayor.")
+    keep_mask = (
+        raw_distances >= params.minimum_thickness_m
+        if params.minimum_thickness_m > 0
+        else np.ones(input_n_points, dtype=bool)
+    )
+    excluded_count = int(input_n_points - np.count_nonzero(keep_mask))
+    distances = raw_distances[keep_mask]
+    updated_cloud = updated_cloud.select_by_index(np.flatnonzero(keep_mask))
+    stats = summarize_filtered(
+        distances,
+        input_n_points=input_n_points,
+        excluded_n_points=excluded_count,
+        minimum_thickness_m=params.minimum_thickness_m,
+    )
     log("")
     log("Resultados:")
     log(str(stats))
