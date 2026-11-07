@@ -154,10 +154,11 @@ la tasa real y comprobar el rendimiento con el sensor antes de usarlo en obra.
 
 ## ROS opcional
 
-La máquina de desarrollo tiene **Ubuntu 26.04.1 y Python 3.14**, sin `roscore`,
-`ros2` ni `/opt/ros`. Se comprobó el modo UDP con el SDK compilado. No se instaló
-ROS ni se da por validada la compatibilidad de los paquetes ROS antiguos con este
-sistema. El procesamiento de archivos y la GUI funcionan sin ROS.
+La máquina de desarrollo tiene **Ubuntu 26.04.1 y Python 3.14**. Se instalaron
+ROS 2 Lyrical y RViz en `/opt/ros/lyrical`, y se compiló una adaptación del driver
+de referencia en `build/ros2_ws`. Consulta [ROS2_LYRICAL.md](ROS2_LYRICAL.md)
+para instalar, compilar y arrancar. ROS 1 no está instalado. El procesamiento de
+archivos y la GUI también funcionan sin ROS.
 
 Para usar un entorno ROS que ya pueda ejecutar el driver de referencia:
 
@@ -226,8 +227,10 @@ También se prueba el selector GTK cuando hay pantalla, el eje X del LiDAR y un
 flujo de archivos con recorte, alineación, distancia conocida de 2 cm, heatmap y
 PDF, ademas de raycasting con Delaunay y Poisson sobre una pared orientada al
 eje X del LiDAR. Las pruebas sin pantalla omiten solamente la de widgets GTK. Los puentes ROS 1
-y ROS 2 tambien se ejecutan contra modulos simulados; esto no sustituye una
-prueba de esos runtimes con el driver real.
+y ROS 2 tambien se ejecutan contra modulos simulados. Además se probó el runtime
+ROS 2 Lyrical real con un publicador sintético: conexión del puente, XYZ, ring
+uint32, timestamp en nanosegundos y acumulación. Esto no sustituye una prueba
+con el dispositivo físico.
 
 Se compilaron el ejemplo original y el puente contra la biblioteca real x86_64,
 y se ejecutó el puente real en loopback sin sensor para comprobar el timeout y
@@ -249,5 +252,6 @@ en el código y README de esa revisión.
 En esta copia de desarrollo se preparó un venv local que reutiliza, en modo
 lectura mediante un archivo `.pth`, los paquetes Python ya instalados en el venv
 de Aurora. El puente Cairo faltante se extrajo localmente en `build/gtk-deps`;
-no se modificó el entorno del proyecto original ni se instaló ROS. Si mueves o
+no se modificó el entorno del proyecto original. ROS 2 se instaló posteriormente
+como paquete del sistema con autorización del usuario. Si mueves o
 eliminas el proyecto original, prepara un entorno independiente con `setup.sh`.

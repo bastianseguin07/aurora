@@ -1902,7 +1902,7 @@ class AuroraGUI:
             ("sensor_port", "Puerto del sensor", "6101"),
             ("local_port", "Puerto local", "6201"),
             ("cloud_scan_num", "Barridos por nube SDK", "18"),
-            ("ros_python", "Python del entorno ROS", "/usr/bin/python3"),
+            ("ros_python", "Python del entorno ROS", str(PROJECT_ROOT / "scripts" / "ros2_python.sh")),
             ("ros_topic", "Topic de nube ROS", "/unilidar/cloud"),
             ("imu_topic", "Topic IMU ROS (sin pose SLAM)", "/unilidar/imu"),
             ("frame_id", "Frame esperado", "unilidar_lidar"),

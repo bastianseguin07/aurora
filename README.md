@@ -9,6 +9,10 @@ SDK UDP directo, puente ROS opcional y decay time separado de las capturas. Cons
 [UNITREE_L2.md](UNITREE_L2.md) para instalación, red, captura nativa/acumulada,
 campos guardados y pruebas pendientes con hardware.
 
+Para ROS 2 Lyrical y RViz en Ubuntu 26.04, consulta
+[ROS2_LYRICAL.md](ROS2_LYRICAL.md). Después de compilar el driver puedes abrir
+solo el visor con `./open_rviz.sh`, o driver y visor con `./run_unitree_ros2.sh`.
+
 ```bash
 ./setup.sh --with-unitree-sdk
 ./run_gui.sh
