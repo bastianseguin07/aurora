@@ -139,7 +139,7 @@ captura en vivo**, `Decay time` controla exclusivamente los puntos mostrados:
 
 - `0`: muestra solo la última nube recibida; no acumula historia ilimitada.
 - `0 < valor <= 60`: conserva las nubes de los últimos X segundos. El valor
-  inicial es 10 s en Aurora.
+  inicial es 5 s en Aurora.
 - Con un valor positivo, la escena se vacía cuando expira la última nube aunque
   no lleguen mensajes nuevos. Al desconectar se limpia la vista.
 
@@ -171,13 +171,21 @@ el mapa usando las poses de Point-LIO interpoladas para el tiempo de cada retorn
 No usa la nube reducida por vóxeles de Point-LIO. El dibujo tiene un límite de
 300.000 puntos, distribuido por la zona seleccionada y toda la historia del decay;
 las capturas y los cálculos conservan sus datos completos.
-La primera captura guardada con pose válida fija el inicio:
-al abrir la GUI se usa un cero visual nuevo en la posición inicial del sensor,
+La primera captura ANTES guardada con pose válida fija el inicio. Al abrir la
+GUI se usa un cero visual nuevo en la posición inicial del sensor,
 sin cargar una referencia de captura anterior ni reiniciar Point-LIO.
-La referencia de medición se crea únicamente con la primera captura de la GUI.
-un cuadrado blanco marca el inicio, un cuadrado amarillo grande la posición
-actual, con solo su eje X, y una línea violeta los une. El panel informa X/Y/Z y distancia
-al inicio en centímetros. Una segunda captura conserva ese mismo inicio. Al
+La referencia se fija al guardar la primera captura ANTES de la GUI.
+El origen visual de ANTES también conserva la pose válida al iniciar la captura;
+si no se valida una pose promedio para la medición, ese origen sigue disponible
+en la sesión para el círculo blanco y la guía. Esto no crea una pose promedio
+ficticia para compensar la nube. El contorno blanco se dibuja sobre el amarillo
+cuando ambos casi coinciden, manteniendo el mismo diámetro.
+Un círculo blanco marca el inicio y un círculo amarillo del mismo tamaño la posición
+actual, con solo su eje X, y una línea violeta los une. El panel informa X/Y/Z
+y distancia al inicio en centímetros.
+Los dos círculos se dibujan sobre la nube para mantenerlos visibles; el recorrido
+histórico es opcional y aparece desactivado al iniciar.
+Una segunda captura conserva ese mismo inicio. Al
 reiniciarse Point-LIO, cambia el identificador de sesión y se descarta la
 referencia anterior; la siguiente captura válida fija el nuevo inicio. Las poses
 caducadas se muestran como última posición, sin indicarlas como seguimiento activo.

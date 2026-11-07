@@ -26,7 +26,7 @@ export __GLX_VENDOR_LIBRARY_NAME=nvidia
 ./venv/bin/python3 scripts/gui_gtk.py "$@"
 status=$?
 
-if [ $status -ne 0 ]; then
+if [ $status -ne 0 ] && [ $status -ne 143 ]; then
     message="Aurora se cerro con un error (codigo $status)."
     if command -v zenity >/dev/null 2>&1; then
         zenity --error --title="Aurora" --text="$message"

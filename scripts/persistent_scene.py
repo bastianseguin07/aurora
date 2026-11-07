@@ -14,6 +14,8 @@ from OpenGL.raw.GL.VERSION.GL_2_0 import glVertexAttribPointer
 
 from scene_feed import SceneFeed, scene_view
 
+POSITION_MARKER_SIZE_PX = 14
+
 
 def _vertices(points, color):
     points = np.asarray(points, dtype=np.float32).reshape(-1, 3)
@@ -44,7 +46,7 @@ class SceneCanvas(Gtk.GLArea):
         self.center = np.zeros(3)
         self.distance, self.yaw, self.elevation = 8.0, -1.0, .55
         self.drag = None
-        self.layers = dict(cloud=True, grid=True, sensor=True, path=True)
+        self.layers = dict(cloud=True, grid=True, sensor=True, path=False)
         self.point_size = 2.0
         self.follow = False
         self.fitted_session = None
@@ -71,9 +73,19 @@ class SceneCanvas(Gtk.GLArea):
                 layout(location=1) in vec3 color;
                 uniform mat4 mvp;
                 uniform float point_size;
+                uniform int round_point;
+                uniform vec3 marker_position;
+                uniform vec2 marker_scale;
                 out vec3 vertex_color;
-                void main(){ gl_Position=mvp*vec4(position,1.0);
-                             gl_PointSize=point_size; vertex_color=color; }
+                void main(){
+                    if(round_point != 0){
+                        gl_Position=mvp*vec4(marker_position,1.0);
+                        gl_Position.xy+=position.xy*marker_scale*gl_Position.w;
+                    }else{
+                        gl_Position=mvp*vec4(position,1.0);
+                    }
+                    gl_PointSize=point_size; vertex_color=color;
+                }
                 """, GL.GL_VERTEX_SHADER),
                 compileShader("""#version 330 core
                 in vec3 vertex_color; out vec4 fragment;
@@ -128,13 +140,33 @@ class SceneCanvas(Gtk.GLArea):
         projection[3, 2] = -1
         return np.asarray(projection @ view, dtype=np.float32)
 
-    def _draw_vertices(self, vertices, mode, size=2):
+    def _draw_vertices(self, vertices, mode, size=2, round_point=False, outline=False):
         if not len(vertices):
             return
         data = np.ascontiguousarray(vertices, dtype=np.float32)
+        if round_point:
+            # Screen-sized triangle fan works with both core and legacy GTK
+            # contexts, including when no cloud has been drawn yet.
+            anchor, color = data[0, :3], data[0, 3:]
+            angles = np.linspace(0, 2 * np.pi, 33)
+            ring = np.column_stack((np.cos(angles), np.sin(angles), np.zeros(33)))
+            if outline:
+                circle = np.empty((66, 3))
+                circle[0::2], circle[1::2] = ring, ring * .68
+                mode = GL.GL_TRIANGLE_STRIP
+            else:
+                circle = np.vstack((np.zeros((1, 3)), ring))
+                mode = GL.GL_TRIANGLE_FAN
+            data = _vertices(circle, color)
+            scale = self.get_scale_factor()
+            GL.glUniform3f(GL.glGetUniformLocation(self.program, "marker_position"), *anchor)
+            GL.glUniform2f(GL.glGetUniformLocation(self.program, "marker_scale"),
+                           size / max(1, self.get_allocated_width() * scale),
+                           size / max(1, self.get_allocated_height() * scale))
         GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.vbo)
         GL.glBufferData(GL.GL_ARRAY_BUFFER, data.nbytes, data, GL.GL_DYNAMIC_DRAW)
         GL.glUniform1f(GL.glGetUniformLocation(self.program, "point_size"), size)
+        GL.glUniform1i(GL.glGetUniformLocation(self.program, "round_point"), int(round_point))
         GL.glDrawArrays(mode, 0, len(data))
 
     def _draw_cloud(self, points, colors, size):
@@ -147,10 +179,14 @@ class SceneCanvas(Gtk.GLArea):
             GL.glBufferData(GL.GL_ARRAY_BUFFER, data.nbytes, data, GL.GL_STREAM_DRAW)
             self._uploaded_cloud = key
         GL.glUniform1f(GL.glGetUniformLocation(self.program, "point_size"), size)
+        GL.glUniform1i(GL.glGetUniformLocation(self.program, "round_point"), 0)
         GL.glDrawArrays(GL.GL_POINTS, 0, len(points))
         GL.glBindVertexArray(self.vao)
 
     def _render(self, *_):
+        GL.glDisable(GL.GL_SCISSOR_TEST)
+        GL.glColorMask(True, True, True, True)
+        GL.glDepthMask(True)
         GL.glClearColor(48 / 255, 48 / 255, 48 / 255, 1.)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         if self.program is None:
@@ -173,15 +209,15 @@ class SceneCanvas(Gtk.GLArea):
                 grid.extend(((cx + offset, cy - extent, 0), (cx + offset, cy + extent, 0),
                              (cx - extent, cy + offset, 0), (cx + extent, cy + offset, 0)))
             self._draw_vertices(_vertices(grid, (.36, .36, .38)), GL.GL_LINES)
-            self._draw_vertices(_axes(np.zeros(3), np.eye(3), 1), GL.GL_LINES)
         if self.layers["cloud"] and len(state["points"]):
             self._draw_cloud(state["points"], state["colors"], self.point_size * scale)
         if self.layers["path"] and len(state["path"]) > 1:
             self._draw_vertices(_vertices(state["path"], (.8, .5, 1.)), GL.GL_LINE_STRIP)
         if self.layers["sensor"]:
+            # Position markers are UI overlays: walls must not hide them.
+            GL.glDisable(GL.GL_DEPTH_TEST)
             if state["reference"] is not None:
                 self._draw_vertices(_axes(state["reference"], state["reference_rotation"], .6), GL.GL_LINES)
-                self._draw_vertices(_vertices([state["reference"]], (1., 1., 1.)), GL.GL_POINTS, 30 * scale)
             p = state["position"]
             if p is None and not state["registered"]:
                 p = np.zeros(3)
@@ -190,7 +226,14 @@ class SceneCanvas(Gtk.GLArea):
                     self._draw_vertices(_vertices([state["reference"], p], (.85, .55, 1.)), GL.GL_LINES)
                 self._draw_vertices(_vertices([p, p + state["rotation"][:, 0] * .6], (1., .2, .2)), GL.GL_LINES)
                 color = (1, .8, .1) if state["pose_ok"] else (.6, .6, .6)
-                self._draw_vertices(_vertices([p], color), GL.GL_POINTS, 14 * scale)
+                self._draw_vertices(_vertices([p], color), GL.GL_POINTS,
+                                    POSITION_MARKER_SIZE_PX * scale, round_point=True)
+            if state["reference"] is not None:
+                # Draw the origin outline last so both colors remain visible
+                # even when the live position almost overlaps the reference.
+                self._draw_vertices(_vertices([state["reference"]], (1., 1., 1.)), GL.GL_POINTS,
+                                    POSITION_MARKER_SIZE_PX * scale, round_point=True, outline=True)
+            GL.glEnable(GL.GL_DEPTH_TEST)
         GL.glBindVertexArray(0)
         GL.glUseProgram(0)
         return True
@@ -309,7 +352,7 @@ class PersistentScenePanel(Gtk.Box):
         row = Gtk.Box(spacing=6)
         row.pack_start(Gtk.Label(label="Decay (s):"), False, False, 0)
         self.decay_spin = Gtk.SpinButton.new_with_range(0, 60, .5)
-        self.decay_spin.set_value(10)
+        self.decay_spin.set_value(5)
         self.decay_spin.set_digits(1)
         self.decay_spin.set_tooltip_text("Segundos de historia visual. 0 muestra la última nube. No cambia la duración de captura.")
         self.decay_spin.connect("value-changed", self._decay_changed)
@@ -364,7 +407,7 @@ class PersistentScenePanel(Gtk.Box):
         row = Gtk.Box(spacing=8)
         for key, label in (("cloud", "Nube"), ("grid", "Cuadrícula"), ("sensor", "Sensor"), ("path", "Recorrido")):
             check = Gtk.CheckButton(label=label)
-            check.set_active(True)
+            check.set_active(self.canvas.layers[key])
             check.connect("toggled", lambda b, layer=key: self._layer(layer, b.get_active()))
             row.pack_start(check, False, False, 0)
         self.pack_start(row, False, False, 0)

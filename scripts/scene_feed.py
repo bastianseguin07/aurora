@@ -62,7 +62,7 @@ class SceneFeed:
     def __init__(self, start=True):
         self.lock = threading.RLock()
         self.connection = None
-        self.decay_s = 10.0
+        self.decay_s = 5.0
         self.stop_event = threading.Event()
         self.frames = deque()
         self.pending_native = deque()
@@ -112,13 +112,28 @@ class SceneFeed:
         if pose is None or not getattr(pose, "session_id", None):
             return False
         with self.lock:
+            if self.session is not None and self.session != pose.session_id:
+                return False
             if self.reference is not None and self.reference.session_id == pose.session_id:
                 return False
+            old_origin = (self.reference.position if self.reference is not None else self.display_origin
+                          if self.display_origin is not None else np.zeros(3))
             self.reference = pose
             self.path.clear()
-            self.position = np.asarray(pose.position).copy()
-            self.path.append(self.position.copy())
-            self.rotation = Rotation.from_quat(pose.quaternion_xyzw).as_matrix()
+            self.path.append(np.asarray(pose.position).copy())
+            if self.position is None:
+                self.position = np.asarray(pose.position).copy()
+                self.rotation = Rotation.from_quat(pose.quaternion_xyzw).as_matrix()
+            elif np.linalg.norm(self.position - pose.position) >= .02:
+                self.path.append(self.position.copy())
+            if self.mode == "registered":
+                self.state = {**self.state,
+                              "points": self.state["points"] + old_origin - pose.position,
+                              "reference": np.zeros(3),
+                              "reference_rotation": Rotation.from_quat(pose.quaternion_xyzw).as_matrix(),
+                              "position": self.position - pose.position,
+                              "path": np.asarray(self.path) - pose.position,
+                              "capture_reference_ready": True}
             return True
 
     def snapshot(self, blocking=True):
@@ -196,7 +211,13 @@ class SceneFeed:
                 if self.mode != "registered":
                     self.frames.clear()
                     self.mode = "registered"
-            self.pending_native.extend(native_frames)
+            for frame in native_frames:
+                xyz = frame.xyz
+                valid = np.isfinite(xyz).all(axis=1) & np.any(xyz != 0, axis=1)
+                if not np.all(valid):
+                    frame = frame.subset(valid)
+                if len(frame.fields):
+                    self.pending_native.append(frame)
             while self.pending_native:
                 frame = self.pending_native[0]
                 if pose is None:

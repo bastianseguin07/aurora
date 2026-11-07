@@ -162,7 +162,7 @@ class GtkSelectorTests(unittest.TestCase):
             self.assertEqual(app.capture_forward_axis_combo.get_active_text(), "x")
             config = app._unitree_config()
             self.assertEqual(config.cloud_scan_num, 18)
-            self.assertEqual(app.live_decay_entry.get_text(), "10")
+            self.assertEqual(app.live_decay_entry.get_text(), "5")
             cloud = UnitreeCloud([frame(2)], config)
             with tempfile.TemporaryDirectory() as d:
                 path = Path(d) / "unitree.ply"
@@ -218,6 +218,38 @@ class GtkSelectorTests(unittest.TestCase):
             previous = panel.canvas.distance
             panel.canvas.zoom(.8)
             self.assertLess(panel.canvas.distance, previous)
+        finally:
+            app._on_close()
+            window.destroy()
+
+    def test_before_keeps_visual_start_when_average_capture_pose_is_unavailable(self):
+        from unitree_pose import PoseHistory
+        from types import SimpleNamespace as NS
+        window = Gtk.Window()
+        app = AuroraGUI(window)
+        start = PoseHistory._pose(dict(position=[1, 2, 3], quaternion_xyzw=[0, 0, 0, 1],
+                                      stamp_ns=1, frame_id="unitree_lio_origin_visual_test"))
+        moved = PoseHistory._pose(dict(position=[1.5, 2, 3], quaternion_xyzw=[0, 0, 0, 1],
+                                      stamp_ns=2, frame_id=start.session_id))
+        try:
+            cloud = UnitreeCloud([frame(2)], app._unitree_config())
+            with tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / "before.pcd"
+                app.scene_panel.pause_button.set_active(True)
+                with patch.object(app, "_save_file_dialog", return_value=str(target)):
+                    app._on_capture_done("base", cloud, ref_pose=None, visual_reference_pose=start)
+                self.assertIs(app.scene_panel.feed.reference, start)
+                self.assertFalse(app.scene_panel.pause_button.get_active())
+                self.assertFalse(target.with_name("before_pose.npz").exists())
+                self.assertEqual(app.imu_reference_pose.session_id, start.session_id)
+                connection = NS(pose_history=NS(smoothed=lambda: moved), read_registered_batch=lambda: [])
+                app.scene_panel.feed.set_connection(connection)
+                app.scene_panel.feed._poll(connection)
+                state = app.scene_panel.feed.snapshot()
+                np.testing.assert_allclose(state["reference"], [0, 0, 0])
+                np.testing.assert_allclose(state["position"], [.5, 0, 0])
+                self.assertIs(app.scene_panel.feed.reference, start)
+                app.scene_panel.feed.set_connection(None)
         finally:
             app._on_close()
             window.destroy()

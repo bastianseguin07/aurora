@@ -50,6 +50,7 @@ from live_viewer import LiveViewer  # noqa: E402
 from pose_alignment_viewer import PoseAlignmentViewer  # noqa: E402
 from pointcloud_core import (  # noqa: E402
     DistanceStats,
+    ReferencePose,
     PipelineParams,
     RaycastPipelineParams,
     RaycastPipelineResult,
@@ -733,6 +734,8 @@ class AuroraGUI:
         self._tracking_thread = None
         self._tracking_retry_at = 0.
         self._pending_pose_capture = None
+        self._capture_visual_reference_path = None
+        self._capture_visual_reference_pose = None
 
         self._build_layout()
         self._apply_sensor_capabilities()
@@ -2525,6 +2528,13 @@ class AuroraGUI:
             return
 
         pose = load_reference_pose(Path(base_path))
+        visual_only = False
+        if (pose is None and base_path == self._capture_visual_reference_path
+                and self._capture_visual_reference_pose is not None):
+            initial = self._capture_visual_reference_pose
+            pose = ReferencePose(initial.position, initial.rpy_deg, initial.pose_to_cloud,
+                                 initial.frame_id, initial.session_id)
+            visual_only = True
         if pose is None:
             self.imu_reference_label.set_text(f"No hay pose guardada para: {Path(base_path).name}")
             self._set_imu_guide_disabled(
@@ -2537,7 +2547,8 @@ class AuroraGUI:
         self.imu_reference_pose = pose
         self.imu_reference_source_path = base_path
         self.imu_direction_words = dict(IMU_SENSOR_VIEW_DIRECTIONS)
-        self.imu_reference_label.set_text(f"Guardada desde: {Path(base_path).name}")
+        caption = "Inicio de captura" if visual_only else "Guardada desde"
+        self.imu_reference_label.set_text(f"{caption}: {Path(base_path).name}")
         self.imu_guide_status_label.set_text("Conecta el sensor para ver la guia en vivo.")
 
     def _set_imu_guide_disabled(self, message: str) -> None:
@@ -4391,7 +4402,7 @@ class AuroraGUI:
         live_box.pack_start(self.live_notice_label, False, False, 0)
         row = self._row(live_box)
         row.pack_start(Gtk.Label(label="Decay time (s):"), False, False, 0)
-        self.live_decay_entry = Gtk.Entry(); self.live_decay_entry.set_text("10")
+        self.live_decay_entry = Gtk.Entry(); self.live_decay_entry.set_text("5")
         self.live_decay_entry.set_width_chars(8)
         self.live_decay_entry.set_tooltip_text("Ventana visual de 0–60 s. 0 muestra solo la ultima nube; no afecta capturas guardadas.")
         self.live_decay_entry.connect("changed", lambda _entry: self._apply_viewer_settings())
@@ -5645,6 +5656,10 @@ class AuroraGUI:
 
         def worker():
             try:
+                try:
+                    visual_reference_pose = aurora_sensor.get_current_pose(connection)
+                except Exception:
+                    visual_reference_pose = None
                 if aligned_multiview:
                     aligned_result = aurora_sensor.capture_aligned_snapshot(
                         connection,
@@ -5697,7 +5712,8 @@ class AuroraGUI:
                 except Exception as exc:
                     self._log(f"Captura sin pose utilizable: {exc}")
                     ref_pose = None
-                self._ui(self._on_capture_done, target, cloud, ref_image, ref_point_grid, ref_pose)
+                self._ui(self._on_capture_done, target, cloud, ref_image, ref_point_grid,
+                         ref_pose, visual_reference_pose)
             except Exception as exc:
                 self._ui(self._on_capture_failed, exc)
 
@@ -5739,7 +5755,8 @@ class AuroraGUI:
             self._update_capture_progress()
             self._log("Captura detenida manualmente; se procesarán los frames válidos recibidos hasta ahora.")
 
-    def _on_capture_done(self, target: str, cloud, ref_image=None, ref_point_grid=None, ref_pose=None) -> None:
+    def _on_capture_done(self, target: str, cloud, ref_image=None, ref_point_grid=None,
+                         ref_pose=None, visual_reference_pose=None) -> None:
         capture_result = cloud
         cloud = aurora_sensor.cloud_geometry(capture_result)
         self._finish_capture_progress()
@@ -5787,8 +5804,13 @@ class AuroraGUI:
             self._show_error("Error guardando captura", str(exc))
             return
         self._log(f"Captura guardada en: {path} ({len(cloud.points)} puntos)")
-        if self.scene_panel.feed.set_reference(ref_pose):
-            self._log("Inicio del entorno 3D fijado en la primera captura de esta sesión Point-LIO.")
+        visual_pose = ref_pose if ref_pose is not None else visual_reference_pose
+        if target == "base":
+            self._capture_visual_reference_path = path
+            self._capture_visual_reference_pose = visual_pose if getattr(visual_pose, "session_id", None) else None
+            if self.scene_panel.feed.set_reference(visual_pose):
+                self.scene_panel.pause_button.set_active(False)
+                self._log("Inicio del entorno 3D fijado en ANTES; se conserva mientras se mueve el sensor.")
 
         if (ref_image is None or ref_point_grid is None) and aurora_sensor.capabilities(kind=self._sensor_kind()).reference_image:
             try:
@@ -7178,6 +7200,7 @@ def main() -> None:
         window.set_visual(rgba_visual)
     window.set_title("Aurora — Medicion de espesor de shotcrete")
     app = AuroraGUI(window)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, lambda: window.close() or GLib.SOURCE_REMOVE)
     app.sensor_selector.set_active_id(args.sensor)
     app.unitree_transport_combo.set_active_id(args.transport)
     app.quick_capture_duration_scale.set_value(args.capture_seconds)

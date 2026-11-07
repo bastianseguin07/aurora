@@ -52,6 +52,24 @@ class SceneFeedTests(unittest.TestCase):
         self.assertEqual(len(feed.path), 1)
         self.assertTrue(feed.set_reference(pose([0, 0, 0], "unitree_lio_origin_next")))
 
+    def test_invalid_native_origins_do_not_become_old_sensor_positions(self):
+        fields = np.zeros(2, dtype=POINT_DTYPE)
+        fields["x"][1] = 2
+        original = fields.copy()
+        frame = CloudFrame(fields, time.time(), 0, received_at=time.monotonic(), stamp_ns=time.time_ns())
+        current = pose([5, 2, 1])
+        def transform(valid_frame):
+            self.assertEqual(len(valid_frame.fields), 1)
+            return valid_frame.xyz + current.position, current.session_id
+        connection = NS(read_live_batch=lambda _timeout: [frame],
+                        pose_history=NS(smoothed=lambda: current, points_to_world=transform))
+        feed = SceneFeed(start=False)
+        feed.set_connection(connection)
+        feed._poll(connection)
+        self.assertEqual(len(feed.snapshot()["points"]), 1)
+        np.testing.assert_allclose(feed.snapshot()["points"], [[2, 0, 0]], atol=1e-6)
+        np.testing.assert_array_equal(fields, original)
+
     def test_registered_coordinates_are_relative_to_capture_without_altering_source(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "scene.bin"
