@@ -120,7 +120,7 @@ def main():
                         msg.orientation.z,
                         msg.orientation.w,
                     ],
-                    "orientation_valid": msg.orientation_covariance[0] >= 0,
+                    "orientation_valid": bool(msg.orientation_covariance[0] >= 0),
                 }
             ),
             file=sys.stderr,

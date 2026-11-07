@@ -14,7 +14,7 @@ import numpy as np
 import rclpy
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.executors import ExternalShutdownException
-from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs.msg import PointCloud2, PointField, Imu
 from unitree_sensor import UnitreeConfig, connect, capture_snapshot
 
 
@@ -24,6 +24,7 @@ def main():
     publisher = node.create_publisher(
         PointCloud2, "/unilidar/cloud", qos_profile_sensor_data
     )
+    imu_publisher = node.create_publisher(Imu, "/unilidar/imu", qos_profile_sensor_data)
     records = [(1.25 + i, 0.5, 0.25, 12 + i, 0.125, 70000 + i) for i in range(4)]
 
     def publish():
@@ -47,6 +48,11 @@ def main():
             b"".join(struct.pack("<dddddI", *point) for point in records)
         )
         publisher.publish(message)
+        imu = Imu()
+        imu.header.stamp = message.header.stamp
+        imu.header.frame_id = "unilidar_imu"
+        imu.orientation.w = 1.0
+        imu_publisher.publish(imu)
 
     node.create_timer(0.1, publish)
 
@@ -77,8 +83,18 @@ def main():
         )
         assert len(accumulated.cloud_ids) >= 2
         assert len(accumulated.points) == 4 * len(accumulated.cloud_ids)
+        # ROS 2 covariance uses NumPy scalars: diagnostic JSON must convert its
+        # validity flag to a Python bool and keep the cloud process alive.
+        deadline = time.monotonic() + 2.0
+        received = 0
+        while time.monotonic() < deadline:
+            if connection.read_live(500) is not None:
+                received += 1
+        assert received >= 5
+        assert connection.process.poll() is None
+        assert connection.imu_diagnostic["orientation_valid"] is True
         print(
-            "ROS real: conexion, XYZ, ring uint32, nanosegundos y acumulacion verificados. Dominio aislado 137."
+            "ROS real: conexion, XYZ, ring uint32, nanosegundos, acumulacion e IMU continua verificados. Dominio aislado 137."
         )
     finally:
         if connection:

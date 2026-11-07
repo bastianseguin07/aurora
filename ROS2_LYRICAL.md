@@ -84,4 +84,20 @@ Referencias oficiales:
 - https://docs.ros.org/en/lyrical/Releases/lyrical/supported-platforms.html
 - https://github.com/ros-infrastructure/ros-apt-source/releases/tag/1.3.0
 
-El uso con el sensor físico seguirá requiriendo comprobar red y recepción de datos.
+## Primera conexión con el sensor físico
+
+Se configuró el perfil NetworkManager `Unitree-L2` en `enp0s31f6`, con IP local
+`192.168.1.2/32` y ruta directa `192.168.1.62/32`. Así el Wi-Fi conserva su ruta
+de Internet aunque también use la red 192.168.1.x. El sensor respondió al ping
+y envió UDP desde `192.168.1.62:6101` a `192.168.1.2:6201`.
+
+El driver publicó nubes a aproximadamente 11.9 Hz. El puente de la GUI recibió
+61 nubes y 329269 puntos durante una comprobación de 5 s, con IMU continua.
+Se corrigió la conversión del indicador de orientación de NumPy a `bool` de
+Python para evitar que el diagnóstico JSON cerrase el puente al recibir IMU real.
+La prueba sintética también publica IMU y comprueba la continuidad del proceso.
+Queda pendiente validar precisión geométrica y medición de espesor.
+
+Si RViz ya usa el driver, selecciona **ROS 2: driver externo** en la GUI. El modo
+**SDK UDP directo** necesita que el driver ROS esté detenido; el bloqueo de
+puerto impide abrir dos lectores UDP sobre el mismo sensor.
