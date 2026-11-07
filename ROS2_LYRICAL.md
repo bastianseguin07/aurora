@@ -65,7 +65,8 @@ rviz2
 
 El wrapper carga ROS únicamente para el proceso puente. No mezcla el entorno
 Python de la GUI con el de ROS. La IMU proporciona orientación; esto no equivale
-a una posición SLAM validada y no activa compensación automática de traslación.
+a una posición SLAM. Para habilitar la guia y la compensacion de traslacion con
+Point-LIO, consulta [UNITREE_POSE.md](UNITREE_POSE.md).
 
 ## Verificación en esta máquina
 

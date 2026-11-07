@@ -86,6 +86,7 @@ def main():
     parser.add_argument("--topic", default="/unilidar/cloud")
     parser.add_argument("--imu-topic", default="/unilidar/imu")
     parser.add_argument("--frame", default="unilidar_lidar")
+    parser.add_argument("--pose-topic", default="/unitree_lio/odometry")
     args = parser.parse_args()
     # ROS and native dependencies may write logs to fd 1. Keep the original
     # pipe for IPC and move all ordinary stdout logging to stderr first.
@@ -95,6 +96,16 @@ def main():
     lock = threading.Lock()
     sequence = 0
     last_imu_log = 0.0
+
+    def pose_callback(msg):
+        pose = msg.pose.pose
+        stamp = msg.header.stamp
+        print("AURORA_POSE " + json.dumps({
+            "stamp_ns": int(stamp.sec)*1_000_000_000+int(stamp.nanosec),
+            "frame_id": msg.header.frame_id, "child_frame_id": msg.child_frame_id,
+            "position": [float(v) for v in (pose.position.x, pose.position.y, pose.position.z)],
+            "quaternion_xyzw": [float(v) for v in (pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w)],
+        }), file=sys.stderr, flush=True)
 
     def imu_callback(msg):
         nonlocal last_imu_log
@@ -174,6 +185,12 @@ def main():
             node.create_subscription(
                 Imu, args.imu_topic, imu_callback, qos_profile_sensor_data
             )
+            try:
+                from nav_msgs.msg import Odometry
+            except ImportError:
+                print("Point-LIO pose opcional: nav_msgs no disponible", file=sys.stderr)
+            else:
+                node.create_subscription(Odometry, args.pose_topic, pose_callback, qos_profile_sensor_data)
             try:
                 rclpy.spin(node)
             finally:

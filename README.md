@@ -12,6 +12,8 @@ campos guardados y pruebas pendientes con hardware.
 Para ROS 2 Lyrical y RViz en Ubuntu 26.04, consulta
 [ROS2_LYRICAL.md](ROS2_LYRICAL.md). Después de compilar el driver puedes abrir
 solo el visor con `./open_rviz.sh`, o driver y visor con `./run_unitree_ros2.sh`.
+La guia de pose y la compensacion con seguimiento Unitree se describen en
+[UNITREE_POSE.md](UNITREE_POSE.md).
 
 ```bash
 ./setup.sh --with-unitree-sdk

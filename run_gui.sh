@@ -23,7 +23,7 @@ fi
 export __NV_PRIME_RENDER_OFFLOAD=1
 export __GLX_VENDOR_LIBRARY_NAME=nvidia
 
-./venv/bin/python3 scripts/gui_gtk.py
+./venv/bin/python3 scripts/gui_gtk.py "$@"
 status=$?
 
 if [ $status -ne 0 ]; then

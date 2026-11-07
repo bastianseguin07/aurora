@@ -1653,6 +1653,11 @@ class AuroraGUI:
         base_pose = load_reference_pose(Path(self.base_path))
         updated_pose = load_reference_pose(Path(self.updated_path))
         if base_pose is not None and updated_pose is not None:
+            try:
+                compute_pose_relative_transform(base_pose, updated_pose)
+            except ValueError as exc:
+                self._show_error("Poses incompatibles", str(exc))
+                return
             position_error_cm = float(np.linalg.norm(base_pose[0] - updated_pose[0])) * 100.0
             rotation_error_deg = ((base_pose[1] - updated_pose[1] + 180.0) % 360.0) - 180.0
             max_rotation_error = float(np.max(np.abs(rotation_error_deg)))
@@ -2201,20 +2206,18 @@ class AuroraGUI:
         info_frame, info_box = self._section("Reposicionar el sensor (IMU/SLAM)")
         note = Gtk.Label(
             label=(
-                "El sensor Aurora sigue su propia posicion (tracking visual-inercial) "
-                "mientras queda encendido. Al capturar el 'Tunel original' se guarda esa "
+                "Aurora utiliza su tracking integrado. Unitree requiere el seguimiento "
+                "Point-LIO por ROS 2 (boton de inicio abajo). Al capturar el 'Tunel original' se guarda la "
                 "posicion como referencia. Podes mover el sensor libremente para aplicar "
                 "el shotcrete; antes de capturar el 'Tunel con shotcrete', usa esta "
                 "pagina para devolverlo a la misma posicion fisica siguiendo la guia de "
-                "abajo (no apagues el sensor entre medio o pierde el tracking).\n\n"
+                "abajo. Mantén el tracking activo entre ambas capturas; reiniciarlo cambia "
+                "el origen y exige una nueva captura ANTES.\n\n"
                 "La guia indica hacia donde mover con palabras (adelante/atras, "
                 "izquierda/derecha, arriba/abajo) calculadas a partir de hacia donde "
-                "miraba el sensor al capturar el 'Tunel original' — 'adelante' es la cara "
-                "con las camaras en ese momento. Adelante/atras ya se valido contra el "
-                "sensor real; izquierda/derecha y arriba/abajo son la mejor aproximacion "
-                "disponible pero todavia no se confirmaron — si notas que no coinciden con "
-                "el movimiento real, confia en el numero (cm) y el color en vez de la "
-                "palabra."
+                "miraba el sensor al capturar ANTES. En Unitree, adelante es +X "
+                "(opuesto al cable). Las indicaciones usan una pose reciente de esa misma "
+                "sesion. Verifica los ejes y el registro con referencias fisicas antes de medir espesor."
             ),
             xalign=0,
         )
@@ -2223,6 +2226,9 @@ class AuroraGUI:
         page.pack_start(info_frame, False, True, 0)
 
         ref_frame, ref_box = self._section("Posicion de referencia")
+        self.unitree_tracking_button = Gtk.Button(label="Iniciar seguimiento Unitree LiDAR-IMU")
+        self.unitree_tracking_button.connect("clicked", lambda _b: self._start_unitree_tracking())
+        ref_box.pack_start(self.unitree_tracking_button, False, False, 0)
         row = self._row(ref_box)
         self.imu_reference_label = Gtk.Label(label="(sin capturar todavia)", xalign=0)
         row.pack_start(self.imu_reference_label, False, False, 0)
@@ -2318,6 +2324,25 @@ class AuroraGUI:
         self.pose_viewer.start()
         self.close_imu_viewer_button.set_sensitive(True)
 
+    def _start_unitree_tracking(self) -> None:
+        if self._sensor_kind() != "unitree" or self.sensor_connection is None:
+            self._show_warning("Conecta Unitree", "Selecciona Unitree y conecta por ROS 2 antes de iniciar el seguimiento.")
+            return
+        if self.unitree_transport_combo.get_active_id() != "ros2":
+            self._show_warning("Se requiere ROS 2", "Selecciona ROS 2: driver externo en Conexion Unitree.")
+            return
+        if aurora_sensor.capabilities(self.sensor_connection).pose:
+            self._log("Point-LIO ya entrega posicion reciente.")
+            return
+        if not (PROJECT_ROOT / "build/ros2_lio_ws/install/setup.bash").is_file():
+            self._show_warning("Falta preparar Point-LIO", "Ejecuta ./setup_unitree_lio.sh y vuelve a iniciar el seguimiento.")
+            return
+        log_path = PROJECT_ROOT / "build/point_lio.log"
+        with log_path.open("a") as stream:
+            subprocess.Popen([str(PROJECT_ROOT / "run_unitree_lio.sh"), "rviz:=false"],
+                             stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
+        self._log("Iniciando Point-LIO. Mantén quieto el sensor durante la inicializacion.")
+
     def _close_imu_pose_viewer(self) -> None:
         if self.pose_viewer is not None:
             self.pose_viewer.stop()
@@ -2351,6 +2376,8 @@ class AuroraGUI:
         self.imu_guide_status_label.set_text("Conecta el sensor para ver la guia en vivo.")
 
     def _set_imu_guide_disabled(self, message: str) -> None:
+        if self.pose_viewer is not None:
+            self._close_imu_pose_viewer()
         self.imu_guide_status_label.set_text(message)
         for label in self.imu_axis_labels.values():
             label.set_text("")
@@ -2359,7 +2386,7 @@ class AuroraGUI:
     def _start_imu_poll(self) -> None:
         if self.imu_poll_source_id is not None:
             return
-        self.imu_poll_source_id = GLib.timeout_add(300, self._imu_poll_tick)
+        self.imu_poll_source_id = GLib.timeout_add(100, self._imu_poll_tick)
 
     def _stop_imu_poll(self) -> None:
         source_id = getattr(self, "imu_poll_source_id", None)
@@ -2377,13 +2404,15 @@ class AuroraGUI:
             return True
 
         if not aurora_sensor.capabilities(self.sensor_connection).pose:
-            self._set_imu_guide_disabled("Unitree: guia de pose no disponible; la IMU no entrega posicion SLAM.")
+            self._set_imu_guide_disabled("Unitree: sin posicion Point-LIO reciente. Conecta por ROS 2 y ejecuta ./run_unitree_lio.sh.")
             return True
         if self.imu_reference_pose is None:
             self._set_imu_guide_disabled("No hay posicion de referencia cargada (ver arriba).")
             return True
         try:
             pose = aurora_sensor.get_current_pose(self.sensor_connection)
+            if getattr(self.imu_reference_pose, "session_id", None) != getattr(pose, "session_id", None):
+                raise RuntimeError("La referencia pertenece a otra sesion de tracking. Vuelve a capturar ANTES sin reiniciar Point-LIO.")
         except Exception as exc:
             self._set_imu_guide_disabled(f"No se pudo leer la posicion del sensor: {exc}")
             return True
@@ -2428,12 +2457,17 @@ class AuroraGUI:
                 f'<span foreground="{COLOR_WARN}" size="large" weight="bold">'
                 f"Mover hacia {word.upper()}: {value_cm:.1f} cm</span>"
             )
+        elif getattr(pose, "position_spread_m", 0) > self.IMU_POSITION_TOLERANCE_CM / 100:
+            status_markup = f'<span foreground="{COLOR_WARN}">Posicion cercana; la pose aun varia mas que la tolerancia. Mantén quieto el sensor.</span>'
         elif not rotation_ok:
             status_markup = (
                 f'<span foreground="{COLOR_WARN}">Posicion correcta — ajusta la rotacion (ver abajo)</span>'
             )
         else:
             status_markup = f'<span foreground="{COLOR_OK}">✓ Sensor en posicion, listo para capturar</span>'
+        spread = getattr(pose, "position_spread_m", 0)
+        if spread:
+            status_markup += f" · variacion de pose: {spread*100:.1f} cm"
         self.imu_guide_status_label.set_markup(status_markup)
 
         return True
@@ -2832,7 +2866,7 @@ class AuroraGUI:
                 if not o3d.io.write_point_cloud(str(aligned_path), aligned):
                     raise OSError(f"No se pudo escribir la nube alineada: {aligned_path}")
                 if base_pose is not None:
-                    save_reference_pose(aligned_path, base_pose[0], base_pose[1])
+                    save_reference_pose(aligned_path, base_pose[0], base_pose[1], source_pose=base_pose)
                 if manual_photo_path is not None:
                     save_transformed_reference_photo(
                         manual_photo_path, aligned_path, rotation, translation
@@ -2909,7 +2943,7 @@ class AuroraGUI:
                 raise OSError(f"No se pudo escribir la nube alineada por pose: {aligned_path}")
 
             # Guardar pose de la base para la nueva nube alineada para reflejar que ya coinciden
-            save_reference_pose(aligned_path, base_pose[0], base_pose[1], alignment_version=2)
+            save_reference_pose(aligned_path, base_pose[0], base_pose[1], alignment_version=2, source_pose=base_pose)
 
             # La rejilla 3D asociada a la foto tambien debe recibir la misma
             # transformacion que la nube; copiarla sin transformar la desincroniza.
@@ -3777,13 +3811,13 @@ class AuroraGUI:
                 # now describe the common ANTES frame.
                 try:
                     if before_pose is not None:
-                        save_reference_pose(before_destination, *before_pose)
+                        save_reference_pose(before_destination, *before_pose, source_pose=before_pose)
                     if pose_transform is not None and before_pose is not None:
                         save_reference_pose(
-                            after_destination, *before_pose, alignment_version=2
+                            after_destination, *before_pose, alignment_version=2, source_pose=before_pose
                         )
                     elif after_pose is not None:
-                        save_reference_pose(after_destination, *after_pose)
+                        save_reference_pose(after_destination, *after_pose, source_pose=after_pose)
 
                     before_photo = load_reference_photo(before_source)
                     if before_photo is not None and before_destination.resolve() != before_source.resolve():
@@ -4984,6 +5018,14 @@ class AuroraGUI:
                     )
         except queue.Empty:
             pass
+        if self._sensor_kind() == "unitree" and self.sensor_connection is not None:
+            ready = aurora_sensor.capabilities(self.sensor_connection).pose
+            if ready != getattr(self, "_unitree_pose_ready", None):
+                self._unitree_pose_ready = ready
+                if ready:
+                    self.quick_imu_compensate_check.set_active(True)
+                self._apply_sensor_capabilities()
+                self._refresh_quick_status()
         return True
 
     def _parse_xyz(self, text: str, field_name: str) -> tuple[float, float, float]:
@@ -5039,14 +5081,27 @@ class AuroraGUI:
     def _update_pose_capability_notice(self):
         if not hasattr(self, "quick_imu_note"):
             return
-        if self._sensor_kind() == "unitree":
+        if self._sensor_kind() == "unitree" and not aurora_sensor.capabilities(self.sensor_connection, "unitree").pose:
+            saved_pair = None
+            if self.base_path and self.updated_path:
+                before, after = load_reference_pose(Path(self.base_path)), load_reference_pose(Path(self.updated_path))
+                if before is not None and after is not None:
+                    try:
+                        compute_pose_relative_transform(before, after)
+                        saved_pair = True
+                    except ValueError:
+                        pass
+            if saved_pair:
+                return
             self.quick_imu_compensate_check.set_active(False)
             self.quick_imu_compensate_check.set_sensitive(False)
-            self.quick_imu_status_label.set_text("Unitree: sin posicion SLAM; compensacion automatica no disponible.")
-            self.quick_imu_note.set_text("Mantén el trípode fijo entre ANTES y DESPUÉS. Si cambias la posición del sensor, alinea por puntos 3D antes de medir.")
+            self.quick_imu_status_label.set_text("Unitree: sin posicion SLAM reciente; inicia Point-LIO para disponer de guia y compensacion.")
+            self.quick_imu_note.set_text("Conecta por ROS 2 y ejecuta ./run_unitree_lio.sh. Sin pose reciente, mantén el trípode fijo o alinea por puntos 3D.")
             if self.base_path and self.updated_path and not self.alignment_applied:
                 self.quick_alignment_status.set_text("Verifica el registro: sensor fijo o alineación por puntos 3D.")
                 self.quick_status_label.set_text("Ambas nubes listas. Comprueba la alineación antes de calcular el espesor.")
+        elif self._sensor_kind() == "unitree":
+            self.quick_imu_note.set_text("Point-LIO activo: captura ANTES y DESPUÉS en la misma sesion, sin reiniciar el tracking. Mantén quieto el sensor durante cada captura. Verifica el registro con referencias fijas antes de medir.")
         else:
             self.quick_imu_note.set_text("Puedes mover el sensor entre capturas si el tracking sigue en el mismo mapa. Con la casilla activada, se compensa el cambio de pose antes de calcular.")
 
@@ -5054,8 +5109,8 @@ class AuroraGUI:
         caps = aurora_sensor.capabilities(self.sensor_connection, self._sensor_kind())
         if hasattr(self, "sensor_capabilities_label"):
             self.sensor_capabilities_label.set_text(
-                caps.frame_description + (". Foto y pose SLAM disponibles." if caps.pose else
-                ". Sin foto de referencia, seleccion por pixel ni pose SLAM. Usa alineacion por puntos 3D."))
+                caps.frame_description + (". Pose SLAM disponible." if caps.pose else ". Sin posicion SLAM reciente.")
+                + (" Foto de referencia disponible." if caps.reference_image else " Sin camara de profundidad."))
         for which in ("base", "updated"):
             photo = getattr(self, f"landmark_{which}_source_photo_rb", None)
             cloud = getattr(self, f"landmark_{which}_source_3d_rb", None)
@@ -5071,10 +5126,12 @@ class AuroraGUI:
             self.quick_imu_compensate_check.set_active(False)
         self.quick_imu_compensate_check.set_sensitive(caps.pose)
         self._update_pose_capability_notice()
+        if hasattr(self, "unitree_tracking_button"):
+            self.unitree_tracking_button.set_sensitive(self._sensor_kind() == "unitree")
         for name in ("experimental_mobile_base_button", "experimental_mobile_updated_button"):
             button = getattr(self, name, None)
             if button is not None:
-                button.set_sensitive(caps.pose and self.sensor_connection is not None)
+                button.set_sensitive(caps.pose and self._sensor_kind() != "unitree" and self.sensor_connection is not None)
         for name in ("capture_forward_axis_combo", "live_forward_axis_combo"):
             combo = getattr(self, name, None)
             if combo is not None:
@@ -5106,7 +5163,7 @@ class AuroraGUI:
             selector = getattr(self, selector_name, None)
             if selector is not None:
                 selector.set_sensitive(not connected and not connecting)
-        pose_available = aurora_sensor.capabilities(self.sensor_connection, self._sensor_kind()).pose
+        pose_available = aurora_sensor.capabilities(self.sensor_connection, self._sensor_kind()).pose and self._sensor_kind() != "unitree"
         for name in ("experimental_mobile_base_button", "experimental_mobile_updated_button"):
             button = getattr(self, name, None)
             if button is not None:
@@ -5319,8 +5376,9 @@ class AuroraGUI:
                 except Exception:
                     ref_image, ref_point_grid = None, None
                 try:
-                    ref_pose = aurora_sensor.get_current_pose(connection)
-                except Exception:
+                    ref_pose = aurora_sensor.get_capture_pose(connection, cloud)
+                except Exception as exc:
+                    self._log(f"Captura sin pose utilizable: {exc}")
                     ref_pose = None
                 self._ui(self._on_capture_done, target, cloud, ref_image, ref_point_grid, ref_pose)
             except Exception as exc:
@@ -5391,7 +5449,7 @@ class AuroraGUI:
             return
         self._log(f"Captura guardada en: {path} ({len(cloud.points)} puntos)")
 
-        if ref_image is None or ref_point_grid is None:
+        if (ref_image is None or ref_point_grid is None) and aurora_sensor.capabilities(kind=self._sensor_kind()).reference_image:
             try:
                 ref_image, ref_point_grid = render_reference_photo_from_cloud(cloud)
                 self._log("Sin foto real del sensor; se genero una foto de referencia sintetica a partir de la nube.")
@@ -5410,7 +5468,7 @@ class AuroraGUI:
 
         if ref_pose is not None:
             try:
-                save_reference_pose(Path(path), ref_pose.position, ref_pose.rpy_deg)
+                save_reference_pose(Path(path), ref_pose.position, ref_pose.rpy_deg, source_pose=ref_pose)
                 if target == "base":
                     self._log(
                         "Pose IMU/SLAM guardada junto a ANTES. Medicion rapida puede compensar "
@@ -6643,6 +6701,15 @@ class AuroraGUI:
 
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sensor", choices=("aurora", "unitree"), default="aurora")
+    parser.add_argument("--transport", choices=("udp", "ros1", "ros2"), default="udp")
+    parser.add_argument("--base")
+    parser.add_argument("--updated")
+    parser.add_argument("--capture-seconds", type=float, default=0)
+    parser.add_argument("--pose-guide", action="store_true")
+    args = parser.parse_args()
     settings = Gtk.Settings.get_default()
     if settings is not None:
         settings.set_property("gtk-application-prefer-dark-theme", True)
@@ -6659,7 +6726,16 @@ def main() -> None:
         window.set_visual(rgba_visual)
     window.set_title("Aurora — Medicion de espesor de shotcrete")
     app = AuroraGUI(window)
+    app.sensor_selector.set_active_id(args.sensor)
+    app.unitree_transport_combo.set_active_id(args.transport)
+    app.quick_capture_duration_scale.set_value(args.capture_seconds)
+    if args.base:
+        app._set_base_path(args.base)
+    if args.updated:
+        app._set_updated_path(args.updated)
     window.show_all()
+    if args.pose_guide:
+        GLib.idle_add(lambda: app.stack.set_visible_child_name("alineacion_imu"))
     GLib.idle_add(app._toggle_sensor_connection, True)
     Gtk.main()
 

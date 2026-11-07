@@ -15,6 +15,7 @@ import rclpy
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import PointCloud2, PointField, Imu
+from nav_msgs.msg import Odometry
 from unitree_sensor import UnitreeConfig, connect, capture_snapshot
 
 
@@ -25,6 +26,7 @@ def main():
         PointCloud2, "/unilidar/cloud", qos_profile_sensor_data
     )
     imu_publisher = node.create_publisher(Imu, "/unilidar/imu", qos_profile_sensor_data)
+    pose_publisher = node.create_publisher(Odometry, "/unitree_lio/odometry", qos_profile_sensor_data)
     records = [(1.25 + i, 0.5, 0.25, 12 + i, 0.125, 70000 + i) for i in range(4)]
 
     def publish():
@@ -53,6 +55,12 @@ def main():
         imu.header.frame_id = "unilidar_imu"
         imu.orientation.w = 1.0
         imu_publisher.publish(imu)
+        pose = Odometry()
+        pose.header.stamp = message.header.stamp
+        pose.header.frame_id = "unitree_lio_origin_synthetic_check"
+        pose.child_frame_id = "unitree_lio_body"
+        pose.pose.pose.orientation.w = 1.0
+        pose_publisher.publish(pose)
 
     node.create_timer(0.1, publish)
 
@@ -93,6 +101,8 @@ def main():
         assert received >= 5
         assert connection.process.poll() is None
         assert connection.imu_diagnostic["orientation_valid"] is True
+        assert connection.pose_history.latest().session_id == "unitree_lio_origin_synthetic_check"
+        assert connection.pose_history.for_capture(accumulated).position_spread_m < 1e-9
         print(
             "ROS real: conexion, XYZ, ring uint32, nanosegundos, acumulacion e IMU continua verificados. Dominio aislado 137."
         )

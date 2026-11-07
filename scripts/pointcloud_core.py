@@ -517,11 +517,22 @@ def reference_pose_path_for(ply_path: Path) -> Path:
     return ply_path.with_name(ply_path.stem + "_pose.npz")
 
 
+class ReferencePose(tuple):
+    """Keep the existing (position, rpy) API and carry its cloud axes/session."""
+    def __new__(cls, position, rpy_deg, pose_to_cloud, frame_id, session_id):
+        value = super().__new__(cls, (position, rpy_deg))
+        value.pose_to_cloud = np.asarray(pose_to_cloud, dtype=float).reshape(3, 3)
+        value.frame_id = str(frame_id)
+        value.session_id = str(session_id)
+        return value
+
+
 def save_reference_pose(
     ply_path: Path,
     position: np.ndarray,
     rpy_deg: np.ndarray,
     alignment_version: int | None = None,
+    source_pose=None,
 ) -> None:
     """Guarda la pose del sensor (posicion en metros, orientacion roll/pitch/yaw
     en grados) junto a un .ply, para poder guiar al usuario a devolver el
@@ -532,6 +543,13 @@ def save_reference_pose(
     }
     if alignment_version is not None:
         values["alignment_version"] = np.asarray(int(alignment_version), dtype=np.int32)
+    if source_pose is not None and hasattr(source_pose, "pose_to_cloud"):
+        values.update(pose_to_cloud=source_pose.pose_to_cloud,
+                      frame_id=source_pose.frame_id, session_id=source_pose.session_id)
+        if hasattr(source_pose, "position_spread_m"):
+            values["position_spread_m"] = source_pose.position_spread_m
+        if hasattr(source_pose, "timestamp_ns"):
+            values["timestamp_ns"] = np.asarray(source_pose.timestamp_ns, dtype=np.int64)
     np.savez_compressed(reference_pose_path_for(ply_path), **values)
 
 
@@ -541,8 +559,11 @@ def load_reference_pose(ply_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
     path = reference_pose_path_for(ply_path)
     if not path.exists():
         return None
-    data = np.load(path)
-    return data["position"], data["rpy_deg"]
+    with np.load(path) as data:
+        if "pose_to_cloud" in data.files:
+            return ReferencePose(data["position"], data["rpy_deg"], data["pose_to_cloud"],
+                                 data["frame_id"].item(), data["session_id"].item())
+        return data["position"], data["rpy_deg"]
 
 
 def reference_pose_alignment_version(ply_path: Path) -> int:
@@ -574,7 +595,15 @@ def compute_pose_relative_transform(
     # Convert camera-local points to the Aurora pose frame, transform through
     # map coordinates, then convert into the base camera frame. Using the
     # pose rotation directly on camera XYZ swaps axes (forward is camera +Z).
-    pose_to_camera = _POSE_TO_SENSOR_VIEW
+    base_session = getattr(base_pose, "session_id", None)
+    updated_session = getattr(updated_pose, "session_id", None)
+    if base_session != updated_session:
+        raise ValueError("Las poses pertenecen a sensores o sesiones de tracking distintas; vuelve a capturar ANTES y DESPUES sin reiniciar Point-LIO.")
+    if base_session is not None and getattr(base_pose, "frame_id", None) != getattr(updated_pose, "frame_id", None):
+        raise ValueError("Las poses no comparten marco de referencia.")
+    pose_to_camera = getattr(base_pose, "pose_to_cloud", _POSE_TO_SENSOR_VIEW)
+    if not np.allclose(pose_to_camera, getattr(updated_pose, "pose_to_cloud", _POSE_TO_SENSOR_VIEW)):
+        raise ValueError("Las poses usan ejes de nube distintos.")
     R_rel = pose_to_camera @ R_base.T @ R_upd @ pose_to_camera.T
     t_rel = pose_to_camera @ R_base.T @ (
         np.asarray(upd_pos, dtype=np.float64) - np.asarray(base_pos, dtype=np.float64)

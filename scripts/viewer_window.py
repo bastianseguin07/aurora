@@ -988,14 +988,15 @@ def main() -> None:
 
         def on_tick() -> bool:
             nonlocal preview_frames
+            changed = False
             if args.kind == "pose":
-                refresh_pose()
+                changed = refresh_pose()
             if args.kind == "live":
                 changed = refresh_live_frame()
                 if preview_widget is None or not preview_widget.visible:
                     return changed
             if preview_widget is None or not preview_widget.visible:
-                return False
+                return changed
             preview_frames += 1
             if preview_frames >= 12:
                 preview_widget.visible = False

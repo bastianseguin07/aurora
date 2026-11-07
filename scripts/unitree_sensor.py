@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import open3d as o3d
 from unitree_protocol import CloudFrame, read_frame
+from unitree_pose import PoseHistory
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -148,6 +149,7 @@ class UnitreeConnection:
         self.stop = threading.Event()
         self.stderr_tail = deque(maxlen=12)
         self.imu_diagnostic = None
+        self.pose_history = PoseHistory()
         self.process = process or subprocess.Popen(
             config.command(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
         )
@@ -162,7 +164,12 @@ class UnitreeConnection:
         for line in iter(lambda: self.process.stderr.readline(4096), b""):
             # Keep diagnostics bounded even if the driver is noisy.
             text = line[-2000:].decode("utf-8", errors="replace").strip()
-            if text.startswith("AURORA_IMU "):
+            if text.startswith("AURORA_POSE "):
+                try:
+                    self.pose_history.append(json.loads(text[len("AURORA_POSE ") :]))
+                except (ValueError, KeyError, TypeError) as exc:
+                    self.log(f"Pose Point-LIO descartada: {exc}")
+            elif text.startswith("AURORA_IMU "):
                 try:
                     self.imu_diagnostic = json.loads(text[len("AURORA_IMU ") :])
                 except ValueError:

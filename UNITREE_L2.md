@@ -203,9 +203,10 @@ son paralelos. Aurora usa X derecha, Y abajo, Z adelante. No se igualan esos
 marcos al capturar. El visor y la detección frontal de pared reciben el eje
 apropiado; el recorte trabaja en las coordenadas originales.
 
-El LiDAR L2 y una IMU no constituyen por sí solos una pose SLAM con traslación
-validada. Para Unitree se desactivan captura móvil alineada, guía de posición y
-compensación automática por pose. Usa un trípode fijo entre tomas o la alineación
+El LiDAR L2 y una IMU requieren un algoritmo de odometria para estimar traslacion.
+La guia de posicion y compensacion entre capturas se habilitan con Point-LIO
+por ROS 2; consulta [UNITREE_POSE.md](UNITREE_POSE.md). Sin ese seguimiento,
+usa un trípode fijo entre tomas o la alineación
 manual por referencias estáticas. No se guardan fotos de profundidad ni poses
 ficticias. La selección por píxel de cámara se marca como no disponible; sigue
 operativa la selección de puntos 3D, el recorte, la comparación y el PDF.

@@ -1,6 +1,6 @@
 """Application sensor API: hardware-specific logic stays inside each adapter."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Union
 import time
 from pathlib import Path
@@ -41,6 +41,12 @@ UNITREE = Capabilities(
 
 
 def capabilities(connection=None, kind="aurora"):
+    if isinstance(connection, unitree.UnitreeConnection):
+        try:
+            connection.pose_history.latest()
+        except (RuntimeError, AttributeError):
+            return UNITREE
+        return replace(UNITREE, pose=True)
     return (
         UNITREE
         if isinstance(connection, unitree.UnitreeConnection) or kind == "unitree"
@@ -91,11 +97,21 @@ def capture_snapshot(connection, **kwargs):
 
 
 def get_current_pose(connection):
+    if isinstance(connection, unitree.UnitreeConnection):
+        if not hasattr(connection, "pose_history"):
+            raise RuntimeError("Sin posicion SLAM Point-LIO disponible")
+        return connection.pose_history.smoothed()
     if not capabilities(connection).pose:
         raise RuntimeError(
             "Unitree L2 no proporciona posicion SLAM validada; su IMU no es una pose 6DoF"
         )
     return aurora.get_current_pose(connection)
+
+
+def get_capture_pose(connection, capture):
+    if isinstance(connection, unitree.UnitreeConnection):
+        return connection.pose_history.for_capture(capture)
+    return get_current_pose(connection)
 
 
 def capture_reference_frame(connection, **kwargs):
@@ -105,7 +121,7 @@ def capture_reference_frame(connection, **kwargs):
 
 
 def capture_aligned_snapshot(connection, **kwargs):
-    if not capabilities(connection).pose:
+    if isinstance(connection, unitree.UnitreeConnection) or not capabilities(connection).pose:
         raise RuntimeError(
             "Captura movil no disponible: Unitree requiere una fuente externa de pose validada"
         )
