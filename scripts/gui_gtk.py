@@ -396,6 +396,14 @@ label {{
     color: {COLOR_TEXT};
 }}
 
+button.capture-cancel {{
+    min-height: 0;
+    min-width: 0;
+    padding: 0px 8px;
+    margin: 0;
+    font-size: 11px;
+}}
+
 label.capture-status {{
     font-size: 13pt;
     font-weight: 700;
@@ -676,6 +684,13 @@ box.calculation-indicator {{
 """.encode("utf-8")
 
 
+class CaptureRequest:
+    """Keep discard cancellation separate from stopping to save partial data."""
+    def __init__(self):
+        self.stop_event = threading.Event()
+        self.cancelled = threading.Event()
+
+
 class AuroraGUI:
     def __init__(self, window: Gtk.Window) -> None:
         self.window = window
@@ -703,6 +718,7 @@ class AuroraGUI:
         self._closing = False
         self._sensor_connect_stop = threading.Event()
         self.capture_stop_event: threading.Event | None = None
+        self._capture_request: CaptureRequest | None = None
         self.last_base_capture_path: str | None = None
         self.last_updated_capture_path: str | None = None
         self.result = None
@@ -1304,19 +1320,40 @@ class AuroraGUI:
         self.quick_capture_spinner = Gtk.Spinner()
         self.quick_capture_spinner.set_size_request(18, 18)
         self.quick_capture_spinner.set_no_show_all(True)
-        self.quick_capture_spinner.hide()
+        self.quick_capture_spinner.set_opacity(0)
+        self.quick_capture_spinner.show()
         capture_status_row.pack_start(self.quick_capture_spinner, False, False, 0)
         self.quick_capture_status_label = Gtk.Label(label="", xalign=0)
         self.quick_capture_status_label.set_hexpand(True)
-        self.quick_capture_status_label.set_line_wrap(True)
+        self.quick_capture_status_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.quick_capture_status_label.set_margin_end(135)
         self.quick_capture_status_label.get_style_context().add_class("capture-status")
         capture_status_row.pack_start(self.quick_capture_status_label, True, True, 0)
         self.quick_capture_progress = Gtk.ProgressBar()
         self.quick_capture_progress.set_no_show_all(True)
-        self.quick_capture_progress.hide()
+        self.quick_capture_progress.set_opacity(0)
+        self.quick_capture_progress.show()
         self.quick_capture_progress.set_size_request(-1, 22)
         self.quick_capture_progress.get_style_context().add_class("capture-progress")
-        files_box.pack_start(self.quick_capture_progress, False, False, 0)
+        self.quick_capture_progress_overlay = Gtk.Overlay()
+        self.quick_capture_progress_overlay.add(self.quick_capture_progress)
+        # Reuse the existing status line. Overlay children do not participate
+        # in layout; the transparent progress trough reserves the same space.
+        files_box.remove(capture_status_row)
+        self.quick_capture_progress_overlay.add_overlay(capture_status_row)
+        self.quick_capture_cancel_button = Gtk.Button(label="Cancelar captura")
+        self.quick_capture_cancel_button.get_style_context().add_class("capture-cancel")
+        self.quick_capture_cancel_button.set_tooltip_text(
+            "Descarta esta captura sin guardar ni cambiar ANTES, DESPUÉS o la referencia de posición."
+        )
+        self.quick_capture_cancel_button.set_halign(Gtk.Align.END)
+        self.quick_capture_cancel_button.set_valign(Gtk.Align.CENTER)
+        self.quick_capture_cancel_button.set_margin_end(3)
+        self.quick_capture_cancel_button.set_no_show_all(True)
+        self.quick_capture_cancel_button.hide()
+        self.quick_capture_cancel_button.connect("clicked", lambda _b: self._cancel_capture_clicked())
+        self.quick_capture_progress_overlay.add_overlay(self.quick_capture_cancel_button)
+        files_box.pack_start(self.quick_capture_progress_overlay, False, False, 0)
         capture_time_row = self._row(files_box)
         capture_time_row.pack_start(Gtk.Label(label="Captura fija:"), False, False, 0)
         self.quick_capture_duration_scale = Gtk.Scale.new_with_range(
@@ -5543,10 +5580,12 @@ class AuroraGUI:
             button.set_sensitive(not connecting)
         for label in (self.sensor_status_label, self.quick_sensor_status_label):
             label.set_markup(f'<span foreground="{color}">●</span>  {status}')
+        can_capture = (connected and not connecting and self._capture_request is None
+                       and self._pending_pose_capture is None)
         if hasattr(self, "quick_capture_base_button"):
-            self.quick_capture_base_button.set_sensitive(connected and not connecting)
+            self.quick_capture_base_button.set_sensitive(can_capture)
         if hasattr(self, "quick_capture_updated_button"):
-            self.quick_capture_updated_button.set_sensitive(connected and not connecting)
+            self.quick_capture_updated_button.set_sensitive(can_capture)
         for selector_name in ("sensor_selector", "capture_sensor_selector", "unitree_options_box"):
             selector = getattr(self, selector_name, None)
             if selector is not None:
@@ -5629,6 +5668,7 @@ class AuroraGUI:
             self._show_error("Error de conexión", summary)
 
     def _disconnect_sensor(self) -> None:
+        self._cancel_capture_clicked()
         self.scene_panel.feed.set_connection(None)
         if self.viewer is not None:
             self.viewer.set_live_sensor(None)
@@ -5653,6 +5693,8 @@ class AuroraGUI:
         duration_s: float | None = None,
         wait_for_pose: bool = True,
     ) -> None:
+        if self._capture_request is not None or self._pending_pose_capture is not None:
+            return
         if self.sensor_connection is None:
             self._show_warning("Sensor no conectado", "Conecta el sensor antes de capturar.")
             return
@@ -5660,13 +5702,14 @@ class AuroraGUI:
         if (wait_for_pose and self._sensor_kind() == "unitree"
                 and self.unitree_transport_combo.get_active_id() == "ros2"
                 and not aurora_sensor.capabilities(self.sensor_connection).pose):
-            if self._pending_pose_capture is not None:
-                return
             self._pending_pose_capture = (target, aligned_multiview, duration_s, time.monotonic() + 20)
             self.quick_capture_status_label.set_text("Preparando la posición antes de capturar…")
             self.quick_capture_base_button.set_sensitive(False)
             self.quick_capture_updated_button.set_sensitive(False)
             self.stop_capture_button.set_sensitive(True)
+            self.capture_base_button.set_sensitive(False)
+            self.capture_updated_button.set_sensitive(False)
+            self._start_capture_progress("Preparando posición antes de capturar", None)
             self._start_unitree_tracking()
             GLib.timeout_add(200, self._capture_when_tracking_ready)
             return
@@ -5745,7 +5788,9 @@ class AuroraGUI:
         self.stop_capture_button.set_sensitive(True)
         if hasattr(self, "experimental_mobile_stop_button"):
             self.experimental_mobile_stop_button.set_sensitive(aligned_multiview)
-        self.capture_stop_event = threading.Event()
+        request = CaptureRequest()
+        self._capture_request = request
+        self.capture_stop_event = request.stop_event
         label = "tunel original" if target == "base" else "tunel con shotcrete"
         self._start_capture_progress(
             f"Capturando {label}", None if native_capture else capture_duration_s
@@ -5789,6 +5834,9 @@ class AuroraGUI:
                         cone_angle_deg=cone_angle_deg,
                         forward_axis=forward_axis,
                     )
+                    if request.cancelled.is_set():
+                        self._ui(self._on_capture_cancelled, request)
+                        return
                     self._log(
                         f"Fusion SLAM: {aligned_result.accepted_frames} frames aceptados, "
                         f"{aligned_result.rejected_frames} rechazados, recorrido "
@@ -5805,6 +5853,7 @@ class AuroraGUI:
                         None,
                         None,
                         aligned_result.reference_pose,
+                        capture_request=request,
                     )
                     return
                 cloud = aurora_sensor.capture_snapshot(
@@ -5820,21 +5869,27 @@ class AuroraGUI:
                     accumulate_static=accumulate_static,
                     **sensor_filter_kwargs,
                 )
+                if request.cancelled.is_set():
+                    self._ui(self._on_capture_cancelled, request)
+                    return
                 try:
                     ref_image, ref_point_grid = aurora_sensor.capture_reference_frame(
                         connection, max_distance_m=max_distance_m
                     )
                 except Exception:
                     ref_image, ref_point_grid = None, None
+                if request.cancelled.is_set():
+                    self._ui(self._on_capture_cancelled, request)
+                    return
                 try:
                     ref_pose = aurora_sensor.get_capture_pose(connection, cloud)
                 except Exception as exc:
                     self._log(f"Captura sin pose utilizable: {exc}")
                     ref_pose = None
                 self._ui(self._on_capture_done, target, cloud, ref_image, ref_point_grid,
-                         ref_pose, visual_reference_pose)
+                         ref_pose, visual_reference_pose, capture_request=request)
             except Exception as exc:
-                self._ui(self._on_capture_failed, exc)
+                self._ui(self._on_capture_failed, exc, capture_request=request)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -5845,21 +5900,59 @@ class AuroraGUI:
         target, aligned, duration, deadline = pending
         if self.sensor_connection is None:
             self._pending_pose_capture = None
+            self._on_capture_cancelled()
             return GLib.SOURCE_REMOVE
         if aurora_sensor.capabilities(self.sensor_connection).pose or time.monotonic() >= deadline:
             self._pending_pose_capture = None
             if not aurora_sensor.capabilities(self.sensor_connection).pose:
                 self._log("Seguimiento no disponible: se conservará la captura sin referencia de posición.")
             self._capture_clicked(target, aligned, duration, wait_for_pose=False)
+            if self._capture_request is None:
+                # Invalid parameters must also end the preparation indicator.
+                self._finish_capture_progress()
+                self.stop_capture_button.set_sensitive(False)
             return GLib.SOURCE_REMOVE
         return GLib.SOURCE_CONTINUE
 
-    def _stop_capture_clicked(self) -> None:
+    def _cancel_capture_clicked(self) -> None:
         if self._pending_pose_capture is not None:
             self._pending_pose_capture = None
-            self._finish_capture_progress()
-            self.stop_capture_button.set_sensitive(False)
-            self.quick_capture_status_label.set_text("Captura cancelada.")
+            self._on_capture_cancelled()
+            return
+        request = self._capture_request
+        if request is None:
+            return
+        request.cancelled.set()
+        request.stop_event.set()
+        self.quick_capture_cancel_button.set_sensitive(False)
+        self.stop_capture_button.set_sensitive(False)
+        if hasattr(self, "experimental_mobile_stop_button"):
+            self.experimental_mobile_stop_button.set_sensitive(False)
+        self._capture_progress_stage = "Cancelando captura"
+        self._capture_progress_duration_s = None
+        self._update_capture_progress()
+
+    def _on_capture_cancelled(self, capture_request=None) -> None:
+        if capture_request is not None and capture_request is not self._capture_request:
+            return
+        self._capture_request = None
+        self.capture_stop_event = None
+        if self._closing:
+            return
+        self._finish_capture_progress()
+        self.stop_capture_button.set_sensitive(False)
+        if hasattr(self, "experimental_mobile_stop_button"):
+            self.experimental_mobile_stop_button.set_sensitive(False)
+        text = "Captura cancelada; no se guardó ni cambió la medición anterior."
+        for name in ("capture_status_label", "quick_capture_status_label", "experimental_mobile_status_label"):
+            label = getattr(self, name, None)
+            if label is not None:
+                label.set_text(text)
+        self._log(text)
+
+    def _stop_capture_clicked(self) -> None:
+        if self._pending_pose_capture is not None:
+            self._cancel_capture_clicked()
             return
         if self.capture_stop_event is not None:
             self.capture_stop_event.set()
@@ -5875,7 +5968,14 @@ class AuroraGUI:
             self._log("Captura detenida manualmente; se procesarán los frames válidos recibidos hasta ahora.")
 
     def _on_capture_done(self, target: str, cloud, ref_image=None, ref_point_grid=None,
-                         ref_pose=None, visual_reference_pose=None) -> None:
+                         ref_pose=None, visual_reference_pose=None, capture_request=None) -> None:
+        if capture_request is not None:
+            if capture_request is not self._capture_request:
+                return
+            if capture_request.cancelled.is_set() or self._closing:
+                self._on_capture_cancelled(capture_request)
+                return
+        self._capture_request = None
         capture_result = cloud
         cloud = aurora_sensor.cloud_geometry(capture_result)
         self._finish_capture_progress()
@@ -6001,7 +6101,14 @@ class AuroraGUI:
             "Error al abrir la captura",
         )
 
-    def _on_capture_failed(self, exc: Exception) -> None:
+    def _on_capture_failed(self, exc: Exception, capture_request=None) -> None:
+        if capture_request is not None:
+            if capture_request is not self._capture_request:
+                return
+            if capture_request.cancelled.is_set() or self._closing:
+                self._on_capture_cancelled(capture_request)
+                return
+        self._capture_request = None
         self._finish_capture_progress()
         self.capture_base_button.set_sensitive(self.sensor_connection is not None)
         self.capture_updated_button.set_sensitive(self.sensor_connection is not None)
@@ -6019,6 +6126,9 @@ class AuroraGUI:
         self._show_error("Error de captura", summary)
 
     def _start_capture_progress(self, label: str, duration_s: float | None) -> None:
+        self.quick_capture_progress_overlay.show()
+        self.quick_capture_cancel_button.set_sensitive(True)
+        self.quick_capture_cancel_button.show()
         self._capture_progress_started_at = time.monotonic()
         self._capture_progress_stage = label
         self._capture_progress_duration_s = duration_s
@@ -6030,11 +6140,13 @@ class AuroraGUI:
             if progress is not None:
                 progress.set_fraction(0.0)
                 progress.set_text("Iniciando captura…")
-                progress.set_show_text(True)
+                progress.set_show_text(name != "quick_capture_progress")
+                progress.set_opacity(1)
                 progress.set_no_show_all(False)
                 progress.show()
         if hasattr(self, "quick_capture_spinner"):
             self.quick_capture_spinner.set_no_show_all(False)
+            self.quick_capture_spinner.set_opacity(1)
             self.quick_capture_spinner.show()
             self.quick_capture_spinner.start()
         if hasattr(self, "quick_capture_base_button"):
@@ -6076,7 +6188,10 @@ class AuroraGUI:
                 continue
             if self._capture_progress_duration_s is None:
                 progress.pulse()
-                progress.set_text("Capturando…")
+                request = self._capture_request
+                progress.set_text("Cancelando…" if request is not None and request.cancelled.is_set()
+                                  else "Preparando posición…" if self._pending_pose_capture is not None
+                                  else "Capturando…")
             elif elapsed <= self._capture_progress_duration_s:
                 fraction = min(1.0, elapsed / max(self._capture_progress_duration_s, 1.0))
                 progress.set_fraction(fraction)
@@ -6087,6 +6202,9 @@ class AuroraGUI:
         return GLib.SOURCE_CONTINUE
 
     def _finish_capture_progress(self) -> None:
+        self.quick_capture_cancel_button.hide()
+        self.capture_base_button.set_sensitive(self.sensor_connection is not None)
+        self.capture_updated_button.set_sensitive(self.sensor_connection is not None)
         if self._capture_progress_timer is not None:
             GLib.source_remove(self._capture_progress_timer)
             self._capture_progress_timer = None
@@ -6097,11 +6215,14 @@ class AuroraGUI:
             progress = getattr(self, name, None)
             if progress is not None:
                 progress.set_no_show_all(True)
-                progress.hide()
+                if name == "quick_capture_progress":
+                    progress.set_opacity(0)
+                else:
+                    progress.hide()
         if hasattr(self, "quick_capture_spinner"):
             self.quick_capture_spinner.stop()
             self.quick_capture_spinner.set_no_show_all(True)
-            self.quick_capture_spinner.hide()
+            self.quick_capture_spinner.set_opacity(0)
         if hasattr(self, "quick_capture_base_button"):
             connected = self.sensor_connection is not None
             self.quick_capture_base_button.set_sensitive(connected)

@@ -12,6 +12,8 @@ from gui_gtk import AuroraGUI
 class CaptureSliderTests(unittest.TestCase):
     def capture(self, seconds, mobile=False):
         ui = Mock()
+        ui._capture_request = None
+        ui._pending_pose_capture = None
         ui.quick_capture_duration_scale.get_value.return_value = seconds
         ui.capture_persistence_entry.get_text.return_value = "0.6"
         ui.capture_limit_fov_check.get_active.return_value = False

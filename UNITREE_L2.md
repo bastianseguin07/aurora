@@ -127,6 +127,11 @@ En ROS 2, sin un identificador de nube en Header, se usa la secuencia local de
 mensajes recibidos. `cloud_scan_num=-1` en el NPZ ROS significa que la agrupación
 la controla el driver externo y no fue consultada por la GUI.
 
+En **Medición rápida**, **Cancelar captura** aparece sobre la barra de progreso
+solo durante una captura, sin desplazar los controles. Descarta la captura en
+curso de ANTES o DESPUÉS: no guarda archivos ni cambia las capturas, los
+resultados o la referencia IMU existentes. Se puede volver a capturar enseguida.
+
 **Detener captura** conserva las nubes completas recibidas antes de detener, si
 hay alguna. Sin datos válidos se informa el error. La captura tiene un límite de
 256 MiB de campos recibidos; si lo supera, falla explícitamente para evitar una
