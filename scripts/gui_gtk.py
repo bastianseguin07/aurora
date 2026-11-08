@@ -1067,6 +1067,10 @@ class AuroraGUI:
         self.minimum_thickness_summary.set_no_show_all(True)
         self.minimum_thickness_summary.hide()
         stats_box.pack_start(self.minimum_thickness_summary, False, False, 4)
+        self.plane_quality_label = Gtk.Label(xalign=0)
+        self.plane_quality_label.set_line_wrap(True)
+        self.plane_quality_label.set_no_show_all(True)
+        stats_box.pack_start(self.plane_quality_label, False, False, 4)
         self.thickness_alert_label = Gtk.Label(xalign=0)
         self.thickness_alert_label.set_line_wrap(True)
         self.thickness_alert_label.set_margin_top(8)
@@ -1093,16 +1097,23 @@ class AuroraGUI:
         self.result_method_mesh_rb = Gtk.RadioButton.new_with_label_from_widget(
             self.result_method_cloud_rb, "Malla / Raycasting"
         )
+        self.result_method_plane_rb = Gtk.RadioButton.new_with_label_from_widget(
+            self.result_method_cloud_rb, "Cara plana (perpendicular)"
+        )
         self.result_method_cloud_rb.connect(
             "toggled", self._on_calculation_method_radio_toggled, "cloud_to_cloud"
         )
         self.result_method_mesh_rb.connect(
             "toggled", self._on_calculation_method_radio_toggled, "raycast"
         )
+        self.result_method_plane_rb.connect(
+            "toggled", self._on_calculation_method_radio_toggled, "plane"
+        )
         method_row.pack_start(self.result_method_cloud_rb, False, False, 0)
+        method_row.pack_start(self.result_method_plane_rb, False, False, 0)
         method_row.pack_start(self.result_method_mesh_rb, False, False, 0)
 
-        self.quick_c2c_frame, quick_c2c_box = self._section("Configuracion rapida Cloud-to-Cloud")
+        self.quick_c2c_frame, quick_c2c_box = self._section("Preparación de puntos")
         self.quick_c2c_frame.set_no_show_all(True)
         for quick_row in (self.c2c_voxel_row, self.c2c_outliers_row):
             quick_row.get_parent().remove(quick_row)
@@ -1366,7 +1377,7 @@ class AuroraGUI:
         crop_row.pack_start(self.quick_crop_manual_radio, False, False, 0)
         self.quick_crop_action_button = Gtk.Button(label="Detectar pared")
         self.quick_crop_action_button.set_tooltip_text(
-            "Detecta automaticamente la pared frontal o permite seleccionar un punto manualmente."
+            "Detecta la pared frontal descartando piso y laterales, o permite elegir una superficie manualmente."
         )
         self.quick_crop_action_button.connect("clicked", lambda _b: self._run_quick_crop_selection())
         self.quick_crop_action_button.set_sensitive(False)
@@ -1388,19 +1399,22 @@ class AuroraGUI:
         self.quick_crop_apply_button.set_sensitive(False)
         crop_row.pack_start(self.quick_crop_apply_button, False, False, 0)
         crop_dimensions_row = self._row(crop_box)
-        crop_dimensions_row.pack_start(Gtk.Label(label="Ancho (cm):"), False, False, 0)
+        self.quick_crop_width_label = Gtk.Label(label="Ancho (cm):")
+        crop_dimensions_row.pack_start(self.quick_crop_width_label, False, False, 0)
         self.quick_crop_face_size_entry = self._numeric_entry("40", 7)
         self.quick_crop_face_size_entry.connect(
             "changed", lambda entry: self._sync_quick_crop_dimension(entry, "width")
         )
         crop_dimensions_row.pack_start(self.quick_crop_face_size_entry, False, False, 0)
-        crop_dimensions_row.pack_start(Gtk.Label(label="Alto (cm):"), False, False, 0)
+        self.quick_crop_height_label = Gtk.Label(label="Alto (cm):")
+        crop_dimensions_row.pack_start(self.quick_crop_height_label, False, False, 0)
         self.quick_crop_height_entry = self._numeric_entry("40", 7)
         self.quick_crop_height_entry.connect(
             "changed", lambda entry: self._sync_quick_crop_dimension(entry, "height")
         )
         crop_dimensions_row.pack_start(self.quick_crop_height_entry, False, False, 0)
-        crop_dimensions_row.pack_start(Gtk.Label(label="Profundidad (cm):"), False, False, 0)
+        self.quick_crop_depth_label = Gtk.Label(label="Profundidad (cm):")
+        crop_dimensions_row.pack_start(self.quick_crop_depth_label, False, False, 0)
         self.quick_crop_depth_entry = self._numeric_entry("30", 7)
         self.quick_crop_depth_entry.set_tooltip_text(
             "Grosor de la caja perpendicular a la superficie seleccionada."
@@ -1452,11 +1466,24 @@ class AuroraGUI:
 
         method_frame, method_box = self._section("3. Calcula el espesor")
         method_note = Gtk.Label(
-            label="Recomendado para empezar: Cloud-to-Cloud. Calcula distancias entre superficies sin reconstruir mallas.",
+            label=("Para una pared o caja recortada, Cara plana mide perpendicularmente y excluye piso y bordes. "
+                   "Requiere una cara dominante en ambas tomas, con zona común. "
+                   "Cloud-to-Cloud puede dar menos espesor si encuentra otra superficie cercana. "
+                   "Para un arco completo, usa un método adecuado a su curvatura."),
             xalign=0,
         )
         method_note.set_line_wrap(True)
         method_box.pack_start(method_note, False, False, 0)
+        self.quick_distance_method_combo = Gtk.ComboBoxText()
+        self.quick_distance_method_combo.append("cloud_to_cloud", "Cloud-to-Cloud")
+        self.quick_distance_method_combo.append("plane", "Cara plana (perpendicular)")
+        self.quick_distance_method_combo.append("raycast", "Malla / Raycasting")
+        self.quick_distance_method_combo.set_active_id(self.calculation_method)
+        self.quick_distance_method_combo.connect(
+            "changed", lambda combo: self._set_calculation_method(combo.get_active_id())
+            if not getattr(self, "_syncing_calculation_method", False) else None
+        )
+        method_box.pack_start(self.quick_distance_method_combo, False, False, 0)
 
         mesh_expander = Gtk.Expander(label="Opciones avanzadas de malla")
         mesh_expander.set_expanded(False)
@@ -1618,7 +1645,6 @@ class AuroraGUI:
     def _on_results_method_changed(self) -> None:
         use_mesh = self.calculation_method == "raycast"
         self._sync_calculation_method_radios()
-        self.quick_mesh_check.set_active(use_mesh)
         self._show_control_row(self.quick_c2c_frame, not use_mesh)
         self._show_control_row(self.quick_mesh_method_row, use_mesh)
         self._show_control_row(self.quick_mesh_voxel_row, use_mesh)
@@ -1630,6 +1656,8 @@ class AuroraGUI:
 
     def _on_quick_mesh_check_toggled(self, button) -> None:
         """Keep the quick-method checkbox and Results method radios in sync."""
+        if getattr(self, "_syncing_calculation_method", False):
+            return
         method_id = "raycast" if button.get_active() else "cloud_to_cloud"
         if self.calculation_method != method_id:
             self._set_calculation_method(method_id)
@@ -1644,24 +1672,34 @@ class AuroraGUI:
             widget.set_no_show_all(True)
 
     def _sync_calculation_method_radios(self) -> None:
-        use_mesh = self.calculation_method == "raycast"
-        for name, active in (
-            ("result_method_cloud_rb", not use_mesh),
-            ("result_method_mesh_rb", use_mesh),
-        ):
-            button = getattr(self, name, None)
-            if button is not None and button.get_active() != active:
-                button.set_active(active)
+        self._syncing_calculation_method = True
+        try:
+            for name, method in (
+                ("result_method_cloud_rb", "cloud_to_cloud"),
+                ("result_method_mesh_rb", "raycast"),
+                ("result_method_plane_rb", "plane"),
+                ("quick_mesh_check", "raycast"),
+            ):
+                button = getattr(self, name, None)
+                active = self.calculation_method == method
+                if button is not None and button.get_active() != active:
+                    button.set_active(active)
+            combo = getattr(self, "quick_distance_method_combo", None)
+            if combo is not None and combo.get_active_id() != self.calculation_method:
+                combo.set_active_id(self.calculation_method)
+        finally:
+            self._syncing_calculation_method = False
 
     def _on_calculation_method_radio_toggled(self, button, method_id: str) -> None:
-        if not button.get_active() or self.calculation_method == method_id:
+        if (getattr(self, "_syncing_calculation_method", False)
+                or not button.get_active() or self.calculation_method == method_id):
             return
         self.calculation_method = method_id
         self._sync_calculation_method_radios()
         self._on_results_method_changed()
 
     def _set_calculation_method(self, method_id: str) -> None:
-        if method_id not in {"cloud_to_cloud", "raycast"}:
+        if method_id not in {"cloud_to_cloud", "raycast", "plane"}:
             return
         self.calculation_method = method_id
         self._sync_calculation_method_radios()
@@ -2699,6 +2737,7 @@ class AuroraGUI:
         if hasattr(self, "cards_row"):
             self.cards_row.set_no_show_all(True)
             self.cards_row.hide()
+            self.plane_quality_label.hide()
             self.results_empty_label.show()
             self.thickness_alert_label.set_text("")
             self.thickness_alert_label.set_no_show_all(True)
@@ -2775,6 +2814,7 @@ class AuroraGUI:
         self.test_crop_bounds = None
         self.test_crop_seed = None
         self.test_crop_bounds_label.set_text("Limites sin definir")
+        self._update_crop_axis_labels()
         self.test_crop_preview_button.set_label("Vista previa del box")
         self.test_crop_use_pair_button.set_sensitive(False)
         if path:
@@ -3273,7 +3313,7 @@ class AuroraGUI:
         auto_row = self._row(bounds_box)
         self.test_crop_auto_button = Gtk.Button(label="Detectar pared frontal automáticamente")
         self.test_crop_auto_button.set_tooltip_text(
-            "Busca el punto más cercano al centro de la vista del sensor y estima el box desde esa dirección."
+            "Busca la pared frontal cerca del centro de la vista; descarta planos del piso, techo y laterales."
         )
         self.test_crop_auto_button.connect("clicked", lambda _b: self._auto_detect_crop_wall())
         self.test_crop_auto_button.set_sensitive(False)
@@ -3438,6 +3478,7 @@ class AuroraGUI:
             return
         self.test_crop_output_paths = None
         self.test_crop_use_pair_button.set_sensitive(False)
+        self._update_crop_axis_labels()
         low, high = (np.asarray(axis, dtype=np.float64) for axis in self.test_crop_bounds)
         depth_axis = int(np.argmin(high - low))
         axis_name = ("X", "Y", "Z")[depth_axis]
@@ -3448,6 +3489,24 @@ class AuroraGUI:
             "Dimensiones actualizadas; pulsa «Actualizar vista previa» para aplicar el nuevo tamaño."
         )
         self._refresh_test_crop_controls()
+
+    def _update_crop_axis_labels(self) -> None:
+        """Expose the detected native axes; a calculation method never rotates the box."""
+        if self.test_crop_bounds is None:
+            width_axis = height_axis = depth_axis = None
+        else:
+            low, high = np.asarray(self.test_crop_bounds)
+            depth_axis = int(np.argmin(high - low))
+            width_axis, height_axis = [axis for axis in range(3) if axis != depth_axis]
+        for name, title, axis in (
+            ("quick_crop_width_label", "Ancho", width_axis),
+            ("quick_crop_height_label", "Alto", height_axis),
+            ("quick_crop_depth_label", "Profundidad", depth_axis),
+        ):
+            label = getattr(self, name, None)
+            if label is not None:
+                suffix = f" {'XYZ'[axis]}" if axis is not None else ""
+                label.set_text(f"{title}{suffix} (cm):")
 
     def _on_test_crop_depth_changed(self) -> None:
         if self.test_crop_bounds is None:
@@ -3736,6 +3795,7 @@ class AuroraGUI:
             self._show_error("Tamaño del box no válido", str(exc))
             return
         self.test_crop_preview_button.set_label("Actualizar vista previa")
+        self._update_crop_axis_labels()
         self.test_crop_output_paths = None
         self.test_crop_use_pair_button.set_sensitive(False)
         low, high = (np.asarray(axis, dtype=np.float64) for axis in self.test_crop_bounds)
@@ -5808,7 +5868,7 @@ class AuroraGUI:
         if target == "base":
             self._capture_visual_reference_path = path
             self._capture_visual_reference_pose = visual_pose if getattr(visual_pose, "session_id", None) else None
-            if self.scene_panel.feed.set_reference(visual_pose):
+            if self.scene_panel.feed.set_reference(visual_pose, replace=True):
                 self.scene_panel.pause_button.set_active(False)
                 self._log("Inicio del entorno 3D fijado en ANTES; se conserva mientras se mueve el sensor.")
 
@@ -6187,7 +6247,9 @@ class AuroraGUI:
         self.log_buffer.set_text("")
         self.quick_calculate_button.set_sensitive(False)
         self.result_recalculate_button.set_sensitive(False)
-        self._start_calculation_progress("Preparando Cloud-to-Cloud")
+        self._start_calculation_progress(
+            "Preparando Cara plana" if params.distance_method == "plane" else "Preparando Cloud-to-Cloud"
+        )
         self.status_label.set_markup("Calculando el espesor...")
         self.stack.set_visible_child_name("resultados")
 
@@ -6214,6 +6276,7 @@ class AuroraGUI:
             icp_threshold=float(self.icp_threshold_entry.get_text() or 0.05),
             max_distance=max_distance,
             minimum_thickness_m=self._minimum_thickness_m(),
+            distance_method="plane" if self.calculation_method == "plane" else "cloud_to_cloud",
         )
 
     def _run_pipeline_worker(self, params: PipelineParams, generation: int) -> None:
@@ -6242,6 +6305,15 @@ class AuroraGUI:
         self.cards_row.set_no_show_all(False)
         self.cards_row.show_all()
         self._show_minimum_thickness_summary(stats)
+        if result.distance_method == "plane":
+            details = result.measurement_details
+            self.plane_quality_label.set_text(
+                f"Cara plana: {details['overlap_points']:,} de {details['input_after_points']:,} "
+                f"puntos en la cara común; {details['rejected_geometry_points']:,} fuera de ella. "
+                f"Diferencia de orientación: {details['normal_angle_deg']:.1f}°. "
+                "Tolerancia del ajuste: 1,5 cm."
+            )
+            self.plane_quality_label.show()
         self.results_empty_label.hide()
         self.open_result_viewer_button.set_sensitive(True)
         self.open_result_viewer_button.set_label("Abrir vista 3D")
@@ -6254,7 +6326,7 @@ class AuroraGUI:
             f"Medicion lista: promedio {stats.mean * 100:.2f} cm, "
             f"mediana {stats.median * 100:.2f} cm, desviación estándar {stats.std * 100:.2f} cm."
         )
-        self._set_calculation_method("cloud_to_cloud")
+        self._set_calculation_method(result.distance_method)
         self._generate_alerts()
         self.stack.set_visible_child_name("resultados")
         self._show_result_in_viewer()
@@ -6421,7 +6493,7 @@ class AuroraGUI:
             Paragraph(f"<b>Nube base (original):</b> {escape(str(self.base_path))}", body_style),
             Paragraph(f"<b>Nube actualizada (shotcrete):</b> {escape(str(self.updated_path))}", body_style),
             Paragraph(
-                f"<b>Metodo de calculo:</b> {'Raycasting con malla' if self._active_result_kind == 'raycast' else 'Cloud-to-Cloud'}",
+                f"<b>Metodo de calculo:</b> {'Raycasting con malla' if self._active_result_kind == 'raycast' else ('Cara plana / perpendicular' if getattr(result, 'distance_method', '') == 'plane' else 'Cloud-to-Cloud')}",
                 body_style,
             ),
             Paragraph("2. Criterio de color", h2_style),

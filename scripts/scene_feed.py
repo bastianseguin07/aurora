@@ -107,14 +107,14 @@ class SceneFeed:
         with self.lock:
             self.decay_s = seconds
 
-    def set_reference(self, pose):
-        """First successfully saved capture in each tracking session wins."""
+    def set_reference(self, pose, replace=False):
+        """Keep the reference until an explicit new BEFORE capture replaces it."""
         if pose is None or not getattr(pose, "session_id", None):
             return False
         with self.lock:
             if self.session is not None and self.session != pose.session_id:
                 return False
-            if self.reference is not None and self.reference.session_id == pose.session_id:
+            if self.reference is not None and self.reference.session_id == pose.session_id and not replace:
                 return False
             old_origin = (self.reference.position if self.reference is not None else self.display_origin
                           if self.display_origin is not None else np.zeros(3))

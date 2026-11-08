@@ -17,6 +17,7 @@ from pointcloud_core import (
     estimate_wall_crop_bounds,
     compute_rigid_transform,
     apply_rigid_transform,
+    crop_pair_by_face_depth,
 )
 from viewer_window import _look_at_sensor_pov, _replace_live_geometry
 from unitree_sensor import UnitreeConfig, UnitreeCloud
@@ -142,6 +143,55 @@ class GtkSelectorTests(unittest.TestCase):
         if not Gtk.init_check([])[0]:
             raise unittest.SkipTest("Sin pantalla GTK")
 
+    def test_planar_method_can_be_selected_and_retained_from_both_pages(self):
+        window = Gtk.Window()
+        app = AuroraGUI(window)
+        try:
+            for previous in ('raycast', 'cloud_to_cloud'):
+                app._set_calculation_method(previous)
+                app.quick_distance_method_combo.set_active_id('plane')
+                self.assertEqual(app.calculation_method, 'plane')
+                self.assertTrue(app.result_method_plane_rb.get_active())
+                self.assertFalse(app.quick_mesh_check.get_active())
+                self.assertEqual(app._build_params().distance_method, 'plane')
+            app.result_method_cloud_rb.set_active(True)
+            self.assertEqual(app.quick_distance_method_combo.get_active_id(), 'cloud_to_cloud')
+            app.result_method_plane_rb.set_active(True)
+            self.assertEqual(app.quick_distance_method_combo.get_active_id(), 'plane')
+        finally:
+            app._on_close()
+            window.destroy()
+
+    def test_box_dimensions_keep_native_axes_across_calculation_methods(self):
+        window = Gtk.Window()
+        app = AuroraGUI(window)
+        try:
+            app.quick_crop_face_size_entry.set_text('20')
+            app.quick_crop_height_entry.set_text('30')
+            app.quick_crop_depth_entry.set_text('100')
+            scene = o3d.geometry.PointCloud(o3d.utility.Vector3dVector([[1., 0., .2]]))
+            with patch.object(app, '_preview_test_crop_bounds'):
+                app._on_test_crop_wall_detected(np.array([1., 0., .2]),
+                                               ((1., -.1, 0.), (1., .1, .4)), 'automático', None)
+            original = np.array(app.test_crop_bounds)
+            for method in ('cloud_to_cloud', 'plane', 'raycast', 'plane'):
+                app.quick_distance_method_combo.set_active_id(method)
+                np.testing.assert_array_equal(app.test_crop_bounds, original)
+                self.assertEqual(app.quick_crop_width_label.get_text(), 'Ancho Y (cm):')
+                self.assertEqual(app.quick_crop_height_label.get_text(), 'Alto Z (cm):')
+                self.assertEqual(app.quick_crop_depth_label.get_text(), 'Profundidad X (cm):')
+                _, _, _, box, axis, _ = crop_pair_by_face_depth(
+                    scene, scene, app.test_crop_bounds, app._get_test_crop_depth_m(), app.test_crop_seed
+                )
+                self.assertEqual(axis, 0)
+                np.testing.assert_allclose(np.subtract(box[1], box[0]), [1., .2, .3])
+            app.quick_crop_height_entry.set_text('45')
+            self.assertEqual(app.quick_crop_depth_entry.get_text(), '100')
+            np.testing.assert_allclose(np.subtract(app.test_crop_bounds[1], app.test_crop_bounds[0]), [0., .2, .45])
+        finally:
+            app._on_close()
+            window.destroy()
+
     def test_switching_and_capture_save_preserve_native_fields(self):
         window = Gtk.Window()
         app = AuroraGUI(window)
@@ -211,7 +261,7 @@ class GtkSelectorTests(unittest.TestCase):
                                                np.asarray(cloud.points), atol=1e-6)
                     with np.load(target.with_name(target.stem + "_unitree.npz")) as saved:
                         np.testing.assert_array_equal(saved["fields"], cloud.unitree_fields)
-                    np.testing.assert_allclose(panel.feed.reference.position, reference.position)
+                    np.testing.assert_allclose(panel.feed.reference.position, later.position)
             for view in ("Órbita", "Superior", "Frontal", "Lateral"):
                 panel.canvas.view(view)
                 self.assertTrue(np.isfinite(panel.canvas._matrix(1.5)).all())
@@ -249,6 +299,12 @@ class GtkSelectorTests(unittest.TestCase):
                 np.testing.assert_allclose(state["reference"], [0, 0, 0])
                 np.testing.assert_allclose(state["position"], [.5, 0, 0])
                 self.assertIs(app.scene_panel.feed.reference, start)
+                next_target = Path(directory) / "next_before.pcd"
+                with patch.object(app, "_save_file_dialog", return_value=str(next_target)):
+                    app._on_capture_done("base", cloud, ref_pose=None, visual_reference_pose=moved)
+                self.assertIs(app.scene_panel.feed.reference, moved)
+                np.testing.assert_allclose(app.scene_panel.feed.snapshot()["position"], [0, 0, 0])
+                np.testing.assert_allclose(app.imu_reference_pose[0], moved.position)
                 app.scene_panel.feed.set_connection(None)
         finally:
             app._on_close()

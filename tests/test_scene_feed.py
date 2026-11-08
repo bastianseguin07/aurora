@@ -52,6 +52,22 @@ class SceneFeedTests(unittest.TestCase):
         self.assertEqual(len(feed.path), 1)
         self.assertTrue(feed.set_reference(pose([0, 0, 0], "unitree_lio_origin_next")))
 
+    def test_new_before_can_rebase_zero_while_preserving_current_sensor_and_cloud(self):
+        current = pose([4, 2, 1])
+        connection = NS(read_registered_batch=lambda: [], pose_history=NS(smoothed=lambda: current))
+        feed = SceneFeed(start=False)
+        feed.set_connection(connection)
+        feed._poll(connection)
+        feed.set_reference(pose([3, 2, 1]))
+        feed.state['points'] = np.array([[2., 0, 0]])
+        new_before = pose([3.8, 2, 1])
+        self.assertTrue(feed.set_reference(new_before, replace=True))
+        np.testing.assert_allclose(feed.snapshot()['reference'], [0, 0, 0])
+        np.testing.assert_allclose(feed.snapshot()['position'], [.2, 0, 0])
+        np.testing.assert_allclose(feed.snapshot()['points'], [[1.2, 0, 0]])
+        np.testing.assert_allclose(feed.position, current.position)
+        np.testing.assert_allclose(feed.reference.position, new_before.position)
+
     def test_invalid_native_origins_do_not_become_old_sensor_positions(self):
         fields = np.zeros(2, dtype=POINT_DTYPE)
         fields["x"][1] = 2

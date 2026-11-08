@@ -171,10 +171,10 @@ el mapa usando las poses de Point-LIO interpoladas para el tiempo de cada retorn
 No usa la nube reducida por vóxeles de Point-LIO. El dibujo tiene un límite de
 300.000 puntos, distribuido por la zona seleccionada y toda la historia del decay;
 las capturas y los cálculos conservan sus datos completos.
-La primera captura ANTES guardada con pose válida fija el inicio. Al abrir la
+Cada nueva captura ANTES guardada con pose válida fija el inicio. Al abrir la
 GUI se usa un cero visual nuevo en la posición inicial del sensor,
 sin cargar una referencia de captura anterior ni reiniciar Point-LIO.
-La referencia se fija al guardar la primera captura ANTES de la GUI.
+La referencia se renueva al guardar ANTES; DESPUÉS conserva esa referencia.
 El origen visual de ANTES también conserva la pose válida al iniciar la captura;
 si no se valida una pose promedio para la medición, ese origen sigue disponible
 en la sesión para el círculo blanco y la guía. Esto no crea una pose promedio
@@ -185,7 +185,8 @@ actual, con solo su eje X, y una línea violeta los une. El panel informa X/Y/Z
 y distancia al inicio en centímetros.
 Los dos círculos se dibujan sobre la nube para mantenerlos visibles; el recorrido
 histórico es opcional y aparece desactivado al iniciar.
-Una segunda captura conserva ese mismo inicio. Al
+Capturar DESPUÉS conserva ese mismo inicio. Un nuevo ANTES reinicia el cero
+visual y la guía con su pose recién tomada, manteniendo el mapa de Point-LIO. Al
 reiniciarse Point-LIO, cambia el identificador de sesión y se descarta la
 referencia anterior; la siguiente captura válida fija el nuevo inicio. Las poses
 caducadas se muestran como última posición, sin indicarlas como seguimiento activo.
@@ -202,6 +203,60 @@ inicialización para poder guardar una referencia válida. La guía aplica una
 tolerancia visual de 1,5 cm a la posición, sin modificar las poses guardadas.
 Estas copias visuales no modifican las nubes PLY/PCD, campos nativos, sidecars,
 recortes, cálculo de espesor ni exportaciones existentes.
+
+### Medir una cara plana sin atajos al piso o los bordes
+
+La detección automática del box busca una pared frontal: si el piso domina el
+primer ajuste, busca otros planos en lugar de usar su normal como profundidad.
+Con Unitree la profundidad frontal se mantiene en X, el ancho en Y y el alto
+en Z. Los campos muestran su eje después de detectar la superficie. Elegir
+Cara plana, Cloud-to-Cloud o Raycasting conserva esa orientación, el punto y
+los valores del box; no intercambia coordenadas de las nubes. La selección
+manual permite otras superficies: para un techo horizontal la profundidad es
+Z y la cara ocupa X/Y. Cambiar de superficie puede cambiar los ejes; cambiar
+el método de cálculo no los cambia.
+
+En Medición rápida y Resultados se puede elegir **Cara plana (perpendicular)**
+para una región recortada de una pared o de un objeto plano. Cloud-to-Cloud
+mide la distancia al punto más cercano de ANTES, que puede pertenecer al piso
+o a un lateral. Esa distancia puede ser mucho menor que la separación entre
+las dos caras frontales; aumentar los puntos o reiniciar la IMU no corrige esa
+elección de superficie.
+
+Cara plana detecta por separado una cara dominante en ANTES y DESPUÉS con
+RANSAC y la refina por mínimos cuadrados. Usa 1,5 cm de tolerancia geométrica,
+exige al menos 30 puntos y un 60% de soporte por cara, normales compatibles
+(hasta 10°) y un 50% de zona común como mínimo. Solo mide puntos de la cara
+DESPUÉS que estén dentro de la huella convexa medida de ANTES: no extrapola
+fuera del soporte. Las distancias son absolutas, perpendiculares al plano de
+ANTES; no son el módulo del desplazamiento libre de un objeto. Los puntos del
+piso/laterales y los que no tienen soporte se cuentan aparte del umbral mínimo
+de espesor. Las capturas originales se conservan.
+
+Esta opción requiere seleccionar la misma cara en ambas tomas y alinear las
+nubes si se movió el sensor. No se debe aplicar como plano único a un arco de
+túnel curvo. ICP se rechaza porque podría alinear las dos caras y borrar el
+espesor. Las estadísticas, el CSV, el mapa y el PDF usan los mismos puntos y
+distancias; `measurement_details.json` registra método, archivos, controles
+geométricos y estadísticas. La dispersión del plano no es una certificación de
+exactitud absoluta del sensor.
+
+En tres pares guardados de la prueba de caja del 8 de noviembre, usando el
+mismo umbral mínimo de 1 cm en ambos métodos, las medianas fueron:
+
+| Capturas ANTES / DESPUÉS | C2C | Cara plana |
+| --- | ---: | ---: |
+| 003924 / 003952, lejos | 14,9 cm | 27,7 cm |
+| 004801 / 004824, cerca | 28,4 cm | 29,9 cm |
+| 005012 / 005043, lejos | 13,6 cm | 28,5 cm |
+
+Las poses originales de estos pares difieren entre 0,26 y 0,38 cm. El efecto
+principal se reproduce con caras separadas exactamente 30 cm más un piso:
+C2C toma el atajo, mientras la medición perpendicular recupera 30 cm tanto al
+rotar la escena como al trasladarla. Los 27,7–28,5 cm de los datos reales no se
+reescalan a 30 cm: queda una diferencia respecto al desplazamiento manual que
+exige evaluar colocación, orientación y error de rango mediante una referencia
+física antes de atribuirle una causa única.
 
 ## ROS opcional
 

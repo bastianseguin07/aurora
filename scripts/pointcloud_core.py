@@ -72,6 +72,7 @@ class PipelineParams:
     crop_max: Vec3 | None = None
     max_distance: float | None = None
     minimum_thickness_m: float = 0.0
+    distance_method: str = "cloud_to_cloud"
 
 
 @dataclass
@@ -84,6 +85,8 @@ class PipelineResult:
     csv_path: Path
     histogram_path: Path
     heatmap_path: Path
+    distance_method: str = "cloud_to_cloud"
+    measurement_details: dict | None = None
 
 
 def load_point_cloud(path: Path) -> o3d.geometry.PointCloud:
@@ -112,8 +115,8 @@ def crop_cloud_by_face_depth(
     """Extrude the selected face symmetrically along its thinnest axis."""
     if depth_m <= 0:
         raise ValueError("La profundidad debe ser mayor que cero.")
-    low = np.asarray(face_bounds[0], dtype=np.float64)
-    high = np.asarray(face_bounds[1], dtype=np.float64)
+    low = np.asarray(face_bounds[0], dtype=np.float64).copy()
+    high = np.asarray(face_bounds[1], dtype=np.float64).copy()
     if low.shape != (3,) or high.shape != (3,) or np.any(high < low):
         raise ValueError("Los limites de la cara no son validos.")
     depth_axis = int(np.argmin(high - low))
@@ -1507,7 +1510,7 @@ def save_distances_csv(path: Path, points: np.ndarray, distances: np.ndarray) ->
     np.savetxt(path, data, delimiter=",", header=header, comments="", fmt="%.6f")
 
 
-def save_histogram(path: Path, distances: np.ndarray) -> None:
+def save_histogram(path: Path, distances: np.ndarray, method_label: str = "Cloud-to-Cloud") -> None:
     # No usar pyplot/matplotlib.use("Agg") aca: eso cambia el backend
     # globalmente para todo el proceso (matplotlib es un singleton), y
     # rompe en silencio el picking interactivo sobre foto de referencia
@@ -1522,7 +1525,7 @@ def save_histogram(path: Path, distances: np.ndarray) -> None:
     ax.hist(distances * 100, bins=60, color="steelblue", edgecolor="black")
     ax.set_xlabel("Espesor de shotcrete (cm)")
     ax.set_ylabel("Cantidad de puntos")
-    ax.set_title("Distribucion del espesor de shotcrete (Cloud-to-Cloud)")
+    ax.set_title(f"Distribucion del espesor de shotcrete ({method_label})")
     fig.tight_layout()
     fig.savefig(path, dpi=150)
 
@@ -1624,6 +1627,7 @@ def estimate_wall_crop_bounds(
     if forward_axis not in "xyz" or len(forward_axis) != 1:
         raise ValueError("Eje frontal invalido")
     axis = "xyz".index(forward_axis)
+    automatic = seed is None
     if seed is None:
         forward = after_points[:, axis] > 0.0
         candidates = after_points[forward]
@@ -1637,41 +1641,71 @@ def estimate_wall_crop_bounds(
         seed = candidates[int(np.argmin(candidates[:, axis]))].copy()
     else:
         seed = np.asarray(seed, dtype=np.float64).reshape(3)
-    # Manual and automatic modes must derive the box from the same cloud and
-    # neighborhood size; otherwise selecting the same wall point can produce
-    # a different face just because it came from the other button.
+    # Both modes use DESPUES in its native axes. Automatic selection searches
+    # frontal surfaces; manual selection anchors the surface at the click.
     points = after_points
 
     radius = max(0.75, min(3.0, abs(float(seed[axis])) * 1.25))
-    local = points[np.linalg.norm(points - seed, axis=1) <= radius]
+    if automatic:
+        # A close floor return must not limit the depth searched for the wall.
+        radial = np.linalg.norm(np.delete(points, axis, axis=1), axis=1)
+        local = points[(points[:, axis] > 0) &
+                       (radial <= np.maximum(.25, points[:, axis] * np.tan(np.deg2rad(20))))]
+    else:
+        local = points[np.linalg.norm(points - seed, axis=1) <= radius]
     if len(local) < 30:
         nearest = np.argsort(np.linalg.norm(points - seed, axis=1))[: min(len(points), 1000)]
         local = points[nearest]
     if len(local) < 3:
         raise ValueError("No hay suficientes puntos cerca del punto elegido para ajustar la pared.")
 
-    local_cloud = o3d.geometry.PointCloud()
-    local_cloud.points = o3d.utility.Vector3dVector(local)
-    threshold = 0.02
-    plane, inliers = local_cloud.segment_plane(
-        distance_threshold=threshold, ransac_n=3, num_iterations=600
-    )
-    if len(inliers) < 30:
+    # A large nearby floor often wins the first RANSAC fit. Search distinct
+    # surfaces instead of letting its normal silently turn an X box into Z.
+    remaining = local
+    wall_points = np.empty((0, 3), dtype=np.float64)
+    best_score = float("inf")
+    depth_axis = axis
+    for _ in range(8):
+        if len(remaining) < 10:
+            break
+        local_cloud = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(remaining))
         plane, inliers = local_cloud.segment_plane(
-            distance_threshold=0.04, ransac_n=3, num_iterations=800
+            distance_threshold=0.02, ransac_n=3, num_iterations=600
         )
-    if len(inliers) >= 10:
+        if len(inliers) < 10:
+            break
         normal = np.asarray(plane[:3], dtype=np.float64)
         normal /= max(float(np.linalg.norm(normal)), 1e-12)
-        # Avoid taking a nearby floor/side plane when the selected point lies
-        # on another surface. A close fit is required for the picked seed.
-        if abs(float(np.dot(normal, seed) + plane[3])) <= 0.08:
-            wall_points = local[np.asarray(inliers, dtype=np.int64)]
-            depth_axis = int(np.argmax(np.abs(normal)))
-        else:
-            wall_points = np.empty((0, 3), dtype=np.float64)
-    else:
-        wall_points = np.empty((0, 3), dtype=np.float64)
+        # Restore support at intersections removed with an earlier plane.
+        # Otherwise peeling the floor can erase the only center-ray samples
+        # of a low box and make a farther wall appear to be the first target.
+        face = local[np.abs(local @ normal + plane[3]) <= .02]
+        candidate_axis = int(np.argmax(np.abs(normal)))
+        distance_to_seed = abs(float(np.dot(normal, seed) + plane[3]))
+        if automatic:
+            # Automatic means frontal wall, in the native sensor axes. A floor
+            # or ceiling belongs to manual selection, even if it has more points.
+            radial = np.linalg.norm(np.delete(face, axis, axis=1), axis=1)
+            central = (face[:, axis] > 0) & (radial <= np.maximum(face[:, axis], 0) * np.tan(np.deg2rad(8)))
+            if candidate_axis == axis and np.count_nonzero(central) >= 3:
+                score = float(np.median(face[central, axis]))
+                if score < best_score:
+                    best_score, wall_points, depth_axis = score, face, candidate_axis
+        elif distance_to_seed <= 0.025 and distance_to_seed < best_score:
+            # A clicked point anchors its surface, not another plane up to 8 cm
+            # away. Manual ceiling/side selections keep their actual normal.
+            best_score, wall_points, depth_axis = distance_to_seed, face, candidate_axis
+        keep = np.ones(len(remaining), dtype=bool)
+        keep[inliers] = False
+        remaining = remaining[keep]
+
+    if automatic and len(wall_points) < 10:
+        raise ValueError("No pude identificar una pared frontal. Usa «Elegir 1 punto» sobre la superficie.")
+    if automatic:
+        # Center on an actual sample of the selected face, not on the floor
+        # return which initially bounded the search neighborhood.
+        center = np.median(wall_points, axis=0)
+        seed = wall_points[np.argmin(np.linalg.norm(wall_points - center, axis=1))].copy()
 
     if len(wall_points) < 10:
         # Robust fallback for rough or incomplete surfaces: use the local
@@ -1701,6 +1735,10 @@ def estimate_wall_crop_bounds(
 
 
 def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
+    if params.distance_method not in {"cloud_to_cloud", "plane"}:
+        raise ValueError("Método de distancia desconocido.")
+    if params.distance_method == "plane" and params.use_icp:
+        raise ValueError("Desactiva ICP para Cara plana: alinear la cara borraría el espesor que quieres medir.")
     params.output_dir.mkdir(parents=True, exist_ok=True)
 
     log("Cargando nubes de puntos...")
@@ -1729,8 +1767,23 @@ def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
         log("Alineando nubes con ICP...")
         updated_cloud = align_clouds(updated_cloud, base_cloud, params.icp_threshold)
 
-    log("Calculando distancia Cloud-to-Cloud...")
-    raw_distances = compute_c2c_distance(updated_cloud, base_cloud)
+    measurement_details = None
+    if params.distance_method == "plane":
+        from plane_thickness import planar_thickness
+        log("Midiendo perpendicularmente a la cara plana de ANTES...")
+        indices, raw_distances, measurement_details = planar_thickness(
+            np.asarray(base_cloud.points), np.asarray(updated_cloud.points)
+        )
+        updated_cloud = updated_cloud.select_by_index(indices)
+        log(f"Caras: {measurement_details['base_face_points']:,} puntos ANTES y "
+            f"{measurement_details['after_face_points']:,} DESPUÉS; "
+            f"{measurement_details['overlap_points']:,} en zona común; "
+            f"ángulo {measurement_details['normal_angle_deg']:.1f}°.")
+        log(f"Fuera de cara/zona común: {measurement_details['rejected_geometry_points']:,} puntos. "
+            "Tolerancia del ajuste: 1.5 cm; solo se mide donde hay soporte en ANTES.")
+    else:
+        log("Calculando distancia Cloud-to-Cloud...")
+        raw_distances = compute_c2c_distance(updated_cloud, base_cloud)
     input_n_points = len(raw_distances)
     if not np.isfinite(params.minimum_thickness_m) or params.minimum_thickness_m < 0:
         raise ValueError("El umbral mínimo de espesor debe ser cero o mayor.")
@@ -1758,13 +1811,23 @@ def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
     log(f"CSV guardado en: {csv_path}")
 
     histogram_path = params.output_dir / "thickness_histogram.png"
-    save_histogram(histogram_path, distances)
+    save_histogram(histogram_path, distances,
+                   "Cara plana / perpendicular" if params.distance_method == "plane" else "Cloud-to-Cloud")
     log(f"Histograma guardado en: {histogram_path}")
 
     heatmap_cloud = build_heatmap_cloud(updated_cloud, distances, params.max_distance)
     heatmap_path = params.output_dir / "thickness_heatmap.ply"
     o3d.io.write_point_cloud(str(heatmap_path), heatmap_cloud)
     log(f"Heatmap guardado en: {heatmap_path}")
+
+    import json
+    (params.output_dir / "measurement_details.json").write_text(json.dumps({
+        "distance_method": params.distance_method,
+        "base_path": str(params.base_path), "updated_path": str(params.updated_path),
+        "minimum_thickness_m": params.minimum_thickness_m,
+        "geometry": measurement_details,
+        "median_m": stats.median, "mean_m": stats.mean, "n_points": stats.n_points,
+    }, indent=2), encoding="utf-8")
 
     return PipelineResult(
         stats=stats,
@@ -1775,4 +1838,6 @@ def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
         csv_path=csv_path,
         histogram_path=histogram_path,
         heatmap_path=heatmap_path,
+        distance_method=params.distance_method,
+        measurement_details=measurement_details,
     )
