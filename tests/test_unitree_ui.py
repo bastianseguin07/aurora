@@ -174,7 +174,7 @@ class GtkSelectorTests(unittest.TestCase):
                 app._on_test_crop_wall_detected(np.array([1., 0., .2]),
                                                ((1., -.1, 0.), (1., .1, .4)), 'automático', None)
             original = np.array(app.test_crop_bounds)
-            for method in ('cloud_to_cloud', 'plane', 'raycast', 'plane'):
+            for method in ('cloud_to_cloud', 'plane', 'raycast', 'auto', 'plane'):
                 app.quick_distance_method_combo.set_active_id(method)
                 np.testing.assert_array_equal(app.test_crop_bounds, original)
                 self.assertEqual(app.quick_crop_width_label.get_text(), 'Ancho Y (cm):')
@@ -191,6 +191,106 @@ class GtkSelectorTests(unittest.TestCase):
         finally:
             app._on_close()
             window.destroy()
+
+    def test_automatic_default_aligns_small_pose_motion_and_retains_maps(self):
+        from pointcloud_core import ReferencePose, save_reference_pose
+        window = Gtk.Window()
+        app = AuroraGUI(window)
+        try:
+            self.assertEqual(app.quick_distance_method_combo.get_active_id(), 'auto')
+            self.assertTrue(app.result_method_auto_rb.get_active())
+            yy, zz = np.meshgrid(np.linspace(-.25,.25,30), np.linspace(-.25,.25,30))
+            before = np.column_stack((np.full(yy.size,1.3),yy.ravel(),zz.ravel()))
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                paths = root/'before.ply', root/'after.ply'
+                for path, points, position in zip(paths, (before, before-[.305,0,0]), ([0,0,0],[.005,0,0])):
+                    cloud = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points))
+                    o3d.io.write_point_cloud(str(path),cloud)
+                    pose = ReferencePose(np.array(position),np.zeros(3),np.eye(3),'test','session')
+                    save_reference_pose(path,*pose,source_pose=pose)
+                app._set_base_path(str(paths[0]));app._set_updated_path(str(paths[1]))
+                app.output_dir = str(root/'output')
+                self.assertTrue(app.quick_imu_compensate_check.get_active())
+                with patch.object(app,'_run_pipeline_clicked') as calculate, patch.object(app,'_apply_pose_alignment') as legacy:
+                    app._quick_calculate()
+                    calculate.assert_called_once();legacy.assert_not_called()
+                params = app._build_params()
+                self.assertTrue(params.align_by_pose)
+                self.assertFalse(params.use_icp)
+                result = run_pipeline(params,log=lambda _:None)
+                self.assertAlmostEqual(result.stats.median,.3,delta=.003)
+                with np.load(params.output_dir/'surface_comparison.npz') as arrays:
+                    self.assertEqual(int(arrays['accepted'].sum()),result.stats.n_points)
+                    np.testing.assert_allclose(abs(arrays['signed_m'][arrays['accepted']]),result.distances)
+                with patch.object(app,'_show_result_in_viewer'):
+                    app._on_pipeline_success(result,app._result_generation)
+                self.assertIn('Cobertura',app.plane_quality_label.get_text())
+                self.assertEqual(app.calculation_method,'auto')
+                for view in ('thickness','quality','method'):
+                    app.surface_map_combo.set_active_id(view)
+                    colored,legend = app._build_result_heatmap(result)
+                    self.assertEqual(len(colored.points),len(result.comparison_cloud.points)+len(result.comparison.unmatched_before))
+                    self.assertTrue(np.isfinite(np.asarray(colored.colors)).all())
+                    self.assertTrue(legend['title'])
+                self.assertEqual(app.calculation_method,'auto')
+        finally:
+            app._on_close();window.destroy()
+
+    def test_automatic_no_change_and_no_support_are_distinct_and_viewable(self):
+        window = Gtk.Window()
+        app = AuroraGUI(window)
+        try:
+            yy, zz = np.meshgrid(np.linspace(-.25,.25,30),np.linspace(-.25,.25,30))
+            before=np.column_stack((np.full(yy.size,1.3),yy.ravel(),zz.ravel()))
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory)
+                for label,after in [('unchanged',before),('missing',before+[0,2.,0])]:
+                    paths=root/'before.ply',root/'after.ply'
+                    for path,points in zip(paths,(before,after)):
+                        o3d.io.write_point_cloud(str(path),o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points)))
+                    result=run_pipeline(PipelineParams(*paths,root/label,distance_method='auto',minimum_thickness_m=.01),log=lambda _:None)
+                    with patch.object(app,'_show_result_in_viewer'):
+                        app._on_pipeline_success(result,app._result_generation)
+                    self.assertEqual(result.stats.n_points,0)
+                    expected='Sin cambios detectables' if label=='unchanged' else 'Sin mediciones confiables'
+                    self.assertIn(expected,app.quick_status_label.get_text())
+                    self.assertEqual(app.stat_median.get_text(),'—')
+                    self.assertFalse(app.thickness_alert_label.get_visible())
+                    app.color_continuous_rb.set_active(True)
+                    colored,legend=app._build_result_heatmap(result)
+                    self.assertGreater(len(colored.points),0)
+                    self.assertGreater(legend['continuous_max_cm'],0)
+        finally:
+            app._on_close();window.destroy()
+
+    def test_reopening_gui_starts_a_new_measurement_with_no_previous_references(self):
+        from unitree_pose import PoseHistory
+        first_window = Gtk.Window()
+        first = AuroraGUI(first_window)
+        saved_pose = PoseHistory._pose(dict(position=[7,2,1],quaternion_xyzw=[0,0,0,1],
+                                           stamp_ns=1,frame_id='unitree_lio_origin_reopen'))
+        first.base_path = 'previous_before.ply'
+        first.updated_path = 'previous_after.ply'
+        first.imu_reference_pose = saved_pose
+        first.scene_panel.feed.set_reference(saved_pose)
+        first.result = object()
+        first._on_close();first_window.destroy()
+        second_window = Gtk.Window()
+        second = AuroraGUI(second_window)
+        try:
+            self.assertEqual(second.base_path,'')
+            self.assertEqual(second.updated_path,'')
+            self.assertIsNone(second.result)
+            self.assertIsNone(second.raycast_result)
+            self.assertIsNone(second.imu_reference_pose)
+            self.assertIsNone(second.scene_panel.feed.reference)
+            self.assertIsNone(second._capture_visual_reference_pose)
+            self.assertEqual(second.calculation_method,'auto')
+            self.assertIsNone(second.last_base_capture_path)
+            self.assertIsNone(second.last_updated_capture_path)
+        finally:
+            second._on_close();second_window.destroy()
 
     def test_switching_and_capture_save_preserve_native_fields(self):
         window = Gtk.Window()
@@ -299,12 +399,15 @@ class GtkSelectorTests(unittest.TestCase):
                 np.testing.assert_allclose(state["reference"], [0, 0, 0])
                 np.testing.assert_allclose(state["position"], [.5, 0, 0])
                 self.assertIs(app.scene_panel.feed.reference, start)
+                app._set_updated_path(str(target))
                 next_target = Path(directory) / "next_before.pcd"
                 with patch.object(app, "_save_file_dialog", return_value=str(next_target)):
                     app._on_capture_done("base", cloud, ref_pose=None, visual_reference_pose=moved)
                 self.assertIs(app.scene_panel.feed.reference, moved)
                 np.testing.assert_allclose(app.scene_panel.feed.snapshot()["position"], [0, 0, 0])
                 np.testing.assert_allclose(app.imu_reference_pose[0], moved.position)
+                self.assertEqual(app.updated_path, '')
+                self.assertIsNone(app.last_updated_capture_path)
                 app.scene_panel.feed.set_connection(None)
         finally:
             app._on_close()

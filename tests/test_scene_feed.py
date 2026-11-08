@@ -68,6 +68,21 @@ class SceneFeedTests(unittest.TestCase):
         np.testing.assert_allclose(feed.position, current.position)
         np.testing.assert_allclose(feed.reference.position, new_before.position)
 
+    def test_new_before_without_pose_discards_old_zero_until_tracking_returns(self):
+        current = pose([4, 2, 1])
+        connection = NS(read_registered_batch=lambda: [], pose_history=NS(smoothed=lambda: current))
+        feed = SceneFeed(start=False)
+        feed.set_connection(connection)
+        feed._poll(connection)
+        feed.set_reference(pose([3, 2, 1]))
+        self.assertFalse(feed.set_reference(None, replace=True))
+        self.assertIsNone(feed.reference)
+        self.assertIsNone(feed.snapshot()['position'])
+        self.assertFalse(feed.snapshot()['capture_reference_ready'])
+        feed._poll(connection)
+        np.testing.assert_allclose(feed.snapshot()['position'], [0, 0, 0])
+        self.assertIsNone(feed.snapshot()['reference'])
+
     def test_invalid_native_origins_do_not_become_old_sensor_positions(self):
         fields = np.zeros(2, dtype=POINT_DTYPE)
         fields["x"][1] = 2

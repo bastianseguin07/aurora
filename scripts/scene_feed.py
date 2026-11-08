@@ -110,6 +110,17 @@ class SceneFeed:
     def set_reference(self, pose, replace=False):
         """Keep the reference until an explicit new BEFORE capture replaces it."""
         if pose is None or not getattr(pose, "session_id", None):
+            if replace:
+                with self.lock:
+                    # A new measurement without tracking must not inherit the
+                    # last measurement's zero. The next valid pose rebases it.
+                    self.reference = self.display_origin = self.position = None
+                    self.path.clear()
+                    self.frames.clear()
+                    self.state = {**self.state, 'reference': None, 'position': None,
+                                  'path': EMPTY, 'points': EMPTY, 'colors': EMPTY,
+                                  'intensity': np.empty(0, dtype=np.float32),
+                                  'capture_reference_ready': False, 'pose_ok': False}
             return False
         with self.lock:
             if self.session is not None and self.session != pose.session_id:
@@ -165,6 +176,8 @@ class SceneFeed:
             if self.reference is not None and self.reference.session_id != self.session:
                 self.reference = None
         p = np.asarray(pose.position)
+        if self.display_origin is None:
+            self.display_origin = p.copy()
         r = Rotation.from_quat(pose.quaternion_xyzw).as_matrix()
         # Visual deadband only; saved poses and measurement data remain untouched.
         if self.position is None or np.linalg.norm(p - self.position) >= 0.01:

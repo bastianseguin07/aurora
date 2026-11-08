@@ -204,6 +204,89 @@ tolerancia visual de 1,5 cm a la posición, sin modificar las poses guardadas.
 Estas copias visuales no modifican las nubes PLY/PCD, campos nativos, sidecars,
 recortes, cálculo de espesor ni exportaciones existentes.
 
+### Automático por superficies
+
+Medición rápida inicia en **Automático por superficies**. Los tres métodos
+manuales siguen disponibles. Cambiar el método conserva el punto elegido y
+las dimensiones y ejes del box. Sirve tanto con el perfil Arco como con Pared
+frontal; recortar una región sigue siendo útil para elegir qué cambio medir.
+
+El flujo aplica primero la pose IMU/Point-LIO si está activada y ambas capturas
+tienen poses compatibles. También corrige movimientos inferiores a la tolerancia
+visual de la guía. La transformación se aplica a una copia en memoria; no
+reescribe las capturas ni aplica ICP a la superficie modificada. Poses de
+sesiones diferentes se rechazan. Sin poses, las nubes deben estar previamente
+alineadas en el mismo marco.
+
+Para detectar superficies se usan muestras reales de vóxeles de 1,5 cm, sin
+promediar esquinas, y normales PCA a varias escalas. Un plano dominante robusto
+puede estabilizar las normales de una cara pequeña. Se forman regiones por
+continuidad espacial y orientación compatible, separando esquinas y capas.
+Las regiones planas se comparan mediante distancia perpendicular a la cara de
+ANTES. Para regiones curvas o rugosas se usa una comparación local inspirada en
+M3C2: búsqueda en un cilindro orientado por la normal, soporte común y diferencia
+de medianas proyectadas. Es una implementación propia, no el plugin M3C2 ni
+una certificación equivalente al método publicado.
+
+Los valores iniciales, editables en Resultados → Parámetros avanzados de
+superficies, son radio normal 7 cm, radio de comparación 6 cm, búsqueda ±60 cm
+y margen estimado de alineación 1 cm. Se buscan regiones locales a intervalos
+de 4 cm, con al menos ocho muestras geométricas por lado y normales compatibles
+hasta 20°. Las muestras originales se clasifican y conservan en el diagnóstico;
+el muestreo sirve para estimar superficies y no reduce los archivos capturados.
+El límite visual de 300.000 puntos del entorno persistente es independiente.
+
+No hay fallback automático a C2C si la asociación falla. Capas alternativas,
+bordes, falta de soporte y regiones sin cobertura suficiente se dejan sin
+medición. Se comprueba la huella medida de las caras y el soporte local para
+evitar extrapolar una superficie hacia zonas sin datos. En superficies curvas
+se restringe la comparación a las huellas locales comunes. Las regiones de
+ANTES que no pudieron compararse también se conservan como puntos grises.
+
+El cambio firmado es positivo hacia el origen del marco ANTES; las estadísticas
+de espesor usan su módulo, como los métodos anteriores. La asociación es
+geométrica: no demuestra que un cambio sea material añadido ni identifica
+semánticamente una máquina. Dos superficies distintas pero geométricamente
+compatibles pueden requerir selección de región o revisión del operador.
+
+La calidad Alta/Media depende del soporte, ángulo y dispersión. El indicador de
+variación suma el margen de alineación, la mayor dispersión robusta local y dos
+errores estándar combinados de las muestras geométricas. No es un intervalo de
+confianza calibrado ni incluye automáticamente todo el error absoluto de rango
+o la deriva del mapa. Solo se usan cambios que superan esa variación y, después,
+el umbral mínimo de espesor (1 cm por defecto). Las capturas no se reescalan para
+forzar un desplazamiento conocido.
+
+Resultados permite elegir mapas de **Espesor**, **Calidad geométrica** y
+**Método usado por zona**. Gris significa sin medición confiable; azul tenue,
+sin cambio detectable sobre el umbral o la variación estimada. La cobertura,
+cantidad de cambios usados y puntos descartados se muestran aparte. Una escena
+sin cambios y una escena sin correspondencias tienen estados diferentes; no se
+presenta espesor cero como una medición de regiones que no pudieron compararse.
+
+Además del CSV de espesores aceptados, histograma, mapa PLY y PDF, se guardan:
+
+- `surface_comparison_per_point.csv`: todos los puntos DESPUÉS, método, calidad,
+  cambio firmado, variación, región, motivo y uso en estadísticas; incluye los
+  puntos ANTES sin correspondencia.
+- `surface_comparison.npz`: los mismos vectores y máscaras para reprocesamiento.
+- `measurement_details.json`: parámetros, cobertura, regiones, correspondencias,
+  diccionario de códigos y estadísticas.
+
+Un nuevo ANTES renueva el cero visual y la guía y quita el DESPUÉS anterior de
+la selección. Si esa captura no tiene pose, se elimina la referencia previa en
+vez de reutilizarla. Cerrar y abrir la GUI limpia capturas seleccionadas,
+referencias y resultados; el próximo seguimiento establece un nuevo cero visual.
+El sensor y el mapa de Point-LIO pueden seguir funcionando en segundo plano.
+Esto no borra los archivos guardados ni resetea físicamente la IMU.
+
+La validación incluye caja con separación conocida cerca/lejos, piso dominante,
+paredes rotadas, arco curvo, sobresalientes locales en pared y techo, ruido,
+alternativas ambiguas, huecos en ambas capturas, movimiento del sensor con
+compensación de pose y reinicios del estado de medición. Las capturas reales
+del 8 de noviembre se reprocesaron sin modificar los originales; el script y
+los resultados locales están en `output/validacion_superficies/`.
+
 ### Medir una cara plana sin atajos al piso o los bordes
 
 La detección automática del box busca una pared frontal: si el piso domina el

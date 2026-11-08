@@ -73,6 +73,8 @@ class PipelineParams:
     max_distance: float | None = None
     minimum_thickness_m: float = 0.0
     distance_method: str = "cloud_to_cloud"
+    align_by_pose: bool = False
+    surface_params: dict | None = None
 
 
 @dataclass
@@ -87,6 +89,9 @@ class PipelineResult:
     heatmap_path: Path
     distance_method: str = "cloud_to_cloud"
     measurement_details: dict | None = None
+    comparison: object | None = None
+    comparison_cloud: o3d.geometry.PointCloud | None = None
+    accepted_mask: np.ndarray | None = None
 
 
 def load_point_cloud(path: Path) -> o3d.geometry.PointCloud:
@@ -1735,15 +1740,21 @@ def estimate_wall_crop_bounds(
 
 
 def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
-    if params.distance_method not in {"cloud_to_cloud", "plane"}:
+    if params.distance_method not in {"cloud_to_cloud", "plane", "auto"}:
         raise ValueError("Método de distancia desconocido.")
-    if params.distance_method == "plane" and params.use_icp:
-        raise ValueError("Desactiva ICP para Cara plana: alinear la cara borraría el espesor que quieres medir.")
+    if params.distance_method in {"plane", "auto"} and params.use_icp:
+        raise ValueError("Desactiva ICP: alinear la superficie modificada podría borrar el espesor que quieres medir.")
     params.output_dir.mkdir(parents=True, exist_ok=True)
 
     log("Cargando nubes de puntos...")
     base_cloud = load_point_cloud(params.base_path)
     updated_cloud = load_point_cloud(params.updated_path)
+    if params.align_by_pose:
+        base_pose, updated_pose = load_reference_pose(params.base_path), load_reference_pose(params.updated_path)
+        if base_pose is None or updated_pose is None:
+            raise ValueError("Faltan poses para compensar el movimiento del sensor. Alinea las nubes o captura ambas con seguimiento.")
+        log("Compensando IMU/SLAM de DESPUÉS en el marco de ANTES...")
+        updated_cloud = align_cloud_by_pose(updated_cloud, base_pose, updated_pose)
     log(f"  Base       : {len(base_cloud.points)} puntos")
     log(f"  Actualizada: {len(updated_cloud.points)} puntos")
 
@@ -1767,8 +1778,34 @@ def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
         log("Alineando nubes con ICP...")
         updated_cloud = align_clouds(updated_cloud, base_cloud, params.icp_threshold)
 
-    measurement_details = None
-    if params.distance_method == "plane":
+    measurement_details = comparison = comparison_cloud = accepted_mask = None
+    if params.distance_method == "auto":
+        from surface_comparison import compare_surfaces, SurfaceParams
+        comparison_cloud = o3d.geometry.PointCloud(updated_cloud)
+        comparison = compare_surfaces(np.asarray(base_cloud.points), np.asarray(updated_cloud.points),
+                                      SurfaceParams(**(params.surface_params or {})), log=log)
+        raw_distances = np.abs(comparison.signed)
+        eligible = comparison.valid & (raw_distances > comparison.variation)
+        measurement_details = dict(
+            params=comparison.params, regions=comparison.regions,
+            total_after_points=len(raw_distances), valid_points=int(comparison.valid.sum()),
+            unmatched_after_points=int((~comparison.valid).sum()),
+            unmatched_before_points=len(comparison.unmatched_before),
+            within_variation_points=int((comparison.valid & ~eligible).sum()),
+            plane_points=int(np.count_nonzero(comparison.method == 1)),
+            local_normal_points=int(np.count_nonzero(comparison.method == 2)),
+            high_quality_points=int(np.count_nonzero(comparison.quality == 2)),
+            medium_quality_points=int(np.count_nonzero(comparison.quality == 1)),
+            coverage_percent=float(100 * comparison.valid.mean()),
+            codes=dict(method={0: "none", 1: "plane", 2: "local_normal"},
+                       quality={0: "none", 1: "medium", 2: "high"},
+                       reason={0: "valid", 1: "no_support", 2: "ambiguous", 3: "no_overlap", 4: "edge_or_noise"}),
+            quality_note="Indicadores geométricos y de variación; no son probabilidades ni precisión absoluta certificada.",
+        )
+        log(f"Cobertura DESPUÉS: {measurement_details['valid_points']:,}/{len(raw_distances):,} puntos "
+            f"({measurement_details['coverage_percent']:.1f}%); sin correspondencia: "
+            f"{measurement_details['unmatched_after_points']:,}.")
+    elif params.distance_method == "plane":
         from plane_thickness import planar_thickness
         log("Midiendo perpendicularmente a la cara plana de ANTES...")
         indices, raw_distances, measurement_details = planar_thickness(
@@ -1784,15 +1821,18 @@ def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
     else:
         log("Calculando distancia Cloud-to-Cloud...")
         raw_distances = compute_c2c_distance(updated_cloud, base_cloud)
-    input_n_points = len(raw_distances)
+    if comparison is None:
+        eligible = np.ones(len(raw_distances), dtype=bool)
+    input_n_points = int(eligible.sum())
     if not np.isfinite(params.minimum_thickness_m) or params.minimum_thickness_m < 0:
         raise ValueError("El umbral mínimo de espesor debe ser cero o mayor.")
-    keep_mask = (
+    minimum_mask = (
         raw_distances >= params.minimum_thickness_m
         if params.minimum_thickness_m > 0
-        else np.ones(input_n_points, dtype=bool)
+        else np.ones(len(raw_distances), dtype=bool)
     )
-    excluded_count = int(input_n_points - np.count_nonzero(keep_mask))
+    keep_mask = eligible & minimum_mask
+    excluded_count = int(np.count_nonzero(eligible & ~minimum_mask))
     distances = raw_distances[keep_mask]
     updated_cloud = updated_cloud.select_by_index(np.flatnonzero(keep_mask))
     stats = summarize_filtered(
@@ -1800,7 +1840,15 @@ def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
         input_n_points=input_n_points,
         excluded_n_points=excluded_count,
         minimum_thickness_m=params.minimum_thickness_m,
+    ) if len(distances) or comparison is None else DistanceStats(
+        mean=0., median=0., std=0., min=0., max=0., p95=0., n_points=0,
+        input_n_points=input_n_points, excluded_n_points=excluded_count,
+        minimum_thickness_m=params.minimum_thickness_m,
     )
+    if comparison is not None:
+        accepted_mask = keep_mask
+        measurement_details['used_points'] = int(keep_mask.sum())
+        measurement_details['below_minimum_points'] = excluded_count
     log("")
     log("Resultados:")
     log(str(stats))
@@ -1812,10 +1860,12 @@ def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
 
     histogram_path = params.output_dir / "thickness_histogram.png"
     save_histogram(histogram_path, distances,
-                   "Cara plana / perpendicular" if params.distance_method == "plane" else "Cloud-to-Cloud")
+                   {"plane": "Cara plana / perpendicular", "auto": "Automático por superficies"}.get(params.distance_method, "Cloud-to-Cloud"))
     log(f"Histograma guardado en: {histogram_path}")
 
-    heatmap_cloud = build_heatmap_cloud(updated_cloud, distances, params.max_distance)
+    heatmap_cloud = (build_surface_view(comparison_cloud, comparison, accepted_mask, distances,
+                                       color_spec={"max_distance_m": params.max_distance})
+                     if comparison is not None else build_heatmap_cloud(updated_cloud, distances, params.max_distance))
     heatmap_path = params.output_dir / "thickness_heatmap.ply"
     o3d.io.write_point_cloud(str(heatmap_path), heatmap_cloud)
     log(f"Heatmap guardado en: {heatmap_path}")
@@ -1826,8 +1876,11 @@ def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
         "base_path": str(params.base_path), "updated_path": str(params.updated_path),
         "minimum_thickness_m": params.minimum_thickness_m,
         "geometry": measurement_details,
+        "pose_alignment_requested": params.align_by_pose,
         "median_m": stats.median, "mean_m": stats.mean, "n_points": stats.n_points,
     }, indent=2), encoding="utf-8")
+    if comparison is not None:
+        save_surface_diagnostics(params.output_dir, np.asarray(comparison_cloud.points), comparison, accepted_mask)
 
     return PipelineResult(
         stats=stats,
@@ -1840,4 +1893,63 @@ def run_pipeline(params: PipelineParams, log=print) -> PipelineResult:
         heatmap_path=heatmap_path,
         distance_method=params.distance_method,
         measurement_details=measurement_details,
+        comparison=comparison, comparison_cloud=comparison_cloud, accepted_mask=accepted_mask,
     )
+
+
+def build_surface_view(cloud, comparison, accepted_mask, distances, view='thickness', color_spec=None):
+    """Include unmeasurable regions in gray, without assigning them a thickness."""
+    result = o3d.geometry.PointCloud(cloud)
+    colors = np.tile([.58, .60, .63], (len(result.points), 1))
+    if view == 'quality':
+        colors[comparison.quality == 1] = [.95, .65, .1]
+        colors[comparison.quality == 2] = [.2, .85, .4]
+    elif view == 'method':
+        colors[comparison.method == 1] = [.1, .75, .95]
+        colors[comparison.method == 2] = [.75, .35, .95]
+    else:
+        colors[comparison.valid] = [.35, .6, .8]
+        if np.any(accepted_mask):
+            selected = result.select_by_index(np.flatnonzero(accepted_mask))
+            spec = color_spec or {}
+            if spec.get('mode') == 'six':
+                colored = build_heatmap_cloud_six_bands(selected, distances, spec['target_m'])
+            elif spec.get('mode') == 'three':
+                colored = build_heatmap_cloud_banded(selected, distances, spec['low_m'], spec['high_m'])
+            else:
+                colored = build_heatmap_cloud(selected, distances, spec.get('max_distance_m'))
+            colors[accepted_mask] = np.asarray(colored.colors)
+    result.colors = o3d.utility.Vector3dVector(colors)
+    if len(comparison.unmatched_before):
+        missing = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(comparison.unmatched_before))
+        missing.paint_uniform_color([.58, .60, .63])
+        result += missing
+    return result
+
+
+def save_surface_diagnostics(output_dir, points, comparison, accepted):
+    """Export every post-capture sample and missing reference support separately."""
+    import csv
+    np.savez_compressed(output_dir / 'surface_comparison.npz', points=points,
+                        signed_m=comparison.signed, valid=comparison.valid,
+                        method=comparison.method, quality=comparison.quality,
+                        variation_m=comparison.variation, region=comparison.region,
+                        reason=comparison.reason, accepted=accepted,
+                        unmatched_before=comparison.unmatched_before)
+    methods = ['none', 'plane', 'local_normal']
+    quality = ['none', 'medium', 'high']
+    reasons = ['valid', 'no_support', 'ambiguous', 'no_overlap', 'edge_or_noise']
+    with (output_dir / 'surface_comparison_per_point.csv').open('w', newline='') as stream:
+        writer = csv.writer(stream)
+        writer.writerow(['source', 'x', 'y', 'z', 'signed_change_m', 'variation_m',
+                         'method', 'quality', 'status', 'region', 'used_in_stats'])
+        for i, point in enumerate(points):
+            reason = reasons[comparison.reason[i]]
+            if comparison.valid[i] and not accepted[i]:
+                reason = ('within_variation' if abs(comparison.signed[i]) <= comparison.variation[i]
+                          else 'below_minimum')
+            writer.writerow(['after', *point, comparison.signed[i], comparison.variation[i],
+                             methods[comparison.method[i]], quality[comparison.quality[i]],
+                             reason, comparison.region[i], int(accepted[i])])
+        for point in comparison.unmatched_before:
+            writer.writerow(['before', *point, 'nan', 'nan', 'none', 'none', 'no_after_support', -1, 0])

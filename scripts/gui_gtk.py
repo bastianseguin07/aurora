@@ -65,6 +65,7 @@ from pointcloud_core import (  # noqa: E402
     build_heatmap_cloud,
     build_heatmap_cloud_banded,
     build_heatmap_cloud_six_bands,
+    build_surface_view,
     build_subtle_overlay_cloud,
     compute_c2c_distance,
     compute_rigid_transform,
@@ -720,7 +721,7 @@ class AuroraGUI:
         self.external_viewer_processes: list[subprocess.Popen] = []
         self.test_crop_preview_process: subprocess.Popen | None = None
         self.test_crop_preview_temp_dir: Path | None = None
-        self.calculation_method = "cloud_to_cloud"
+        self.calculation_method = "auto"
         self._progress_timer_source: int | None = None
         self._progress_started_at = 0.0
         self._progress_stage = ""
@@ -1100,6 +1101,10 @@ class AuroraGUI:
         self.result_method_plane_rb = Gtk.RadioButton.new_with_label_from_widget(
             self.result_method_cloud_rb, "Cara plana (perpendicular)"
         )
+        self.result_method_auto_rb = Gtk.RadioButton.new_with_label_from_widget(
+            self.result_method_cloud_rb, "Automático por superficies"
+        )
+        self.result_method_auto_rb.connect("toggled", self._on_calculation_method_radio_toggled, "auto")
         self.result_method_cloud_rb.connect(
             "toggled", self._on_calculation_method_radio_toggled, "cloud_to_cloud"
         )
@@ -1109,9 +1114,41 @@ class AuroraGUI:
         self.result_method_plane_rb.connect(
             "toggled", self._on_calculation_method_radio_toggled, "plane"
         )
+        method_box.pack_start(self.result_method_auto_rb, False, False, 0)
         method_row.pack_start(self.result_method_cloud_rb, False, False, 0)
         method_row.pack_start(self.result_method_plane_rb, False, False, 0)
         method_row.pack_start(self.result_method_mesh_rb, False, False, 0)
+
+        self.surface_controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        map_row = self._row(self.surface_controls)
+        map_row.pack_start(Gtk.Label(label="Mapa 3D:"), False, False, 0)
+        self.surface_map_combo = Gtk.ComboBoxText()
+        for key, title in (("thickness", "Espesor"), ("quality", "Calidad geométrica"), ("method", "Método usado por zona")):
+            self.surface_map_combo.append(key, title)
+        self.surface_map_combo.set_active_id("thickness")
+        self.surface_map_combo.set_tooltip_text("Selecciona el mapa y pulsa Abrir vista 3D. Gris indica regiones sin medición confiable.")
+        map_row.pack_start(self.surface_map_combo, True, True, 0)
+        options = Gtk.Expander(label="Parámetros avanzados de superficies")
+        options_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.surface_entries = {}
+        for key, title, default in (
+            ("normal_radius_m", "Radio para estimar orientación (cm):", "7"),
+            ("projection_radius_m", "Radio de comparación local (cm):", "6"),
+            ("search_depth_m", "Búsqueda máxima ± (cm):", "60"),
+            ("registration_allowance_m", "Margen de error de alineación (cm):", "1"),
+        ):
+            row = self._row(options_box)
+            row.pack_start(Gtk.Label(label=title), False, False, 0)
+            entry = self._numeric_entry(default, 7)
+            self.surface_entries[key] = entry
+            row.pack_start(entry, False, False, 0)
+        note = Gtk.Label(label="La calidad depende de orientación, soporte y variación local. "
+                              "El margen de alineación es una estimación configurable, no una precisión certificada del sensor.", xalign=0)
+        note.set_line_wrap(True)
+        options_box.pack_start(note, False, False, 0)
+        options.add(options_box)
+        self.surface_controls.pack_start(options, False, False, 0)
+        method_box.pack_start(self.surface_controls, False, False, 0)
 
         self.quick_c2c_frame, quick_c2c_box = self._section("Preparación de puntos")
         self.quick_c2c_frame.set_no_show_all(True)
@@ -1466,15 +1503,15 @@ class AuroraGUI:
 
         method_frame, method_box = self._section("3. Calcula el espesor")
         method_note = Gtk.Label(
-            label=("Para una pared o caja recortada, Cara plana mide perpendicularmente y excluye piso y bordes. "
-                   "Requiere una cara dominante en ambas tomas, con zona común. "
-                   "Cloud-to-Cloud puede dar menos espesor si encuentra otra superficie cercana. "
-                   "Para un arco completo, usa un método adecuado a su curvatura."),
+            label=("Automático compara superficies por zonas: caras planas y normales locales en superficies curvas o rugosas. "
+                   "Las zonas sin correspondencia aparecen en gris. La alineación IMU/SLAM se aplica antes de medir. "
+                   "También puedes seleccionar los métodos manuales."),
             xalign=0,
         )
         method_note.set_line_wrap(True)
         method_box.pack_start(method_note, False, False, 0)
         self.quick_distance_method_combo = Gtk.ComboBoxText()
+        self.quick_distance_method_combo.append("auto", "Automático por superficies")
         self.quick_distance_method_combo.append("cloud_to_cloud", "Cloud-to-Cloud")
         self.quick_distance_method_combo.append("plane", "Cara plana (perpendicular)")
         self.quick_distance_method_combo.append("raycast", "Malla / Raycasting")
@@ -1645,6 +1682,10 @@ class AuroraGUI:
     def _on_results_method_changed(self) -> None:
         use_mesh = self.calculation_method == "raycast"
         self._sync_calculation_method_radios()
+        self._show_control_row(self.surface_controls, self.calculation_method == "auto")
+        self.use_icp_check.set_sensitive(self.calculation_method not in {"auto", "plane"})
+        if self.calculation_method in {"auto", "plane"}:
+            self.use_icp_check.set_active(False)
         self._show_control_row(self.quick_c2c_frame, not use_mesh)
         self._show_control_row(self.quick_mesh_method_row, use_mesh)
         self._show_control_row(self.quick_mesh_voxel_row, use_mesh)
@@ -1678,6 +1719,7 @@ class AuroraGUI:
                 ("result_method_cloud_rb", "cloud_to_cloud"),
                 ("result_method_mesh_rb", "raycast"),
                 ("result_method_plane_rb", "plane"),
+                ("result_method_auto_rb", "auto"),
                 ("quick_mesh_check", "raycast"),
             ):
                 button = getattr(self, name, None)
@@ -1699,7 +1741,7 @@ class AuroraGUI:
         self._on_results_method_changed()
 
     def _set_calculation_method(self, method_id: str) -> None:
-        if method_id not in {"cloud_to_cloud", "raycast", "plane"}:
+        if method_id not in {"cloud_to_cloud", "raycast", "plane", "auto"}:
             return
         self.calculation_method = method_id
         self._sync_calculation_method_radios()
@@ -1778,7 +1820,14 @@ class AuroraGUI:
             position_error_cm = float(np.linalg.norm(base_pose[0] - updated_pose[0])) * 100.0
             rotation_error_deg = ((base_pose[1] - updated_pose[1] + 180.0) % 360.0) - 180.0
             max_rotation_error = float(np.max(np.abs(rotation_error_deg)))
-            if (
+            if self.calculation_method == "auto" and self.quick_imu_compensate_check.get_active():
+                # The worker applies the full relative pose in memory, including
+                # motion below the visual guide deadband. No ICP and no new PLY.
+                self.alignment_applied = True
+                self.quick_imu_status_label.set_text(
+                    f"Compensación IMU/SLAM previa: {position_error_cm:.1f} cm, {max_rotation_error:.1f}°."
+                )
+            elif (
                 position_error_cm > self.IMU_POSITION_TOLERANCE_CM
                 or max_rotation_error > self.IMU_ROTATION_TOLERANCE_DEG
             ):
@@ -1889,6 +1938,8 @@ class AuroraGUI:
             base_pose = load_reference_pose(Path(self.base_path))
             updated_pose = load_reference_pose(Path(self.updated_path))
             if base_pose is not None and updated_pose is not None:
+                if self.calculation_method == "auto" and not self.quick_imu_compensate_check.get_sensitive():
+                    self.quick_imu_compensate_check.set_active(True)
                 self.quick_imu_compensate_check.set_sensitive(True)
                 position_error_cm = float(np.linalg.norm(base_pose[0] - updated_pose[0])) * 100.0
                 rotation_error_deg = ((base_pose[1] - updated_pose[1] + 180.0) % 360.0) - 180.0
@@ -5261,6 +5312,14 @@ class AuroraGUI:
             return 0.82, "Calculando estadisticas"
         if "calculando distancia cloud-to-cloud" in text:
             return 0.66, "Calculando distancias entre superficies"
+        if "superficies y normales locales antes" in text:
+            return 0.45, "Detectando superficies ANTES"
+        if "superficies y normales locales después" in text:
+            return 0.55, "Detectando superficies DESPUÉS"
+        if "buscando correspondencias" in text or "comparando regiones:" in text:
+            return 0.67, message.strip()
+        if "compensando imu/slam" in text:
+            return 0.12, "Compensando posición y orientación del sensor"
         if "alineando nubes" in text:
             return 0.44, "Alineando las capturas"
         if "nubes listas para medir" in text:
@@ -5910,6 +5969,9 @@ class AuroraGUI:
             )
 
         if target == "base":
+            self._set_updated_path("")
+            self.last_updated_capture_path = None
+            self.view_updated_capture_button.set_sensitive(False)
             self._set_base_path(path)
             self.last_base_capture_path = path
             self.view_base_capture_button.set_sensitive(True)
@@ -6248,7 +6310,7 @@ class AuroraGUI:
         self.quick_calculate_button.set_sensitive(False)
         self.result_recalculate_button.set_sensitive(False)
         self._start_calculation_progress(
-            "Preparando Cara plana" if params.distance_method == "plane" else "Preparando Cloud-to-Cloud"
+            {"auto": "Preparando comparación por superficies", "plane": "Preparando Cara plana"}.get(params.distance_method, "Preparando Cloud-to-Cloud")
         )
         self.status_label.set_markup("Calculando el espesor...")
         self.stack.set_visible_child_name("resultados")
@@ -6276,8 +6338,20 @@ class AuroraGUI:
             icp_threshold=float(self.icp_threshold_entry.get_text() or 0.05),
             max_distance=max_distance,
             minimum_thickness_m=self._minimum_thickness_m(),
-            distance_method="plane" if self.calculation_method == "plane" else "cloud_to_cloud",
+            distance_method=self.calculation_method if self.calculation_method in {"auto", "plane"} else "cloud_to_cloud",
+            align_by_pose=(self.calculation_method == "auto" and self.quick_imu_compensate_check.get_active()
+                           and load_reference_pose(base_path) is not None and load_reference_pose(updated_path) is not None),
+            surface_params=self._surface_params() if self.calculation_method == "auto" else None,
         )
+
+    def _surface_params(self) -> dict:
+        from surface_comparison import SurfaceParams
+        values = {}
+        for key, entry in self.surface_entries.items():
+            value = float(entry.get_text().strip().replace(",", ".")) / 100
+            values[key] = value
+        SurfaceParams(**values).validate()
+        return values
 
     def _run_pipeline_worker(self, params: PipelineParams, generation: int) -> None:
         try:
@@ -6326,6 +6400,30 @@ class AuroraGUI:
             f"Medicion lista: promedio {stats.mean * 100:.2f} cm, "
             f"mediana {stats.median * 100:.2f} cm, desviación estándar {stats.std * 100:.2f} cm."
         )
+        if result.distance_method == "auto":
+            details = result.measurement_details
+            self.plane_quality_label.set_text(
+                f"Cobertura DESPUÉS: {details['valid_points']:,}/{details['total_after_points']:,} "
+                f"puntos ({details['coverage_percent']:.1f}%). "
+                f"Plano: {details['plane_points']:,}; normal local: {details['local_normal_points']:,}. "
+                f"Calidad alta: {details['high_quality_points']:,}; media: {details['medium_quality_points']:,}. "
+                f"Sin correspondencia ANTES: {details['unmatched_before_points']:,}; "
+                f"DESPUÉS: {details['unmatched_after_points']:,}. "
+                "Los indicadores de calidad no son una certificación de precisión absoluta."
+            )
+            self.plane_quality_label.show()
+            self.minimum_thickness_summary.set_text(
+                f"Cambios usados: {stats.n_points:,}; menores al umbral: {details['below_minimum_points']:,}; "
+                f"compatibles con variación local/alineación: {details['within_variation_points']:,}."
+            )
+            self.minimum_thickness_summary.show()
+            self._set_stat(self.stat_points, f"{details['valid_points']:,}")
+            if stats.n_points == 0:
+                text = "Sin cambios detectables sobre el umbral y la variación estimada." if details['valid_points'] else "Sin mediciones confiables: revisa soporte, cobertura y alineación."
+                for card in (self.stat_mean, self.stat_median, self.stat_std):
+                    self._set_stat(card, "—")
+                self.quick_status_label.set_text(text)
+                self.status_label.set_text(text)
         self._set_calculation_method(result.distance_method)
         self._generate_alerts()
         self.stack.set_visible_child_name("resultados")
@@ -6363,7 +6461,7 @@ class AuroraGUI:
 
     def _generate_alerts(self) -> None:
         result = self._active_result()
-        if result is None:
+        if result is None or (getattr(result, "distance_method", "") == "auto" and result.stats.n_points == 0):
             self.thickness_alert_label.hide()
             return
         try:
@@ -6407,7 +6505,7 @@ class AuroraGUI:
             return
 
         try:
-            legend = self._selected_color_legend()
+            legend = self._selected_color_legend(force_thickness=True)
             low_cm, high_cm = (self._band_thresholds_cm()
                                if self.color_banded_rb.get_active() else (None, None))
         except ValueError as exc:
@@ -6460,6 +6558,10 @@ class AuroraGUI:
             status_text, status_color = "MEDICION DE ESPESOR COMPLETADA", rl_colors.HexColor("#007AFF")
         else:
             status_text, status_color = "DENTRO DE PARAMETRO", rl_colors.HexColor("#34C759")
+        if getattr(result, "distance_method", "") == "auto" and result.stats.n_points == 0:
+            status_text = ("SIN CAMBIOS DETECTABLES" if result.measurement_details['valid_points']
+                           else "SIN MEDICIONES CONFIABLES")
+            status_color = rl_colors.HexColor("#586575")
 
         styles = getSampleStyleSheet()
         title_style = ParagraphStyle(
@@ -6493,7 +6595,7 @@ class AuroraGUI:
             Paragraph(f"<b>Nube base (original):</b> {escape(str(self.base_path))}", body_style),
             Paragraph(f"<b>Nube actualizada (shotcrete):</b> {escape(str(self.updated_path))}", body_style),
             Paragraph(
-                f"<b>Metodo de calculo:</b> {'Raycasting con malla' if self._active_result_kind == 'raycast' else ('Cara plana / perpendicular' if getattr(result, 'distance_method', '') == 'plane' else 'Cloud-to-Cloud')}",
+                f"<b>Metodo de calculo:</b> {'Raycasting con malla' if self._active_result_kind == 'raycast' else {'plane': 'Cara plana / perpendicular', 'auto': 'Automático por superficies'}.get(getattr(result, 'distance_method', ''), 'Cloud-to-Cloud')}",
                 body_style,
             ),
             Paragraph("2. Criterio de color", h2_style),
@@ -6515,6 +6617,9 @@ class AuroraGUI:
             ["Espesor mediano", f"{stats.median * 100:.2f}"],
             ["Desviación estándar", f"{stats.std * 100:.2f}"],
         ]
+        if getattr(result, "distance_method", "") == "auto" and stats.n_points == 0:
+            for row in stats_rows[2:]:
+                row[1] = "—"
         if stats.minimum_thickness_m > 0:
             stats_rows.extend([
                 ["Umbral mínimo aplicado", f"{stats.minimum_thickness_m * 100:.1f}"],
@@ -6539,6 +6644,18 @@ class AuroraGUI:
             )
         )
         story.append(stats_table)
+        if getattr(result, "distance_method", "") == "auto":
+            details = result.measurement_details
+            story.append(Paragraph(
+                f"<b>Cobertura DESPUÉS:</b> {details['valid_points']:,} de {details['total_after_points']:,} "
+                f"puntos ({details['coverage_percent']:.1f}%). Plano: {details['plane_points']:,}; "
+                f"normal local: {details['local_normal_points']:,}. Calidad alta: {details['high_quality_points']:,}; "
+                f"media: {details['medium_quality_points']:,}. Sin correspondencia ANTES: "
+                f"{details['unmatched_before_points']:,}; DESPUÉS: {details['unmatched_after_points']:,}. "
+                f"Compatibles con variación: {details['within_variation_points']:,}. "
+                "Estas estimaciones geométricas no certifican precisión absoluta; "
+                "las estadísticas usan únicamente cambios aceptados.", body_style
+            ))
 
         story.append(Paragraph(f"4. Escala de colores ({escape(legend['title'])})", h2_style))
         story.append(Spacer(1, 6))
@@ -6569,6 +6686,13 @@ class AuroraGUI:
                 ("BACKGROUND", (2, 1), (2, 1), rl_colors.Color(*legend["low_color"])),
                 ("BACKGROUND", (2, 2), (2, 2), rl_colors.Color(*legend["high_color"])),
             ])
+        if getattr(result, "distance_method", "") == "auto":
+            for color, label, description in (
+                ((.35, .6, .8), "Sin cambio detectable", "Bajo umbral o variación estimada"),
+                ((.58, .60, .63), "Sin dato", "Sin correspondencia confiable"),
+            ):
+                band_rows.append([description, label, ""])
+                band_styles.append(("BACKGROUND", (2, len(band_rows)-1), (2, len(band_rows)-1), rl_colors.Color(*color)))
         band_table = Table(band_rows, colWidths=[5 * rl_cm, 5 * rl_cm, 4 * rl_cm])
         band_table.setStyle(TableStyle(band_styles))
         story.append(band_table)
@@ -6590,6 +6714,9 @@ class AuroraGUI:
         story.append(Paragraph(f"• Detalle por punto: {result.csv_path.name}", body_style))
         story.append(Paragraph(f"• Histograma: {result.histogram_path.name}", body_style))
         story.append(Paragraph(f"• Nube 3D heatmap: {result.heatmap_path.name}", body_style))
+        if getattr(result, "distance_method", "") == "auto":
+            story.append(Paragraph("• Diagnóstico completo: surface_comparison_per_point.csv, "
+                                   "surface_comparison.npz y measurement_details.json", body_style))
 
         doc = SimpleDocTemplate(
             str(report_path),
@@ -6946,8 +7073,21 @@ class AuroraGUI:
             },
         )
 
-    def _selected_color_legend(self) -> dict:
+    def _selected_color_legend(self, force_thickness=False) -> dict:
         """Single source of truth for the selected GUI and PDF thickness legend."""
+        result = self._active_result()
+        if not force_thickness and getattr(result, "distance_method", "") == "auto":
+            view = self.surface_map_combo.get_active_id()
+            if view == 'quality':
+                return {'title': 'Calidad geométrica', 'rows': [
+                    ((.2, .85, .4), 'Alta', 'Buen soporte y orientación'),
+                    ((.95, .65, .1), 'Media', 'Medición con mayor variación'),
+                    ((.58, .60, .63), 'Sin dato', 'Sin correspondencia confiable')]}
+            if view == 'method':
+                return {'title': 'Método por zona', 'rows': [
+                    ((.1, .75, .95), 'Plano', 'Distancia perpendicular a la cara'),
+                    ((.75, .35, .95), 'Normal local', 'Comparación de regiones locales'),
+                    ((.58, .60, .63), 'Sin dato', 'Sin correspondencia confiable')]}
         if self.color_six_bands_rb.get_active():
             target_cm = self._parse_positive_entry(self.target_thickness_entry, "El espesor objetivo")
             band_width_cm = target_cm / len(SIX_BAND_LABELS)
@@ -6977,7 +7117,7 @@ class AuroraGUI:
         max_distance = float(max_text) if max_text else None
         result = self._active_result()
         distances = np.asarray(result.distances, dtype=np.float64)
-        clip_max = max_distance if max_distance else float(np.percentile(distances, 98))
+        clip_max = max_distance if max_distance else float(np.percentile(distances, 98)) if distances.size else .01
         return {
             "title": "Escala continua",
             "continuous_max_cm": max(clip_max, 1e-9) * 100.0,
@@ -6988,6 +7128,18 @@ class AuroraGUI:
     def _build_result_heatmap(self, result) -> tuple[object, dict]:
         """Make the result viewer colors match the selected legend exactly."""
         import open3d as o3d
+
+        if getattr(result, "distance_method", "") == "auto":
+            view = self.surface_map_combo.get_active_id() or 'thickness'
+            colored = build_surface_view(result.comparison_cloud, result.comparison,
+                                         result.accepted_mask, result.distances, view,
+                                         self._selected_preview_heatmap_spec())
+            legend = self._selected_color_legend()
+            if view == 'thickness':
+                legend = {**legend, 'extra_rows': [
+                    ((.35, .6, .8), 'Sin cambio detectable', 'Bajo umbral o variación estimada'),
+                    ((.58, .60, .63), 'Sin dato', 'Sin correspondencia confiable')]}
+            return colored, legend
 
         if self._active_result_kind == "raycast":
             cloud = o3d.geometry.PointCloud()
